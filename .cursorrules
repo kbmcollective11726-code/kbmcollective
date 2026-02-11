@@ -1,0 +1,192 @@
+# CollectiveLive — Cursor AI Rules
+
+## Project Overview
+CollectiveLive is a multi-event conference app by KBM Collective, built with Expo (React Native) + Supabase + TypeScript. It allows attendees to view schedules, post photos, engage with a gamification system, send direct messages, and interact in real-time. There is also a separate Next.js live wall display.
+
+## Tech Stack
+- **Framework**: Expo SDK 52+ with Expo Router (file-based routing)
+- **Language**: TypeScript (strict mode)
+- **Backend**: Supabase (PostgreSQL, Auth, Storage, Realtime, Edge Functions)
+- **State Management**: Zustand
+- **Navigation**: Expo Router with typed routes
+- **Styling**: React Native StyleSheet (no Tailwind/NativeWind)
+- **Icons**: lucide-react-native
+- **Animations**: react-native-reanimated
+- **Notifications**: expo-notifications
+- **Camera/Photos**: expo-image-picker, expo-image-manipulator
+
+## Project Structure
+- `app/` — Expo Router screens (file-based routing)
+- `app/(auth)/` — Authentication screens (no tab bar)
+- `app/(tabs)/` — Main app screens (with bottom tab bar)
+- `components/` — Reusable UI components
+- `lib/` — Core utilities (supabase client, auth helpers, image utils)
+- `stores/` — Zustand state stores
+- `constants/` — Colors, config, point values
+
+## Coding Conventions
+
+### Components
+- Use functional components with TypeScript
+- Define Props interfaces for all components
+- Use descriptive names: `PostCard`, `LeaderboardRow`, `ScheduleCard`
+- Export as default from each file
+- Keep components focused — one responsibility per component
+
+### Styling
+- Use `StyleSheet.create()` at the bottom of each file
+- Use the color constants from `constants/colors.ts`
+- Design mobile-first — this is a phone app
+- Use `SafeAreaView` for top-level screens
+- Consistent spacing: 8, 12, 16, 20, 24, 32
+- Border radius: 8 for small, 12 for medium, 16 for large
+
+### Supabase
+- Import the client from `lib/supabase.ts`
+- Always handle errors with try/catch
+- Use `.select()` to only fetch needed columns
+- Use `.order()` for consistent sorting
+- Use real-time subscriptions for live data (posts, messages, notifications)
+- Never expose the service_role key in client code
+
+### State Management (Zustand)
+- One store per domain: authStore, eventStore, feedStore, notificationStore
+- Keep stores flat — avoid deep nesting
+- Include loading and error states
+- Actions are async functions inside the store
+
+### TypeScript Types
+- Define all types in `lib/types.ts`
+- Use the Supabase generated types where possible
+- Prefer interfaces over type aliases for objects
+- All function parameters must be typed
+
+### Error Handling
+- Show user-friendly error messages via toast (react-native-toast-message)
+- Log detailed errors to console in development
+- Always handle loading, error, and empty states in UI
+- Network errors should show retry options
+
+### Images/Photos
+- Always compress before upload: max 1920px wide, 80% JPEG quality
+- Use Supabase Storage with organized paths: `/{eventId}/{userId}_{timestamp}.jpg`
+- Show loading placeholder while images load
+- Handle camera permission requests gracefully
+
+### Navigation
+- Use Expo Router's `router.push()`, `router.replace()`, `router.back()`
+- Type all route params
+- Use `_layout.tsx` files for shared layouts
+- Deep link format: `collectivelive://post/{id}`, `collectivelive://chat/{userId}`
+
+## Color Theme
+```typescript
+const colors = {
+  primary: '#2563eb',
+  primaryLight: '#3b82f6',
+  secondary: '#10b981',
+  accent: '#f59e0b',
+  danger: '#ef4444',
+  background: '#ffffff',
+  surface: '#f8fafc',
+  surfaceHover: '#f1f5f9',
+  text: '#0f172a',
+  textSecondary: '#64748b',
+  textMuted: '#94a3b8',
+  border: '#e2e8f0',
+  borderLight: '#f1f5f9',
+};
+```
+
+## Common Patterns
+
+### Fetching data with loading state:
+```typescript
+const [data, setData] = useState<Post[]>([]);
+const [loading, setLoading] = useState(true);
+
+useEffect(() => {
+  fetchData();
+}, []);
+
+const fetchData = async () => {
+  try {
+    setLoading(true);
+    const { data, error } = await supabase
+      .from('posts')
+      .select('*, user:users(id, full_name, avatar_url)')
+      .eq('event_id', currentEventId)
+      .eq('is_deleted', false)
+      .order('created_at', { ascending: false })
+      .limit(20);
+    if (error) throw error;
+    setData(data);
+  } catch (err) {
+    Toast.show({ type: 'error', text1: 'Failed to load posts' });
+  } finally {
+    setLoading(false);
+  }
+};
+```
+
+### Real-time subscription:
+```typescript
+useEffect(() => {
+  const channel = supabase
+    .channel('posts-feed')
+    .on('postgres_changes', 
+      { event: 'INSERT', schema: 'public', table: 'posts', filter: `event_id=eq.${eventId}` },
+      (payload) => {
+        setData(prev => [payload.new as Post, ...prev]);
+      }
+    )
+    .subscribe();
+
+  return () => { supabase.removeChannel(channel); };
+}, [eventId]);
+```
+
+### Points awarding:
+```typescript
+const awardPoints = async (userId: string, eventId: string, action: string, referenceId?: string) => {
+  const { data: rule } = await supabase
+    .from('point_rules')
+    .select('points_value, max_per_day')
+    .eq('event_id', eventId)
+    .eq('action', action)
+    .single();
+  
+  if (!rule) return;
+
+  // Check daily limit
+  if (rule.max_per_day) {
+    const today = new Date().toISOString().split('T')[0];
+    const { count } = await supabase
+      .from('point_log')
+      .select('*', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('event_id', eventId)
+      .eq('action', action)
+      .gte('created_at', today);
+    
+    if ((count ?? 0) >= rule.max_per_day) return;
+  }
+
+  await supabase.from('point_log').insert({
+    user_id: userId,
+    event_id: eventId,
+    action,
+    points: rule.points_value,
+    reference_id: referenceId,
+  });
+};
+```
+
+## DO NOT
+- Do not use class components
+- Do not use `any` type — always type properly
+- Do not store sensitive keys in the app code (use environment variables)
+- Do not skip error handling
+- Do not use inline styles for complex styling — use StyleSheet
+- Do not fetch all records without pagination
+- Do not skip loading states — always show a skeleton or spinner

@@ -1,0 +1,63 @@
+{
+  "expo": {
+    "name": "CollectiveLive",
+    "slug": "collectivelive",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "extra": { "eas": { "projectId": "65832cc0-3cd5-4bae-900d-367f0ed99ffd" } },
+    "icon": "./assets/icon.png",
+    "scheme": "collectivelive",
+    "userInterfaceStyle": "automatic",
+    "backgroundColor": "#ffffff",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#2563eb"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.kbmcollective.collectivelive"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#2563eb"
+      },
+      "package": "com.kbmcollective.collectivelive",
+      "googleServicesFile": "./google-services (1).json",
+      "softwareKeyboardLayoutMode": "pan"
+    },
+    "androidStatusBar": {
+      "translucent": false,
+      "backgroundColor": "#ffffff",
+      "barStyle": "dark-content"
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "static"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "color": "#2563eb",
+          "sounds": []
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos.",
+          "savePhotosPermission": "Allow $(PRODUCT_NAME) to save photos."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
