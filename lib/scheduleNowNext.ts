@@ -1,10 +1,12 @@
-import { format, parseISO, isWithinInterval, isAfter } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 
-/** Parses API date strings (PostgreSQL may return space instead of T). */
+/** Parses API date strings (PostgreSQL may return space instead of T). Preserves timezone (Z or +00). */
 export function parseSessionDate(iso: string | null | undefined): Date | null {
   if (!iso || typeof iso !== 'string') return null;
   const trimmed = iso.trim();
-  const normalized = trimmed.includes(' ') ? trimmed.replace(/\s+/, 'T') : trimmed;
+  const normalized = /^\d{4}-\d{2}-\d{2}\s/.test(trimmed)
+    ? trimmed.replace(/^(\d{4}-\d{2}-\d{2})\s+/, '$1T')
+    : trimmed;
   try {
     const d = parseISO(normalized);
     return Number.isNaN(d.getTime()) ? null : d;
@@ -47,29 +49,40 @@ export interface SessionForNowNext {
 }
 
 /**
- * From all sessions and event start_date, returns sessions happening now and up to 2 next sessions for today.
+ * Returns sessions happening now (on today) and the next 2 upcoming sessions (any day).
+ * Uses start_time/end_time as full timestamps so timezone is correct when DB sends UTC (e.g. with Z).
  */
 export function getNowNextSessions(
   sessions: SessionForNowNext[],
   eventStartDate: string | null | undefined
 ): { nowSessions: SessionForNowNext[]; nextSessions: SessionForNowNext[] } {
   if (!eventStartDate || sessions.length === 0) return { nowSessions: [], nextSessions: [] };
-  const todayKey = format(new Date(), 'yyyy-MM-dd');
+  const now = new Date();
+  const nowMs = now.getTime();
+  const todayKey = format(now, 'yyyy-MM-dd');
   const dayNumbers = [...new Set(sessions.map((s) => Number(s.day_number)).filter((n) => !Number.isNaN(n) && n >= 1))].sort((a, b) => a - b);
   const todayNum = dayNumbers.find((d) => getDateKeyForDayNumber(d, eventStartDate) === todayKey) ?? null;
-  if (todayNum == null) return { nowSessions: [], nextSessions: [] };
 
-  const todaySessions = sessions.filter((s) => Number(s.day_number) === todayNum);
-  const now = new Date();
   const nowList: SessionForNowNext[] = [];
+  if (todayNum != null) {
+    const todaySessions = sessions.filter((s) => Number(s.day_number) === todayNum);
+    for (const s of todaySessions) {
+      const start = parseSessionDate(s.start_time);
+      const end = parseSessionDate(s.end_time);
+      if (!start || !end) continue;
+      const startMs = start.getTime();
+      const endMs = end.getTime();
+      if (nowMs >= startMs && nowMs <= endMs) {
+        nowList.push(s);
+      }
+    }
+  }
+
   const nextList: SessionForNowNext[] = [];
-  for (const s of todaySessions) {
+  for (const s of sessions) {
     const start = parseSessionDate(s.start_time);
-    const end = parseSessionDate(s.end_time);
-    if (!start || !end) continue;
-    if (isWithinInterval(now, { start, end })) {
-      nowList.push(s);
-    } else if (isAfter(start, now)) {
+    if (!start) continue;
+    if (start.getTime() > nowMs) {
       nextList.push(s);
     }
   }

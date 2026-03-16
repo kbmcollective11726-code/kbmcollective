@@ -93,7 +93,10 @@ export default function AdminPointRulesScreen() {
   }, [currentEvent?.id]);
 
   useEffect(() => {
-    if (!currentEvent?.id) return;
+    if (!currentEvent?.id) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     (async () => {
       await loadRules();

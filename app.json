@@ -1,34 +1,52 @@
 {
   "expo": {
-    "name": "CollectiveLive",
-    "slug": "collectivelive",
+    "name": "KBM Connect",
+    "slug": "kbmconnect",
     "version": "1.0.0",
     "orientation": "portrait",
-    "extra": { "eas": { "projectId": "65832cc0-3cd5-4bae-900d-367f0ed99ffd" } },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d4399477-1045-4301-b852-80e528aec992"
+      }
+    },
     "icon": "./assets/icon.png",
     "scheme": "collectivelive",
     "userInterfaceStyle": "automatic",
     "backgroundColor": "#ffffff",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#2563eb"
+      "backgroundColor": "#000000"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.kbmcollective.collectivelive"
+      "bundleIdentifier": "com.kbmcollective.collectivelive",
+      "buildNumber": "14",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#2563eb"
+        "backgroundColor": "#000000"
       },
       "package": "com.kbmcollective.collectivelive",
-      "googleServicesFile": "./google-services (1).json",
-      "softwareKeyboardLayoutMode": "pan"
+      "googleServicesFile": "./google-services.json",
+      "softwareKeyboardLayoutMode": "pan",
+      "permissions": [
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
+        "android.permission.READ_MEDIA_IMAGES",
+        "android.permission.READ_MEDIA_VIDEO",
+        "android.permission.READ_MEDIA_AUDIO",
+        "android.permission.VIBRATE"
+      ]
     },
     "androidStatusBar": {
       "translucent": false,
@@ -37,7 +55,7 @@
     },
     "web": {
       "bundler": "metro",
-      "output": "static"
+      "output": "single"
     },
     "plugins": [
       "expo-router",
@@ -45,7 +63,8 @@
         "expo-notifications",
         {
           "color": "#2563eb",
-          "sounds": []
+          "sounds": [],
+          "enableBackgroundRemoteNotifications": true
         }
       ],
       [
@@ -54,10 +73,20 @@
           "photosPermission": "Allow $(PRODUCT_NAME) to access your photos.",
           "savePhotosPermission": "Allow $(PRODUCT_NAME) to save photos."
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 35,
+            "targetSdkVersion": 35
+          }
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "owner": "kbmcollective"
   }
 }

@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { sendPushToUser } from './pushNotifications';
 
 export type NotificationType =
   | 'like'
@@ -9,6 +10,7 @@ export type NotificationType =
   | 'badge'
   | 'meeting'
   | 'schedule_change'
+  | 'connection_request'
   | 'system';
 
 /**
@@ -37,4 +39,29 @@ export async function createNotification(
   } catch (err) {
     return { error: err instanceof Error ? err.message : 'Failed to create notification' };
   }
+}
+
+/**
+ * Create an in-app notification and send a push notification so the user receives it on their device.
+ * Use this for likes, comments, connection requests, schedule changes, etc.
+ */
+export async function createNotificationAndPush(
+  userId: string,
+  eventId: string | null,
+  type: NotificationType,
+  title: string,
+  body?: string | null,
+  data?: Record<string, unknown>
+): Promise<{ error: string | null }> {
+  const result = await createNotification(userId, eventId, type, title, body, data);
+  if (result.error) return result;
+  // Send push so the user gets a device notification (in-app record already created above)
+  await sendPushToUser(userId, title, body ?? '', {
+    eventId: eventId ?? undefined,
+    postId: data?.post_id as string | undefined,
+    chatUserId: data?.chat_user_id as string | undefined,
+    groupId: data?.group_id as string | undefined,
+    boothId: data?.booth_id as string | undefined,
+  });
+  return { error: null };
 }

@@ -31,7 +31,7 @@ export default function WallHome() {
 
   return (
     <div style={{ padding: 48, maxWidth: 800, margin: '0 auto', background: '#1e0a2e', minHeight: '100vh', color: '#fff' }}>
-      <h1 style={{ fontSize: 32, marginBottom: 8 }}>CollectiveLive Wall</h1>
+      <h1 style={{ fontSize: 32, marginBottom: 8 }}>KBM Connect Wall</h1>
       <p style={{ color: '#e2e8f0', marginBottom: 32 }}>Select an event for the big screen.</p>
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {events.map((e) => (

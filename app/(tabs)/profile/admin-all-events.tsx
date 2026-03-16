@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -11,7 +12,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { ChevronRight } from 'lucide-react-native';
+import { ChevronRight, Trash2 } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
@@ -21,14 +22,21 @@ import type { Event } from '../../../lib/types';
 export default function AdminAllEventsScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
-  const { allEvents, fetchAllEvents, setCurrentEvent, isLoading, error } = useEventStore();
+  const { allEvents, fetchAllEvents, setCurrentEvent, currentEvent, fetchMyMemberships, isLoading, error } = useEventStore();
   const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const isPlatformAdmin = user?.is_platform_admin === true;
 
   useEffect(() => {
     if (isPlatformAdmin) fetchAllEvents();
   }, [isPlatformAdmin, fetchAllEvents]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (isPlatformAdmin) fetchAllEvents().catch(() => {});
+    }, [isPlatformAdmin, fetchAllEvents])
+  );
 
   const handleToggleActive = async (event: Event) => {
     if (togglingId) return;
@@ -49,7 +57,38 @@ export default function AdminAllEventsScreen() {
 
   const handleSelectEvent = async (event: Event) => {
     await setCurrentEvent(event);
-    router.replace('/profile/admin');
+    router.replace('/(tabs)/home');
+  };
+
+  const handleDeleteEvent = (event: Event) => {
+    Alert.alert(
+      'Delete event',
+      `Permanently delete "${event.name}" and all its content (posts, schedule, members, announcements, etc.)? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            if (deletingId) return;
+            setDeletingId(event.id);
+            try {
+              const { error: err } = await supabase.from('events').delete().eq('id', event.id);
+              if (err) throw err;
+              if (currentEvent?.id === event.id && user?.id) {
+                await setCurrentEvent(null);
+                await fetchMyMemberships(user.id, true);
+              }
+              await fetchAllEvents();
+            } catch (e) {
+              Alert.alert('Error', e instanceof Error ? e.message : 'Failed to delete event.');
+            } finally {
+              setDeletingId(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (!user) {
@@ -116,6 +155,17 @@ export default function AdminAllEventsScreen() {
                       </>
                     )}
                   </View>
+                  <TouchableOpacity
+                    style={styles.deleteBtn}
+                    onPress={() => handleDeleteEvent(event)}
+                    disabled={!!deletingId}
+                  >
+                    {deletingId === event.id ? (
+                      <ActivityIndicator size="small" color={colors.danger} />
+                    ) : (
+                      <Trash2 size={22} color={colors.danger} />
+                    )}
+                  </TouchableOpacity>
                 </View>
               ))
             )}
@@ -151,6 +201,7 @@ const styles = StyleSheet.create({
   eventMeta: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
   toggleWrap: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   toggleLabel: { fontSize: 13, color: colors.textSecondary },
+  deleteBtn: { padding: 8, marginLeft: 4, justifyContent: 'center', alignItems: 'center' },
   empty: { fontSize: 14, color: colors.textSecondary, textAlign: 'center', marginTop: 24 },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   subtitle: { fontSize: 14, color: colors.textSecondary, textAlign: 'center' },

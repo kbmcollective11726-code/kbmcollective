@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import { View, Text, StyleSheet, FlatList, Image, TouchableOpacity, RefreshControl, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
-import { Pin, Eye, EyeOff } from 'lucide-react-native';
+import { Pin, Eye, EyeOff, Trash2 } from 'lucide-react-native';
 
 type PostRow = { id: string; image_url: string; caption: string | null; is_pinned: boolean; is_approved: boolean; created_at: string; user?: { full_name: string } };
 
@@ -28,7 +29,7 @@ export default function AdminPostsScreen() {
         .eq('event_id', currentEvent.id)
         .eq('is_deleted', false)
         .order('created_at', { ascending: false })
-        .limit(100);
+        .limit(50);
       if (error) throw error;
       setPosts((data ?? []) as unknown as PostRow[]);
     } catch (err) {
@@ -42,6 +43,12 @@ export default function AdminPostsScreen() {
   useEffect(() => {
     fetchPosts();
   }, [currentEvent?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (currentEvent?.id) fetchPosts().catch(() => {});
+    }, [currentEvent?.id])
+  );
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -73,6 +80,33 @@ export default function AdminPostsScreen() {
     } finally {
       setUpdatingId(null);
     }
+  };
+
+  const deletePost = (post: PostRow) => {
+    Alert.alert(
+      'Delete post?',
+      'This will remove the post from the feed. You can\'t undo this.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            if (!currentEvent?.id || updatingId) return;
+            setUpdatingId(post.id);
+            try {
+              const { error } = await supabase.from('posts').update({ is_deleted: true }).eq('id', post.id);
+              if (error) throw error;
+              setPosts((prev) => prev.filter((p) => p.id !== post.id));
+            } catch (err) {
+              Alert.alert('Error', 'Failed to delete post.');
+            } finally {
+              setUpdatingId(null);
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (!currentEvent) {
@@ -113,6 +147,10 @@ export default function AdminPostsScreen() {
                   {item.is_approved ? <EyeOff size={18} color={colors.textMuted} /> : <Eye size={18} color={colors.primary} />}
                   <Text style={styles.actionText}>{item.is_approved ? 'Hide' : 'Approve'}</Text>
                 </TouchableOpacity>
+                <TouchableOpacity style={[styles.actionBtn, styles.deleteAction]} onPress={() => deletePost(item)} disabled={updatingId === item.id}>
+                  <Trash2 size={18} color={colors.danger} />
+                  <Text style={styles.deleteActionText}>Delete</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -135,4 +173,6 @@ const styles = StyleSheet.create({
   actions: { flexDirection: 'row', marginTop: 8, gap: 16 },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   actionText: { fontSize: 13, color: colors.textSecondary },
+  deleteAction: {},
+  deleteActionText: { fontSize: 13, color: colors.danger },
 });

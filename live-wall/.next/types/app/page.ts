@@ -1,4 +1,4 @@
-// File: C:\Users\viper\OneDrive\Desktop\CollectiveLive\live-wall\app\page.tsx
+// File: C:\Users\viper\OneDrive\Desktop\CollectiveLiveg\live-wall\app\page.tsx
 import * as entry from '../../../app/page.js'
 import type { ResolvingMetadata, ResolvingViewport } from 'next/dist/lib/metadata/types/metadata-interface.js'
 

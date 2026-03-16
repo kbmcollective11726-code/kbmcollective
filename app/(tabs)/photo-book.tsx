@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -16,13 +16,17 @@ import {
   Linking,
   BackHandler,
   Alert,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
+import { useFocusEffect } from '@react-navigation/native';
+import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
-import { supabase } from '../../lib/supabase';
+import { supabase, withRetryAndRefresh } from '../../lib/supabase';
 import { colors } from '../../constants/colors';
 import type { Post } from '../../lib/types';
 import Toast from 'react-native-toast-message';
@@ -32,45 +36,97 @@ const COLS = 3;
 const GAP = 4;
 
 export default function PhotoBookScreen() {
+  const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [sharing, setSharing] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const fetchPhotos = useCallback(async () => {
-    if (!currentEvent?.id) {
+    if (!currentEvent?.id || !user?.id) {
       setPosts([]);
       setLoading(false);
+      setFetchError(null);
       return;
     }
+    setFetchError(null);
     try {
-      const { data, error } = await supabase
-        .from('posts')
-        .select('id, image_url, caption, created_at, likes_count, user:users(full_name)')
-        .eq('event_id', currentEvent.id)
-        .eq('is_deleted', false)
-        .eq('is_approved', true)
-        .not('image_url', 'is', null)
-        .order('created_at', { ascending: false })
-        .limit(100);
+      await withRetryAndRefresh(async () => {
+        const { data: postsData, error } = await supabase
+          .from('posts')
+          .select('id, image_url, caption, created_at, likes_count, user:users(full_name)')
+          .eq('event_id', currentEvent.id)
+          .eq('is_deleted', false)
+          .eq('is_approved', true)
+          .not('image_url', 'is', null)
+          .order('created_at', { ascending: false })
+          .limit(50);
 
-      if (error) throw error;
-      setPosts((data ?? []) as unknown as Post[]);
+        if (error) throw error;
+
+        const raw = (postsData ?? []) as Array<Record<string, unknown>>;
+        const normalized: Post[] = raw.map((p) => ({
+          ...p,
+          user: Array.isArray(p.user) ? (p.user[0] ?? null) : p.user,
+        })) as Post[];
+        setPosts(normalized);
+      });
+      setFetchError(null);
     } catch (err) {
-      console.error('Photo book fetch error:', err);
+      if (__DEV__) console.warn('Photo book fetch error:', err);
       setPosts([]);
+      setFetchError('Error - page not loading');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentEvent?.id]);
+  }, [currentEvent?.id, user?.id]);
+
+  // Like Info: run and wait. No timer so first try can complete.
+  useEffect(() => {
+    if (!currentEvent?.id || !user?.id) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    fetchPhotos()
+      .catch(() => { if (!cancelled) setTimeout(() => fetchPhotos().finally(() => {}), 2000); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [currentEvent?.id, user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (currentEvent?.id && user?.id) fetchPhotos().catch(() => {});
+    }, [currentEvent?.id, user?.id])
+  );
 
   useEffect(() => {
-    fetchPhotos();
-  }, [fetchPhotos]);
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active' && currentEvent?.id && user?.id) fetchPhotos().catch(() => {});
+    });
+    return () => sub.remove();
+  }, [currentEvent?.id, user?.id]);
+
+  const loadingStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!loading) {
+      loadingStartRef.current = null;
+      return;
+    }
+    loadingStartRef.current = Date.now();
+    const t = setTimeout(() => {
+      if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= 40000) {
+        setLoading(false);
+        setFetchError('Error - page not loading');
+      }
+    }, 40000);
+    return () => clearTimeout(t);
+  }, [loading]);
 
   useEffect(() => {
     if (!selectedPost) return;
@@ -169,6 +225,28 @@ export default function PhotoBookScreen() {
       <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Join an event on the Info tab to view the photo book.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (fetchError) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+        <View style={styles.placeholder}>
+          <Text style={styles.placeholderTitle}>Error - page not loading</Text>
+          <Text style={styles.subtitle}>Pull down to refresh or tap Try again.</Text>
+          <TouchableOpacity
+            onPress={() => {
+              setFetchError(null);
+              setLoading(true);
+              fetchPhotos();
+            }}
+            style={styles.retryBtn}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.retryBtnText}>Try again</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     );
@@ -315,9 +393,18 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text },
+  headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text, textAlign: 'left' },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  placeholderTitle: { fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8, textAlign: 'center' },
   subtitle: { fontSize: 14, color: colors.textSecondary, textAlign: 'center' },
+  retryBtn: {
+    marginTop: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: colors.primary,
+    borderRadius: 10,
+  },
+  retryBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
   grid: { padding: GAP / 2, paddingBottom: 24 },
   row: { marginBottom: GAP, gap: GAP },
   thumb: { marginRight: GAP, position: 'relative' },

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -14,12 +15,14 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { MessageCircle, ChevronRight, ChevronLeft, ExternalLink, Ban, Flag, Briefcase, Building2, FileText, Phone, Mic, Store, Users, UserPlus, Check, X } from 'lucide-react-native';
+import { MessageCircle, ChevronRight, ChevronLeft, ExternalLink, Ban, Flag, Briefcase, Building2, FileText, Phone, Mic, Store, Users, UserPlus, UserMinus, Check, X } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useBlockStore } from '../../../../stores/blockStore';
-import { supabase } from '../../../../lib/supabase';
+import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
 import { awardPoints } from '../../../../lib/points';
+import { createNotificationAndPush } from '../../../../lib/notifications';
 import { colors } from '../../../../constants/colors';
 import Avatar from '../../../../components/Avatar';
 import type { User } from '../../../../lib/types';
@@ -46,7 +49,9 @@ export default function UserProfileScreen() {
   const [requestReceivedFromThem, setRequestReceivedFromThem] = useState(false);
   const [connectingId, setConnectingId] = useState(false);
   const [acceptingId, setAcceptingId] = useState(false);
+  const [removingConnection, setRemovingConnection] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState<string>('spam');
   const [reportDetails, setReportDetails] = useState('');
@@ -55,21 +60,30 @@ export default function UserProfileScreen() {
   const blocked = userId ? isBlocked(userId) : false;
 
   const goBack = () => {
-    if (from) {
-      router.replace(decodeURIComponent(from) as any);
+    const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : '';
+    if (returnPath) {
+      router.replace(returnPath as any);
     } else {
       router.back();
     }
   };
 
+  // When user leaves this profile screen (e.g. switches to another tab), reset Feed stack to main feed
+  useFocusEffect(
+    useCallback(() => {
+      return () => {
+        navigation.reset({ index: 0, routes: [{ name: 'index' as never }] });
+      };
+    }, [navigation])
+  );
+
   useEffect(() => {
     if (from && typeof from === 'string') {
-      const returnPath = decodeURIComponent(from);
       navigation.setOptions({
         headerBackVisible: false,
         headerLeft: () => (
           <TouchableOpacity
-            onPress={() => router.replace(returnPath as any)}
+            onPress={goBack}
             style={{ padding: 8, marginLeft: 4 }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
@@ -78,7 +92,7 @@ export default function UserProfileScreen() {
         ),
       });
     }
-  }, [from, navigation, router]);
+  }, [from, navigation, goBack]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -92,90 +106,144 @@ export default function UserProfileScreen() {
         // Guard against runtimes where subscription.remove is not implemented correctly
       }
     };
-  }, [from, router]);
+  }, [goBack]);
 
   useEffect(() => {
     if (currentUser?.id) fetchBlockedUsers(currentUser.id);
   }, [currentUser?.id]);
 
-  useEffect(() => {
-    if (!userId) {
+  const fetchUser = useCallback(async () => {
+    if (!userId || !currentUser?.id) {
       setLoading(false);
       return;
     }
-    const fetchUser = async () => {
-      if (!currentUser?.id) {
-        setLoading(false);
-        return;
-      }
-      try {
-        const [userRes, rolesRes, connectionRes, requestSentRes, requestReceivedRes] = await Promise.all([
-          supabase.from('users').select('*').eq('id', userId).single(),
-          currentEvent?.id
-            ? supabase
-                .from('event_members')
-                .select('role, roles')
-                .eq('event_id', currentEvent.id)
-                .eq('user_id', userId)
-                .maybeSingle()
-            : Promise.resolve({ data: null }),
-          currentEvent?.id
-            ? supabase
-                .from('connections')
-                .select('id')
-                .eq('event_id', currentEvent.id)
-                .eq('user_id', currentUser.id)
-                .eq('connected_user_id', userId)
-                .maybeSingle()
-            : Promise.resolve({ data: null }),
-          currentEvent?.id
-            ? supabase
-                .from('connection_requests')
-                .select('id')
-                .eq('event_id', currentEvent.id)
-                .eq('requester_id', currentUser.id)
-                .eq('requested_user_id', userId)
-                .eq('status', 'pending')
-                .maybeSingle()
-            : Promise.resolve({ data: null }),
-          currentEvent?.id
-            ? supabase
-                .from('connection_requests')
-                .select('id')
-                .eq('event_id', currentEvent.id)
-                .eq('requester_id', userId)
-                .eq('requested_user_id', currentUser.id)
-                .eq('status', 'pending')
-                .maybeSingle()
-            : Promise.resolve({ data: null }),
-        ]);
-        if (userRes.error) throw userRes.error;
-        setProfileUser(userRes.data as User);
-        const row = rolesRes.data as { role?: string; roles?: string[] } | null;
-        if (row) {
-          const roles = (row.roles?.length ? row.roles : row.role ? [row.role] : []).filter(
-            (r) => r !== 'admin' && r !== 'super_admin'
-          );
-          setEventRoles(roles);
-        } else {
-          setEventRoles([]);
-        }
-        setIsConnected(!!connectionRes.data);
-        setRequestSentByMe(!!requestSentRes.data);
-        setRequestReceivedFromThem(!!requestReceivedRes.data);
-      } catch (err) {
-        console.error('User profile fetch error:', err);
-        setProfileUser(null);
+    setFetchError(null);
+    try {
+      await withRetryAndRefresh(async () => {
+      const [userRes, rolesRes, connectionRes, requestSentRes, requestReceivedRes] = await Promise.all([
+        supabase.from('users').select('*').eq('id', userId).single(),
+        currentEvent?.id
+          ? supabase
+              .from('event_members')
+              .select('role, roles')
+              .eq('event_id', currentEvent.id)
+              .eq('user_id', userId)
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
+        currentEvent?.id
+          ? supabase
+              .from('connections')
+              .select('id')
+              .eq('event_id', currentEvent.id)
+              .eq('user_id', currentUser.id)
+              .eq('connected_user_id', userId)
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
+        currentEvent?.id
+          ? supabase
+              .from('connection_requests')
+              .select('id')
+              .eq('event_id', currentEvent.id)
+              .eq('requester_id', currentUser.id)
+              .eq('requested_user_id', userId)
+              .eq('status', 'pending')
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
+        currentEvent?.id
+          ? supabase
+              .from('connection_requests')
+              .select('id')
+              .eq('event_id', currentEvent.id)
+              .eq('requester_id', userId)
+              .eq('requested_user_id', currentUser.id)
+              .eq('status', 'pending')
+              .maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
+      if (userRes.error) throw userRes.error;
+      setProfileUser(userRes.data as User);
+      const row = rolesRes.data as { role?: string; roles?: string[] } | null;
+      if (row) {
+        const roles = (row.roles?.length ? row.roles : row.role ? [row.role] : []).filter(
+          (r) => r !== 'admin' && r !== 'super_admin'
+        );
+        setEventRoles(roles);
+      } else {
         setEventRoles([]);
-      } finally {
-        setLoading(false);
       }
-    };
-    fetchUser();
+      setIsConnected(!!connectionRes.data);
+      setRequestSentByMe(!!requestSentRes.data);
+      setRequestReceivedFromThem(!!requestReceivedRes.data);
+      });
+    } catch (err) {
+      if (__DEV__) console.warn('User profile fetch error:', err);
+      setProfileUser(null);
+      setEventRoles([]);
+      setFetchError('Error - page not loading');
+    } finally {
+      setLoading(false);
+    }
   }, [userId, currentEvent?.id, currentUser?.id]);
+
+  // Like Info: run and wait. No timer so first try can complete.
+  useEffect(() => {
+    if (!userId || !currentUser?.id) {
+      setLoading(false);
+      return;
+    }
+    setFetchError(null);
+    setLoading(true);
+    let cancelled = false;
+    fetchUser()
+      .catch(() => { if (!cancelled) setTimeout(() => fetchUser().finally(() => {}), 2000); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [userId, currentUser?.id, fetchUser]);
 
   const handleMessage = () => {
     if (userId) router.push(`/profile/chat/${userId}?from=${encodeURIComponent(`/feed/user/${userId}`)}` as any);
+  };
+
+  const handleRemoveConnection = () => {
+    if (!currentUser?.id || !userId || !currentEvent?.id) return;
+    const name = profileUser?.full_name ?? 'this person';
+    Alert.alert(
+      'Remove connection',
+      `Remove ${name} from your connections? You can send a new request later if you change your mind.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            setRemovingConnection(true);
+            try {
+              const { error: err1 } = await supabase
+                .from('connections')
+                .delete()
+                .eq('event_id', currentEvent.id)
+                .eq('user_id', currentUser.id)
+                .eq('connected_user_id', userId);
+              if (err1) throw err1;
+              const { error: err2 } = await supabase
+                .from('connections')
+                .delete()
+                .eq('event_id', currentEvent.id)
+                .eq('user_id', userId)
+                .eq('connected_user_id', currentUser.id);
+              if (err2) throw err2;
+              setIsConnected(false);
+              Toast.show({ type: 'success', text1: 'Connection removed' });
+            } catch (err) {
+              console.error('Remove connection error:', err);
+              Toast.show({ type: 'error', text1: 'Could not remove', text2: 'Please try again.' });
+            } finally {
+              setRemovingConnection(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   const handleConnect = async () => {
@@ -188,10 +256,27 @@ export default function UserProfileScreen() {
         requested_user_id: userId,
         status: 'pending',
       });
-      if (error) throw error;
+      if (error) {
+        if (error.code === '23505') {
+          Toast.show({ type: 'info', text1: 'Request already sent', text2: "You've already sent a connection request to this person." });
+          setRequestSentByMe(true);
+          return;
+        }
+        throw error;
+      }
       setRequestSentByMe(true);
+      await createNotificationAndPush(
+        userId,
+        currentEvent.id,
+        'connection_request',
+        'Connection request',
+        `${currentUser.full_name ?? 'Someone'} wants to connect with you`,
+        { requester_id: currentUser.id }
+      );
+      Toast.show({ type: 'success', text1: 'Request sent', text2: "They'll see it in Community and can accept to connect." });
     } catch (err) {
       console.error('Connect error:', err);
+      Toast.show({ type: 'error', text1: 'Could not send request', text2: 'Please try again.' });
     } finally {
       setConnectingId(false);
     }
@@ -210,25 +295,35 @@ export default function UserProfileScreen() {
         .eq('status', 'pending')
         .single();
       if (!req) {
+        Toast.show({ type: 'info', text1: 'Request not found', text2: 'It may have been accepted or declined already.' });
+        setRequestReceivedFromThem(false);
         setAcceptingId(false);
         return;
       }
-      await supabase.from('connection_requests').update({ status: 'accepted' }).eq('id', (req as { id: string }).id);
-      await supabase.from('connections').insert({
+      const { error: updateErr } = await supabase
+        .from('connection_requests')
+        .update({ status: 'accepted' })
+        .eq('id', (req as { id: string }).id);
+      if (updateErr) throw updateErr;
+      const { error: ins1 } = await supabase.from('connections').insert({
         event_id: currentEvent.id,
         user_id: currentUser.id,
         connected_user_id: userId,
       });
-      await supabase.from('connections').insert({
+      if (ins1) throw ins1;
+      const { error: ins2 } = await supabase.from('connections').insert({
         event_id: currentEvent.id,
         user_id: userId,
         connected_user_id: currentUser.id,
       });
+      if (ins2) throw ins2;
       await awardPoints(currentUser.id, currentEvent.id, 'connect');
       setIsConnected(true);
       setRequestReceivedFromThem(false);
+      Toast.show({ type: 'success', text1: 'Connected', text2: "You're now connected. You can message them." });
     } catch (err) {
       console.error('Accept error:', err);
+      Toast.show({ type: 'error', text1: 'Could not accept', text2: 'Please try again.' });
     } finally {
       setAcceptingId(false);
     }
@@ -246,11 +341,17 @@ export default function UserProfileScreen() {
         .eq('status', 'pending')
         .single();
       if (req) {
-        await supabase.from('connection_requests').update({ status: 'declined' }).eq('id', (req as { id: string }).id);
+        const { error: updateErr } = await supabase
+          .from('connection_requests')
+          .update({ status: 'declined' })
+          .eq('id', (req as { id: string }).id);
+        if (updateErr) throw updateErr;
       }
       setRequestReceivedFromThem(false);
+      Toast.show({ type: 'success', text1: 'Declined', text2: 'Connection request declined.' });
     } catch (err) {
       console.error('Decline error:', err);
+      Toast.show({ type: 'error', text1: 'Could not decline', text2: 'Please try again.' });
     }
   };
 
@@ -329,6 +430,31 @@ export default function UserProfileScreen() {
     );
   }
 
+  if (fetchError) {
+    return (
+      <SafeAreaView style={styles.container} edges={['bottom']}>
+        <View style={styles.centered}>
+          <Text style={styles.errorText}>Error - page not loading</Text>
+          <Text style={styles.errorSubtext}>Tap Try again or go back.</Text>
+          <TouchableOpacity
+            style={styles.backBtn}
+            onPress={() => {
+              setFetchError(null);
+              setLoading(true);
+              fetchUser();
+            }}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.backBtnText}>Try again</Text>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.backBtn, { marginTop: 12 }]} onPress={goBack}>
+            <Text style={styles.backBtnText}>Go back</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (!profileUser) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -384,9 +510,9 @@ export default function UserProfileScreen() {
                 </View>
               ) : null}
               {profileUser.bio ? (
-                <View style={styles.infoRow}>
+                <View style={[styles.infoRow, styles.infoRowBio]}>
                   <FileText size={18} color={colors.textMuted} />
-                  <Text style={[styles.infoText, styles.bioText]}>{profileUser.bio}</Text>
+                  <Text style={[styles.infoText, styles.bioText]} selectable>{profileUser.bio}</Text>
                 </View>
               ) : null}
               {profileUser.phone ? (
@@ -418,10 +544,27 @@ export default function UserProfileScreen() {
             <>
               <Text style={styles.actionsSectionLabel}>Connection</Text>
               {isConnected ? (
-                <TouchableOpacity style={styles.messageBtn} onPress={handleMessage} activeOpacity={0.7}>
-                  <MessageCircle size={22} color="#fff" />
-                  <Text style={styles.messageBtnText}>Message</Text>
-                </TouchableOpacity>
+                <View style={styles.connectedActions}>
+                  <TouchableOpacity style={styles.messageBtn} onPress={handleMessage} activeOpacity={0.7}>
+                    <MessageCircle size={22} color="#fff" />
+                    <Text style={styles.messageBtnText}>Message</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.removeConnectionBtn}
+                    onPress={handleRemoveConnection}
+                    disabled={removingConnection}
+                    activeOpacity={0.7}
+                  >
+                    {removingConnection ? (
+                      <ActivityIndicator size="small" color={colors.textMuted} />
+                    ) : (
+                      <>
+                        <UserMinus size={20} color={colors.textMuted} />
+                        <Text style={styles.removeConnectionBtnText}>Remove connection</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </View>
               ) : requestReceivedFromThem ? (
                 <View style={styles.profileRequestRow}>
                   <TouchableOpacity
@@ -537,7 +680,8 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   scrollContent: {
-    paddingBottom: 88,
+    paddingBottom: 32,
+    flexGrow: 1,
   },
   content: {
     paddingHorizontal: 20,
@@ -557,6 +701,12 @@ const styles = StyleSheet.create({
   errorText: {
     fontSize: 16,
     color: colors.textSecondary,
+    marginBottom: 8,
+  },
+  errorSubtext: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
     marginBottom: 16,
   },
   backBtn: {
@@ -654,6 +804,9 @@ const styles = StyleSheet.create({
     gap: 12,
     marginBottom: 12,
   },
+  infoRowBio: {
+    marginBottom: 0,
+  },
   infoText: {
     flex: 1,
     fontSize: 15,
@@ -726,6 +879,28 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#fff',
     fontWeight: '600',
+  },
+  connectedActions: {
+    flexDirection: 'column',
+    gap: 10,
+    marginBottom: 12,
+  },
+  removeConnectionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 10,
+    paddingHorizontal: 16,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  removeConnectionBtnText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: colors.textMuted,
   },
   profileRequestRow: {
     flexDirection: 'row',

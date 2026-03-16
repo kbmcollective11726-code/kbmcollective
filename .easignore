@@ -1,0 +1,5 @@
+# Exclude native folders so EAS Build runs expo prebuild and generates
+# a fresh android/ios. This fixes "No variants exist" for autolinked
+# native modules when the committed native project is out of sync.
+android/
+ios/

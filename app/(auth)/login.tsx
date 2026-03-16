@@ -9,11 +9,17 @@ import {
   Platform,
   ActivityIndicator,
   Alert,
+  Image,
+  ScrollView,
+  Linking,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import { useAuthStore } from '../../stores/authStore';
-import { colors } from '../../constants/colors';
+import { isSupabaseConfigured } from '../../lib/supabase';
+
+const LOGO = require('../../assets/logo-full-transparent.png');
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -28,36 +34,70 @@ export default function LoginScreen() {
       Alert.alert('Missing fields', 'Please enter email and password.');
       return;
     }
-    setLoading(true);
-    const { error } = await login(email.trim(), password);
-    setLoading(false);
-    if (error) {
-      const hint =
-        error.toLowerCase().includes('confirm')
-          ? ' Check your email for a confirmation link, or in Supabase turn off "Confirm email" under Auth → Providers → Email.'
-          : error.toLowerCase().includes('invalid') || error.toLowerCase().includes('credentials')
-            ? ' Check your password (and that the email is correct). Use "Forgot password?" to reset.'
-            : '';
-      Alert.alert('Login failed', error + hint);
+    if (!isSupabaseConfigured) {
+      Alert.alert(
+        'Not configured',
+        'Supabase URL is missing. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to .env in the project root, then run: npx expo start --clear'
+      );
       return;
     }
-    router.replace('/(tabs)/home');
+    setLoading(true);
+    try {
+      const { error } = await login(email.trim().toLowerCase(), password);
+      if (error) {
+      const msg = typeof error === 'string' ? error : String((error as { message?: string })?.message ?? 'Login failed');
+      const isConnectionError = /502|invalid_response|Connection problem|Restart Expo|timed out/i.test(msg) || msg.includes('_bodyInit') || msg.includes('"status":');
+      const hint = isConnectionError
+        ? ''
+        : msg.toLowerCase().includes('confirm')
+          ? ' Check your email for a confirmation link, or in Supabase turn off "Confirm email" under Auth → Providers → Email.'
+          : msg.toLowerCase().includes('invalid') || msg.toLowerCase().includes('credentials')
+            ? ' Check your password (and that the email is correct). Use "Forgot password?" to reset.'
+            : '';
+      const display = isConnectionError && msg.length > 120 ? 'Connection problem: server returned an invalid response. Try: 1) Restart Expo with "npx expo start --clear" 2) Use Wi‑Fi (same network as PC) 3) In Supabase Dashboard, confirm the project is not paused.' : msg + hint;
+        Alert.alert('Login failed', display);
+        return;
+      }
+      const session = useAuthStore.getState().session;
+      const mustChangePassword = !!session?.user?.user_metadata?.must_change_password;
+      if (mustChangePassword) {
+        router.replace('/(auth)/change-password');
+      } else {
+        const user = useAuthStore.getState().user;
+        if (user?.is_platform_admin) {
+          router.replace('/profile/admin-all-events');
+        } else {
+          router.replace('/(tabs)/home');
+        }
+      }
+    } catch (e) {
+      Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong. Try again.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboard}
       >
-        <View style={styles.content}>
-          <Text style={styles.title}>CollectiveLive</Text>
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.logoWrap}>
+            <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+          </View>
           <Text style={styles.subtitle}>Sign in to your account</Text>
 
           <TextInput
             style={styles.input}
             placeholder="Email"
-            placeholderTextColor={colors.textMuted}
+            placeholderTextColor="#94a3b8"
             value={email}
             onChangeText={setEmail}
             autoCapitalize="none"
@@ -68,7 +108,7 @@ export default function LoginScreen() {
           <TextInput
             style={styles.input}
             placeholder="Password"
-            placeholderTextColor={colors.textMuted}
+            placeholderTextColor="#94a3b8"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
@@ -82,7 +122,7 @@ export default function LoginScreen() {
             disabled={loading}
           >
             {loading ? (
-              <ActivityIndicator color={colors.textOnPrimary} />
+              <ActivityIndicator color="#0f172a" />
             ) : (
               <Text style={styles.buttonText}>Sign In</Text>
             )}
@@ -123,7 +163,17 @@ export default function LoginScreen() {
               Don't have an account? <Text style={styles.linkBold}>Sign up</Text>
             </Text>
           </TouchableOpacity>
-        </View>
+
+          <TouchableOpacity
+            style={styles.requestEventLink}
+            onPress={() => Linking.openURL('https://kbmcollective.org/request-event.html')}
+            disabled={loading}
+          >
+            <Text style={styles.linkText}>
+              Need an event? <Text style={styles.linkBold}>Request event setup</Text>
+            </Text>
+          </TouchableOpacity>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -132,42 +182,47 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: '#0a0a0a',
   },
   keyboard: {
     flex: 1,
   },
-  content: {
-    flex: 1,
+  scrollContent: {
+    flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 48,
+    paddingTop: 0,
+    paddingBottom: 24,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.primary,
-    marginBottom: 4,
+  logoWrap: {
+    alignItems: 'center',
+    marginBottom: 0,
+  },
+  logo: {
+    width: '100%',
+    maxWidth: 380,
+    height: 220,
   },
   subtitle: {
     fontSize: 16,
-    color: colors.textSecondary,
-    marginBottom: 32,
+    color: '#94a3b8',
+    marginBottom: 16,
+    textAlign: 'center',
   },
   input: {
     height: 48,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: '#334155',
     borderRadius: 12,
     paddingHorizontal: 16,
     fontSize: 16,
-    color: colors.text,
+    color: '#f8fafc',
     marginBottom: 16,
-    backgroundColor: colors.surface,
+    backgroundColor: '#1a1a1a',
   },
   button: {
     height: 48,
     borderRadius: 12,
-    backgroundColor: colors.primary,
+    backgroundColor: '#d4af37',
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 8,
@@ -177,7 +232,7 @@ const styles = StyleSheet.create({
   },
   hint: {
     fontSize: 12,
-    color: colors.textMuted,
+    color: '#64748b',
     textAlign: 'center',
     marginTop: 16,
     paddingHorizontal: 8,
@@ -188,23 +243,27 @@ const styles = StyleSheet.create({
   },
   forgotText: {
     fontSize: 14,
-    color: colors.primary,
+    color: '#d4af37',
   },
   buttonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: colors.textOnPrimary,
+    color: '#0f172a',
   },
   link: {
     marginTop: 24,
     alignItems: 'center',
   },
+  requestEventLink: {
+    marginTop: 16,
+    alignItems: 'center',
+  },
   linkText: {
     fontSize: 14,
-    color: colors.textSecondary,
+    color: '#94a3b8',
   },
   linkBold: {
-    color: colors.primary,
+    color: '#d4af37',
     fontWeight: '600',
   },
 });

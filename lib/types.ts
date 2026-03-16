@@ -50,6 +50,8 @@ export interface Event {
   theme_text: string | null;
   what_to_expect: string[] | null;
   points_section_intro: string | null;
+  /** Phone from "request to create event" signup; KBM uses for payment/setup. */
+  contact_phone: string | null;
 }
 
 export type EventRole = 'attendee' | 'speaker' | 'vendor' | 'admin' | 'super_admin';
@@ -100,6 +102,8 @@ export interface Like {
   created_at: string;
 }
 
+export type SpeakerEntry = { name?: string; title?: string; company?: string | null; photo?: string | null };
+
 export interface ScheduleSession {
   id: string;
   event_id: string;
@@ -108,6 +112,7 @@ export interface ScheduleSession {
   speaker_name: string | null;
   speaker_title: string | null;
   speaker_photo: string | null;
+  speakers?: SpeakerEntry[] | null;
   location: string | null;
   room: string | null;
   start_time: string;
@@ -118,6 +123,62 @@ export interface ScheduleSession {
   is_active: boolean;
   sort_order: number;
   is_bookmarked?: boolean;
+}
+
+export interface SessionRating {
+  id: string;
+  session_id: string;
+  event_id: string;
+  user_id: string;
+  rating: number;
+  comment: string | null;
+  created_at: string;
+}
+
+export interface VendorBooth {
+  id: string;
+  event_id: string;
+  vendor_name: string;
+  description: string | null;
+  logo_url: string | null;
+  banner_url: string | null;
+  booth_location: string | null;
+  contact_user_id: string | null;
+  website: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface MeetingSlot {
+  id: string;
+  booth_id: string;
+  start_time: string;
+  end_time: string;
+  is_available: boolean;
+  created_at: string;
+}
+
+export type MeetingBookingStatus = 'requested' | 'confirmed' | 'declined' | 'cancelled';
+
+export interface MeetingBooking {
+  id: string;
+  slot_id: string;
+  attendee_id: string;
+  status: MeetingBookingStatus;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface B2BMeetingFeedback {
+  id: string;
+  booking_id: string;
+  user_id: string;
+  rating: number;
+  comment: string | null;
+  meet_again: boolean;
+  recommend_vendor: boolean;
+  work_with_likelihood: number;
+  created_at: string;
 }
 
 export interface Message {
@@ -147,7 +208,7 @@ export interface Notification {
   id: string;
   user_id: string;
   event_id: string | null;
-  type: 'like' | 'comment' | 'message' | 'announcement' | 'points' | 'badge' | 'meeting' | 'schedule_change' | 'system';
+  type: 'like' | 'comment' | 'message' | 'announcement' | 'points' | 'badge' | 'meeting' | 'schedule_change' | 'connection_request' | 'system';
   title: string;
   body: string | null;
   data: Record<string, any>;
@@ -175,16 +236,18 @@ export interface PointLog {
   created_at: string;
 }
 
-export interface VendorBooth {
+export interface VendorBoothWithRelations {
   id: string;
   event_id: string;
   vendor_name: string;
   description: string | null;
   logo_url: string | null;
+  banner_url: string | null;
   booth_location: string | null;
   contact_user_id: string | null;
   website: string | null;
   is_active: boolean;
+  created_at?: string;
 }
 
 export interface MeetingSlot {

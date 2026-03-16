@@ -15,8 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { X } from 'lucide-react-native';
 import { supabase } from '../lib/supabase';
 import { awardPoints } from '../lib/points';
-import { createNotification } from '../lib/notifications';
-import { sendAnnouncementPush } from '../lib/pushNotifications';
+import { createNotificationAndPush } from '../lib/notifications';
 import type { Post, Comment } from '../lib/types';
 import { colors } from '../constants/colors';
 import Avatar from './Avatar';
@@ -110,7 +109,7 @@ export default function CommentSheet({
         if (post.user_id && post.user_id !== currentUserId) {
         await awardPoints(post.user_id, eventId, 'receive_comment', newComment?.id);
         if (eventId) {
-          await createNotification(
+          await createNotificationAndPush(
             post.user_id,
             eventId,
             'comment',
@@ -118,16 +117,6 @@ export default function CommentSheet({
             content,
             { post_id: post.id, comment_id: newComment?.id }
           );
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session?.access_token && post.user_id) {
-            sendAnnouncementPush(
-              session.access_token,
-              eventId,
-              `${currentUserFullName ?? 'Someone'} commented on your post`,
-              content.slice(0, 200),
-              [post.user_id]
-            ).catch(() => {});
-          }
         }
       }
       setInput('');

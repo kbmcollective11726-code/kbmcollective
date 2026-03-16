@@ -1,4 +1,4 @@
-export const metadata = { title: 'CollectiveLive Wall', description: 'Event live wall' };
+export const metadata = { title: 'KBM Connect Wall', description: 'Event live wall' };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (

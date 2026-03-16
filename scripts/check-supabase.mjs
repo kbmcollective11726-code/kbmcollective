@@ -87,7 +87,89 @@ async function main() {
   const users = await get('/users?select=id&limit=1');
   console.log('5. users table:', users.ok ? '✓' : '✗ (RLS may require auth)', users.status);
 
-  console.log('\nDone. If events/schedule_sessions have 0 rows, run seed scripts in Supabase SQL Editor.');
+  // 6. announcements (push notifications)
+  const announcements = await get('/announcements?select=id,event_id,title,sent_at&limit=5');
+  console.log('6. announcements:', announcements.ok ? '✓' : '✗', announcements.status);
+  if (announcements.ok && Array.isArray(announcements.data)) {
+    console.log('   Rows:', announcements.data.length);
+  }
+
+  // 7. connections (Connect/Community)
+  const connections = await get('/connections?select=id,event_id&limit=5');
+  console.log('7. connections:', connections.ok ? '✓' : '✗', connections.status);
+  if (connections.ok && Array.isArray(connections.data)) {
+    console.log('   Rows:', connections.data.length);
+  }
+
+  // 8. connection_requests
+  const connRequests = await get('/connection_requests?select=id,event_id,status&limit=5');
+  console.log('8. connection_requests:', connRequests.ok ? '✓' : '✗', connRequests.status);
+  if (connRequests.ok && Array.isArray(connRequests.data)) {
+    console.log('   Rows:', connRequests.data.length);
+  }
+
+  // 9. event_members
+  const eventMembers = await get('/event_members?select=id,event_id,user_id,role&limit=5');
+  console.log('9. event_members:', eventMembers.ok ? '✓' : '✗', eventMembers.status);
+  if (eventMembers.ok && Array.isArray(eventMembers.data)) {
+    console.log('   Rows:', eventMembers.data.length);
+  }
+
+  // 10. posts (feed)
+  const posts = await get('/posts?select=id,event_id,user_id&limit=5');
+  console.log('10. posts:', posts.ok ? '✓' : '✗', posts.status);
+  if (posts.ok && Array.isArray(posts.data)) {
+    console.log('   Rows:', posts.data.length);
+  }
+
+  // 11. users.push_token exists (for push) — select only column
+  const usersPush = await get('/users?select=push_token&limit=1');
+  console.log('11. users.push_token (notifications):', usersPush.ok ? '✓' : '✗', usersPush.status);
+
+  // 12–27. All other app tables (exist + anon can reach)
+  const extra = [
+    ['messages', 'id', '12. messages (DMs)'],
+    ['notifications', 'id', '13. notifications'],
+    ['likes', 'post_id', '14. likes'],
+    ['comments', 'id', '15. comments'],
+    ['user_schedule', 'user_id', '16. user_schedule (bookmarks)'],
+    ['session_ratings', 'id', '17. session_ratings'],
+    ['vendor_booths', 'id', '18. vendor_booths (B2B)'],
+    ['meeting_slots', 'id', '19. meeting_slots'],
+    ['meeting_bookings', 'id', '20. meeting_bookings'],
+    ['chat_groups', 'id', '21. chat_groups'],
+    ['chat_group_members', 'id', '22. chat_group_members'],
+    ['group_messages', 'id', '23. group_messages'],
+    ['blocked_users', 'blocker_id', '24. blocked_users'],
+    ['user_reports', 'id', '25. user_reports'],
+    ['point_log', 'id', '26. point_log'],
+    ['session_reminder_sent', 'session_id', '27. session_reminder_sent (schedule push)'],
+  ];
+  const extraOk = [];
+  for (const [table, col, label] of extra) {
+    const r = await get(`/${table}?select=${col}&limit=1`);
+    extraOk.push(r.ok);
+    console.log(label + ':', r.ok ? '✓' : '✗', r.status);
+  }
+
+  const allOk =
+    events.ok &&
+    sessions.ok &&
+    rules.ok &&
+    users.ok &&
+    announcements.ok &&
+    connections.ok &&
+    connRequests.ok &&
+    eventMembers.ok &&
+    posts.ok &&
+    usersPush.ok &&
+    extraOk.every(Boolean);
+
+  console.log('\nDone. If any table is ✗, create it or run migrations (see supabase/migrations, SUPABASE-TABLES-CHECKLIST.md).');
+  if (!allOk) {
+    console.error('\nFAIL: One or more tables are missing or returned an error. Run migrations before iOS rebuild.');
+    process.exit(1);
+  }
 }
 
 main().catch((e) => {

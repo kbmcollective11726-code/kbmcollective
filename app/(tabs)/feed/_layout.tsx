@@ -2,7 +2,7 @@ import { View, TouchableOpacity, StyleSheet } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { User } from 'lucide-react-native';
 import { colors } from '../../../constants/colors';
-import HamburgerMenu from '../../../components/HamburgerMenu';
+import HeaderNotificationBell from '../../../components/HeaderNotificationBell';
 
 function HeaderProfileButton() {
   const router = useRouter();
@@ -14,6 +14,7 @@ function HeaderProfileButton() {
 }
 
 const headerStyles = StyleSheet.create({
+  headerRight: { flexDirection: 'row', alignItems: 'center', marginRight: 16 },
   iconBtn: { marginHorizontal: 8, padding: 4, justifyContent: 'center', alignItems: 'center' },
 });
 
@@ -22,18 +23,31 @@ export default function FeedLayout() {
     <Stack
       screenOptions={{
         headerStyle: { backgroundColor: colors.background },
-        headerTintColor: colors.text,
         headerShadowVisible: false,
         headerBackVisible: true,
         gestureEnabled: true,
-        headerLeft: () => <HamburgerMenu />,
-        headerRight: () => <HeaderProfileButton />,
+        headerRight: () => (
+          <View style={headerStyles.headerRight}>
+            <HeaderNotificationBell compact />
+            <HeaderProfileButton />
+          </View>
+        ),
       }}
     >
-      <Stack.Screen name="index" options={{ title: 'Feed', headerShown: true }} />
+      <Stack.Screen name="index" options={{ headerShown: false }} />
       <Stack.Screen
         name="user/[userId]"
-        options={{ title: 'Profile', headerBackTitle: 'Back', headerShown: true }}
+        options={{
+          title: 'Profile',
+          headerBackTitle: 'Back',
+          headerShown: true,
+          headerRight: () => (
+            <View style={headerStyles.headerRight}>
+              <HeaderNotificationBell compact />
+              <HeaderProfileButton />
+            </View>
+          ),
+        }}
       />
     </Stack>
   );

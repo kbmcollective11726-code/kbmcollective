@@ -1,0 +1,87 @@
+.page {
+  max-width: 900px;
+}
+
+.head {
+  margin-bottom: 16px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-accent);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-muted);
+  transition: background var(--transition), color var(--transition);
+}
+
+.back:hover {
+  text-decoration: none;
+  background: rgba(212, 175, 55, 0.25);
+  color: var(--color-accent-hover);
+}
+
+.page h1 {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+  color: var(--color-text);
+}
+
+.hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.loading {
+  padding: 24px 0;
+}
+
+.listTitle {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+  color: var(--color-text);
+}
+
+.tableWrap {
+  overflow-x: auto;
+  margin-bottom: 20px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.table th {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+
+.table tr:hover {
+  background: var(--color-surface);
+}
+
+.empty {
+  color: var(--color-text-secondary);
+  padding: 24px 0;
+}
+
+.error {
+  color: var(--color-danger, #b91c1c);
+  margin: 0 0 16px;
+  font-size: 14px;
+}

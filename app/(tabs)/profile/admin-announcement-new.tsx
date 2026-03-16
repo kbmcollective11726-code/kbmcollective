@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -115,20 +116,42 @@ export default function AdminAnnouncementNewScreen() {
 
     setSending(true);
     try {
-      const scheduledAt = scheduleNow ? null : scheduledDate.toISOString();
-      const { error } = await supabase.from('announcements').insert({
+      // Base columns only – work with default schema (no migration required for Send now)
+      const basePayload = {
         event_id: currentEvent.id,
         title: title.trim(),
         content: content.trim(),
         priority: 'normal',
         send_push: scheduleNow,
         sent_by: user.id,
-        target_type: targetType,
-        target_audience: targetType === 'audience' ? audienceRoles : null,
-        target_user_ids: targetType === 'specific' ? selectedUserIds : null,
-        scheduled_at: scheduledAt,
-      });
-      if (error) throw error;
+      };
+
+      if (scheduleNow) {
+        const { error } = await supabase.from('announcements').insert(basePayload);
+        if (error) throw error;
+      } else {
+        const scheduledAt = scheduledDate.toISOString();
+        const { error } = await supabase.from('announcements').insert({
+          ...basePayload,
+          scheduled_at: scheduledAt,
+          target_type: targetType,
+          target_audience: targetType === 'audience' ? audienceRoles : null,
+          target_user_ids: targetType === 'specific' ? selectedUserIds : null,
+        });
+        if (error) {
+          const columnMissing = /column .* does not exist/i.test(error.message) || /could not find.*scheduled_at/i.test(error.message);
+          if (columnMissing) {
+            Alert.alert(
+              'Scheduling not available',
+              'To schedule announcements for later, run this in Supabase SQL Editor:\n\nscripts/migrate-announcements-targeting.sql\n\nUse "Send now" to send immediately.',
+              [{ text: 'OK' }]
+            );
+            setSending(false);
+            return;
+          }
+          throw error;
+        }
+      }
 
       if (scheduleNow) {
         const recipientIds = await getRecipientIds();
@@ -153,8 +176,10 @@ export default function AdminAnnouncementNewScreen() {
         Alert.alert('Scheduled', `Announcement scheduled for ${scheduledDate.toLocaleString()}. Note: A backend job is required to send scheduled announcements.`);
       }
       router.back();
-    } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to send.');
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : (err && typeof (err as { message?: string }).message === 'string') ? (err as { message: string }).message : 'Failed to send.';
+      console.error('Announcement send error:', err);
+      Alert.alert('Error', msg);
     } finally {
       setSending(false);
     }
@@ -170,7 +195,8 @@ export default function AdminAnnouncementNewScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
         <Text style={styles.label}>Title</Text>
         <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="Announcement title" placeholderTextColor={colors.textMuted} />
         <Text style={styles.label}>Message</Text>
@@ -269,6 +295,11 @@ export default function AdminAnnouncementNewScreen() {
                 if (Platform.OS === 'android') setShowDatePicker(false);
                 if (date) setScheduledDate(date);
               }}
+              {...(Platform.OS === 'ios' && {
+                textColor: colors.text,
+                themeVariant: 'light' as const,
+                accentColor: colors.primary,
+              })}
             />
           </>
         )}
@@ -277,6 +308,7 @@ export default function AdminAnnouncementNewScreen() {
           {sending ? <ActivityIndicator color={colors.textOnPrimary} size="small" /> : <Text style={styles.buttonText}>{scheduleNow ? 'Send announcement' : 'Schedule announcement'}</Text>}
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

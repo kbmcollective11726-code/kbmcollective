@@ -72,5 +72,6 @@ export const notificationIcons: Record<string, string> = {
   badge: '🎯',
   meeting: '🤝',
   schedule_change: '📅',
+  connection_request: '🤝',
   system: 'ℹ️',
 };

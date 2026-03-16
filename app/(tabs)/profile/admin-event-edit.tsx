@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Alert,
   Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -22,6 +23,19 @@ function toYYYYMMDD(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function parseLocalYYYYMMDD(s: string): Date | null {
+  const trimmed = s.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) return null;
+  const y = parseInt(match[1], 10);
+  const m = parseInt(match[2], 10) - 1;
+  const day = parseInt(match[3], 10);
+  if (m < 0 || m > 11 || day < 1 || day > 31) return null;
+  const date = new Date(y, m, day);
+  if (date.getFullYear() !== y || date.getMonth() !== m || date.getDate() !== day) return null;
+  return date;
 }
 
 export default function AdminEventEditScreen() {
@@ -38,8 +52,9 @@ export default function AdminEventEditScreen() {
   const [saving, setSaving] = useState(false);
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
-  const startDateObj = startDate ? (() => { const d = new Date(startDate); return isNaN(d.getTime()) ? new Date() : d; })() : new Date();
-  const endDateObj = endDate ? (() => { const d = new Date(endDate); return isNaN(d.getTime()) ? new Date() : d; })() : new Date();
+  const startDateObj = startDate ? (parseLocalYYYYMMDD(startDate) ?? new Date()) : new Date();
+  const endDateObj = endDate ? (parseLocalYYYYMMDD(endDate) ?? new Date()) : new Date();
+  const minEndDate = startDate ? (parseLocalYYYYMMDD(startDate) ?? startDateObj) : new Date();
 
   useEffect(() => {
     if (currentEvent) {
@@ -62,6 +77,16 @@ export default function AdminEventEditScreen() {
     }
     if (!startDate.trim() || !endDate.trim()) {
       Alert.alert('Error', 'Start date and end date are required.');
+      return;
+    }
+    const startD = parseLocalYYYYMMDD(startDate);
+    const endD = parseLocalYYYYMMDD(endDate);
+    if (!startD || !endD) {
+      Alert.alert('Error', 'Dates must be in YYYY-MM-DD format.');
+      return;
+    }
+    if (endD.getTime() < startD.getTime()) {
+      Alert.alert('Error', 'End date must be on or after the start date.');
       return;
     }
     setSaving(true);
@@ -111,7 +136,12 @@ export default function AdminEventEditScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+      >
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
         <Text style={styles.label}>Event name</Text>
         <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Event name" placeholderTextColor={colors.textMuted} />
         <Text style={styles.label}>Description</Text>
@@ -137,11 +167,15 @@ export default function AdminEventEditScreen() {
             <DateTimePicker
               value={startDateObj}
               mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
               onChange={(_, date) => {
                 if (Platform.OS === 'android') setShowStartPicker(false);
                 if (date) setStartDate(toYYYYMMDD(date));
               }}
+              {...(Platform.OS === 'ios' && {
+                themeVariant: 'light' as const,
+                accentColor: colors.primary,
+              })}
             />
           </>
         )}
@@ -160,11 +194,16 @@ export default function AdminEventEditScreen() {
             <DateTimePicker
               value={endDateObj}
               mode="date"
-              display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+              display={Platform.OS === 'ios' ? 'inline' : 'default'}
+              minimumDate={minEndDate}
               onChange={(_, date) => {
                 if (Platform.OS === 'android') setShowEndPicker(false);
                 if (date) setEndDate(toYYYYMMDD(date));
               }}
+              {...(Platform.OS === 'ios' && {
+                themeVariant: 'light' as const,
+                accentColor: colors.primary,
+              })}
             />
           </>
         )}
@@ -176,12 +215,14 @@ export default function AdminEventEditScreen() {
           {saving ? <ActivityIndicator color={colors.textOnPrimary} size="small" /> : <Text style={styles.buttonText}>Save</Text>}
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
+  flex: { flex: 1 },
   content: { padding: 24, paddingBottom: 48 },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   subtitle: { fontSize: 14, color: colors.textSecondary },

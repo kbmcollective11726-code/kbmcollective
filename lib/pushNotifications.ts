@@ -2,6 +2,20 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { supabase } from './supabase';
 
+/**
+ * Set the app icon badge count (red dot number). Call with 0 to clear.
+ * Skipped in Expo Go. Keeps badge in sync with unread notifications.
+ */
+export async function setAppBadgeCount(count: number): Promise<void> {
+  if (Constants.appOwnership === 'expo') return;
+  try {
+    const Notifications = require('expo-notifications');
+    await Notifications.setBadgeCountAsync(Math.max(0, Math.floor(count)));
+  } catch {
+    // ignore (e.g. not supported on this device)
+  }
+}
+
 const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? '').trim();
 
 /**
@@ -35,32 +49,67 @@ export async function registerPushToken(userId: string): Promise<void> {
 }
 
 /**
- * Ask the Edge Function to send push notifications to recipients for an announcement.
- * Requires a valid session (access_token). Recipients must have push_token set.
+ * Send a push notification to a single user (like, comment, connection request, schedule change).
+ * Gets the current session and calls the send-announcement-push Edge Function.
+ * Call after createNotification() so the user gets both in-app and device push.
+ */
+export async function sendPushToUser(
+  userId: string,
+  title: string,
+  body: string,
+  options?: { eventId?: string; postId?: string; chatUserId?: string; groupId?: string; boothId?: string }
+): Promise<{ sent: number; error?: string }> {
+  if (!SUPABASE_URL) return { sent: 0 };
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return { sent: 0 };
+    const eventId = options?.eventId ?? '';
+    return sendAnnouncementPush(session.access_token, eventId, title, body ?? '', [userId], {
+      postId: options?.postId,
+      chatUserId: options?.chatUserId,
+      groupId: options?.groupId,
+      boothId: options?.boothId,
+    });
+  } catch {
+    return { sent: 0 };
+  }
+}
+
+/**
+ * Ask the Edge Function to send push notifications to recipients.
+ * Used for likes, comments, and announcements. Recipients must have push_token set.
+ * Includes sound and vibration in the push payload.
  */
 export async function sendAnnouncementPush(
   accessToken: string,
   eventId: string,
   title: string,
   body: string,
-  recipientUserIds: string[]
+  recipientUserIds: string[],
+  options?: { postId?: string; chatUserId?: string; groupId?: string; boothId?: string }
 ): Promise<{ sent: number; error?: string }> {
   if (!SUPABASE_URL || recipientUserIds.length === 0) {
     return { sent: 0 };
   }
   try {
+    const payload: Record<string, unknown> = {
+      event_id: eventId,
+      title,
+      body,
+      recipient_user_ids: recipientUserIds,
+    };
+    if (options?.postId) payload.post_id = options.postId;
+    if (options?.chatUserId) payload.chat_user_id = options.chatUserId;
+    if (options?.groupId) payload.group_id = options.groupId;
+    if (options?.boothId) payload.booth_id = options.boothId;
+
     const res = await fetch(`${SUPABASE_URL}/functions/v1/send-announcement-push`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        event_id: eventId,
-        title,
-        body,
-        recipient_user_ids: recipientUserIds,
-      }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok) {

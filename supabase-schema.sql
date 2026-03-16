@@ -56,7 +56,9 @@ CREATE TABLE IF NOT EXISTS public.events (
     summit_days_text TEXT,
     theme_text TEXT,
     what_to_expect JSONB DEFAULT '[]'::jsonb,
-    points_section_intro TEXT
+    points_section_intro TEXT,
+    -- Request-event signup: phone for KBM to reach out (payment/setup)
+    contact_phone TEXT
 );
 
 -- ==================
@@ -81,6 +83,7 @@ CREATE TABLE IF NOT EXISTS public.posts (
     user_id UUID NOT NULL REFERENCES public.users(id) ON DELETE CASCADE,
     image_url TEXT NOT NULL,
     caption TEXT,
+    image_hash TEXT,
     likes_count INTEGER DEFAULT 0,
     comments_count INTEGER DEFAULT 0,
     is_pinned BOOLEAN DEFAULT false,
@@ -198,6 +201,7 @@ CREATE TABLE IF NOT EXISTS public.notifications (
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user ON public.notifications(user_id, is_read, created_at DESC);
+ALTER TABLE public.notifications REPLICA IDENTITY FULL;
 
 -- ==================
 -- POINT RULES (configurable per event)
@@ -291,6 +295,8 @@ CREATE TABLE IF NOT EXISTS public.connection_requests (
     created_at TIMESTAMPTZ DEFAULT now(),
     UNIQUE(event_id, requester_id, requested_user_id)
 );
+-- Realtime filter on requested_user_id needs full row
+ALTER TABLE public.connection_requests REPLICA IDENTITY FULL;
 
 -- ============================================
 -- ROW LEVEL SECURITY (RLS)
@@ -326,11 +332,13 @@ DROP POLICY IF EXISTS "Admins can delete events" ON public.events;
 DROP POLICY IF EXISTS "Members can view event members" ON public.event_members;
 DROP POLICY IF EXISTS "Users can join events" ON public.event_members;
 DROP POLICY IF EXISTS "Admins can manage members" ON public.event_members;
+DROP POLICY IF EXISTS "Platform admins can manage event members" ON public.event_members;
 DROP POLICY IF EXISTS "Users can update own role" ON public.event_members;
 DROP POLICY IF EXISTS "Posts are viewable by everyone" ON public.posts;
 DROP POLICY IF EXISTS "Users can create posts" ON public.posts;
 DROP POLICY IF EXISTS "Users can update own posts" ON public.posts;
 DROP POLICY IF EXISTS "Admins can manage posts" ON public.posts;
+DROP POLICY IF EXISTS "Platform admins can manage all posts" ON public.posts;
 DROP POLICY IF EXISTS "Likes are viewable" ON public.likes;
 DROP POLICY IF EXISTS "Users can like" ON public.likes;
 DROP POLICY IF EXISTS "Users can unlike" ON public.likes;
@@ -352,6 +360,7 @@ DROP POLICY IF EXISTS "Admins can delete announcements" ON public.announcements;
 DROP POLICY IF EXISTS "Users see own notifications" ON public.notifications;
 DROP POLICY IF EXISTS "System can create notifications" ON public.notifications;
 DROP POLICY IF EXISTS "Users can mark as read" ON public.notifications;
+DROP POLICY IF EXISTS "Users can delete own notifications" ON public.notifications;
 DROP POLICY IF EXISTS "Point rules viewable" ON public.point_rules;
 DROP POLICY IF EXISTS "Admins can manage point rules" ON public.point_rules;
 DROP POLICY IF EXISTS "Users see own points" ON public.point_log;
@@ -430,6 +439,8 @@ CREATE POLICY "Admins can delete events" ON public.events FOR DELETE USING (
 CREATE POLICY "Members can view event members" ON public.event_members FOR SELECT USING (true);
 CREATE POLICY "Users can join events" ON public.event_members FOR INSERT WITH CHECK (auth.uid() = user_id);
 CREATE POLICY "Admins can manage members" ON public.event_members FOR ALL USING (public.is_event_admin(event_id));
+-- Super admin (platform admin) can assign event admins: manage members for any event
+CREATE POLICY "Platform admins can manage event members" ON public.event_members FOR ALL USING (public.is_platform_admin(auth.uid()));
 -- Users can update their own role to attendee/speaker/vendor (Profile "My role" self-selection)
 CREATE POLICY "Users can update own role" ON public.event_members FOR UPDATE
   USING (auth.uid() = user_id)
@@ -442,6 +453,8 @@ CREATE POLICY "Users can update own posts" ON public.posts FOR UPDATE USING (aut
 CREATE POLICY "Admins can manage posts" ON public.posts FOR ALL USING (
     EXISTS (SELECT 1 FROM public.event_members WHERE user_id = auth.uid() AND event_id = posts.event_id AND role IN ('admin', 'super_admin'))
 );
+-- Super admin can delete/manage any post
+CREATE POLICY "Platform admins can manage all posts" ON public.posts FOR ALL USING (public.is_platform_admin(auth.uid()));
 
 -- LIKES
 CREATE POLICY "Likes are viewable" ON public.likes FOR SELECT USING (true);
@@ -469,22 +482,23 @@ CREATE POLICY "Users can view own messages" ON public.messages FOR SELECT USING 
 CREATE POLICY "Users can send messages" ON public.messages FOR INSERT WITH CHECK (auth.uid() = sender_id);
 CREATE POLICY "Receiver can mark as read" ON public.messages FOR UPDATE USING (auth.uid() = receiver_id);
 
--- ANNOUNCEMENTS
+-- ANNOUNCEMENTS: event admins or platform admin can create/update/delete
 CREATE POLICY "Announcements are viewable" ON public.announcements FOR SELECT USING (true);
 CREATE POLICY "Admins can create announcements" ON public.announcements FOR INSERT WITH CHECK (
-    EXISTS (SELECT 1 FROM public.event_members WHERE user_id = auth.uid() AND event_id = announcements.event_id AND role IN ('admin', 'super_admin'))
+    public.is_event_admin(announcements.event_id) OR public.is_platform_admin(auth.uid())
 );
 CREATE POLICY "Admins can update announcements" ON public.announcements FOR UPDATE USING (
-    EXISTS (SELECT 1 FROM public.event_members WHERE user_id = auth.uid() AND event_id = announcements.event_id AND role IN ('admin', 'super_admin'))
+    public.is_event_admin(announcements.event_id) OR public.is_platform_admin(auth.uid())
 );
 CREATE POLICY "Admins can delete announcements" ON public.announcements FOR DELETE USING (
-    EXISTS (SELECT 1 FROM public.event_members WHERE user_id = auth.uid() AND event_id = announcements.event_id AND role IN ('admin', 'super_admin'))
+    public.is_event_admin(announcements.event_id) OR public.is_platform_admin(auth.uid())
 );
 
 -- NOTIFICATIONS
 CREATE POLICY "Users see own notifications" ON public.notifications FOR SELECT USING (auth.uid() = user_id);
 CREATE POLICY "System can create notifications" ON public.notifications FOR INSERT WITH CHECK (true);
 CREATE POLICY "Users can mark as read" ON public.notifications FOR UPDATE USING (auth.uid() = user_id);
+CREATE POLICY "Users can delete own notifications" ON public.notifications FOR DELETE USING (auth.uid() = user_id);
 
 -- POINT RULES
 CREATE POLICY "Point rules viewable" ON public.point_rules FOR SELECT USING (true);
@@ -515,8 +529,10 @@ CREATE POLICY "Users can cancel own bookings" ON public.meeting_bookings FOR UPD
 
 -- CONNECTIONS
 CREATE POLICY "Connections viewable" ON public.connections FOR SELECT USING (auth.uid() = user_id OR auth.uid() = connected_user_id);
-CREATE POLICY "Users can connect" ON public.connections FOR INSERT WITH CHECK (auth.uid() = user_id);
-CREATE POLICY "Users can disconnect" ON public.connections FOR DELETE USING (auth.uid() = user_id);
+-- Allow INSERT when auth.uid() is user_id (sender) or connected_user_id (so accepter can create both rows when accepting)
+CREATE POLICY "Users can connect" ON public.connections FOR INSERT WITH CHECK (auth.uid() = user_id OR auth.uid() = connected_user_id);
+-- Either party can remove the connection (delete both rows)
+CREATE POLICY "Users can disconnect" ON public.connections FOR DELETE USING (auth.uid() = user_id OR auth.uid() = connected_user_id);
 
 CREATE POLICY "Connection requests viewable" ON public.connection_requests FOR SELECT USING (auth.uid() = requester_id OR auth.uid() = requested_user_id);
 CREATE POLICY "Users can send connection request" ON public.connection_requests FOR INSERT WITH CHECK (auth.uid() = requester_id);
@@ -570,6 +586,22 @@ CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW
     EXECUTE FUNCTION public.handle_new_user();
+
+-- Soft-delete own post (bypasses RLS; only updates if auth.uid() = user_id)
+CREATE OR REPLACE FUNCTION public.delete_own_post(post_id uuid)
+RETURNS boolean
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  UPDATE public.posts SET is_deleted = true WHERE id = post_id AND user_id = auth.uid();
+  RETURN FOUND;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.delete_own_post(uuid) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.delete_own_post(uuid) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.delete_own_post(uuid) TO anon;
 
 -- Auto-update likes_count on posts
 CREATE OR REPLACE FUNCTION public.update_likes_count()
@@ -754,6 +786,44 @@ CREATE TRIGGER add_creator_as_admin_after_insert
     FOR EACH ROW
     EXECUTE FUNCTION public.add_creator_as_event_admin();
 
+-- When a user joins a new event, copy connections from other events so they stay connected
+-- with people they already know who are also in this event
+CREATE OR REPLACE FUNCTION public.carry_connections_on_join_event()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+  connected_user uuid;
+BEGIN
+  FOR connected_user IN
+    SELECT DISTINCT c.connected_user_id
+    FROM public.connections c
+    WHERE c.user_id = NEW.user_id AND c.event_id != NEW.event_id
+  LOOP
+    IF EXISTS (
+      SELECT 1 FROM public.event_members em
+      WHERE em.event_id = NEW.event_id AND em.user_id = connected_user
+    ) THEN
+      INSERT INTO public.connections (event_id, user_id, connected_user_id)
+      VALUES (NEW.event_id, NEW.user_id, connected_user)
+      ON CONFLICT (event_id, user_id, connected_user_id) DO NOTHING;
+      INSERT INTO public.connections (event_id, user_id, connected_user_id)
+      VALUES (NEW.event_id, connected_user, NEW.user_id)
+      ON CONFLICT (event_id, user_id, connected_user_id) DO NOTHING;
+    END IF;
+  END LOOP;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS carry_connections_on_join_event ON public.event_members;
+CREATE TRIGGER carry_connections_on_join_event
+  AFTER INSERT ON public.event_members
+  FOR EACH ROW
+  EXECUTE FUNCTION public.carry_connections_on_join_event();
+
 
 -- ============================================
 -- SEED DATA — Default point rules template
@@ -784,7 +854,7 @@ CREATE TRIGGER add_creator_as_admin_after_insert
 DO $$
 DECLARE
   t text;
-  realtime_tables text[] := ARRAY['posts', 'likes', 'comments', 'messages', 'notifications', 'announcements', 'event_members', 'point_log'];
+  realtime_tables text[] := ARRAY['posts', 'likes', 'comments', 'messages', 'notifications', 'announcements', 'event_members', 'point_log', 'connection_requests', 'connections'];
 BEGIN
   FOREACH t IN ARRAY realtime_tables
   LOOP

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -9,6 +9,8 @@ import {
   Linking,
   ScrollView,
   useWindowDimensions,
+  AppState,
+  AppStateStatus,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import {
@@ -27,10 +29,13 @@ import {
   Home,
   Calendar,
   Trophy,
+  Store,
 } from 'lucide-react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuthStore } from '../stores/authStore';
 import { useEventStore } from '../stores/eventStore';
-import { supabase } from '../lib/supabase';
+import { supabase, withRetryAndRefresh } from '../lib/supabase';
+import { setAppBadgeCount } from '../lib/pushNotifications';
 import { colors } from '../constants/colors';
 
 // Set EXPO_PUBLIC_LIVE_WALL_URL in .env (e.g. http://localhost:3000) or it defaults to localhost
@@ -46,18 +51,114 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   const { width } = useWindowDimensions();
   const [visible, setVisible] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [isEventAdmin, setIsEventAdmin] = useState(false);
+  const insets = useSafeAreaInsets();
   const { user, logout } = useAuthStore();
-  const { currentEvent } = useEventStore();
+  const { currentEvent, adminCheckTick } = useEventStore();
+  const isPlatformAdmin = user?.is_platform_admin === true;
 
-  useEffect(() => {
-    if (!visible || !user?.id) return;
-    supabase
+  const fetchUnreadCount = useCallback(() => {
+    if (!user?.id) return;
+    let query = supabase
       .from('notifications')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.id)
-      .eq('is_read', false)
-      .then(({ count }) => setUnreadNotifications(count ?? 0));
-  }, [visible, user?.id]);
+      .eq('is_read', false);
+    if (currentEvent?.id) {
+      query = query.eq('event_id', currentEvent.id);
+    }
+    query.then(({ count }) => {
+      const n = count ?? 0;
+      setUnreadNotifications(n);
+      setAppBadgeCount(n);
+    });
+  }, [user?.id, currentEvent?.id]);
+
+  useEffect(() => {
+    fetchUnreadCount();
+  }, [fetchUnreadCount]);
+
+  useEffect(() => {
+    if (visible) fetchUnreadCount();
+  }, [visible, fetchUnreadCount]);
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const channel = supabase
+      .channel('notifications-badge')
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, fetchUnreadCount)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, fetchUnreadCount)
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [user?.id, fetchUnreadCount]);
+
+  const tryAnyEventAdmin = useCallback(async () => {
+    if (!user?.id) {
+      setIsEventAdmin(false);
+      return;
+    }
+    try {
+      const data = await withRetryAndRefresh(async () => {
+        const { data: d, error } = await supabase
+          .from('event_members')
+          .select('event_id')
+          .eq('user_id', user.id)
+          .in('role', ['admin', 'super_admin'])
+          .limit(1)
+          .maybeSingle();
+        if (error) throw error;
+        return d;
+      });
+      setIsEventAdmin(data != null);
+    } catch {
+      // keep previous state on error so Event admin menu doesn't disappear
+    }
+  }, [user?.id]);
+
+  const fetchEventAdminStatus = useCallback(async () => {
+    if (!user?.id) {
+      setIsEventAdmin(false);
+      return;
+    }
+    if (currentEvent?.id) {
+      try {
+        const data = await withRetryAndRefresh(async () => {
+          const { data: d, error } = await supabase
+            .from('event_members')
+            .select('role, roles')
+            .eq('event_id', currentEvent.id)
+            .eq('user_id', user.id)
+            .single();
+          if (error) throw error;
+          return d;
+        });
+        const row = data as { role?: string; roles?: string[] } | null;
+        const role = row?.role ?? 'attendee';
+        const roles = Array.isArray(row?.roles) ? row.roles : [];
+        setIsEventAdmin(role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin'));
+      } catch {
+        await tryAnyEventAdmin();
+      }
+      return;
+    }
+    await tryAnyEventAdmin();
+  }, [user?.id, currentEvent?.id, tryAnyEventAdmin]);
+
+  useEffect(() => {
+    fetchEventAdminStatus();
+  }, [fetchEventAdminStatus, adminCheckTick]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active' && user?.id) fetchEventAdminStatus();
+    });
+    return () => sub.remove();
+  }, [user?.id, fetchEventAdminStatus]);
+
+  // Refetch when menu opens so she always sees latest role (e.g. just made admin, or event selected after load)
+  useEffect(() => {
+    if (visible && user?.id) fetchEventAdminStatus();
+  }, [visible, user?.id, fetchEventAdminStatus]);
 
   const close = () => setVisible(false);
 
@@ -75,9 +176,13 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
 
   const handleLogout = async () => {
     close();
-    await logout();
-    onLogout?.();
-    router.replace('/(auth)/login');
+    try {
+      await logout();
+      onLogout?.();
+      router.replace('/(auth)/login');
+    } catch {
+      router.replace('/(auth)/login');
+    }
   };
 
   const openLiveWall = () => {
@@ -90,16 +195,29 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
 
   const menuWidth = Math.min(width * 0.8, 320);
 
+  const openMenu = () => {
+    setVisible(true);
+    // Refetch admin status as soon as they open the menu so "Event admin" shows for admins
+    fetchEventAdminStatus();
+  };
+
   return (
     <>
-      <TouchableOpacity onPress={() => setVisible(true)} style={styles.trigger} hitSlop={12}>
-        <Menu size={24} color={colors.text} />
+      <TouchableOpacity onPress={openMenu} style={styles.trigger} hitSlop={12}>
+        <View>
+          <Menu size={24} color={colors.text} />
+          {unreadNotifications > 0 && (
+            <View style={styles.badgeDot} pointerEvents="none">
+              <Text style={styles.badgeDotText}>{unreadNotifications > 99 ? '99+' : unreadNotifications}</Text>
+            </View>
+          )}
+        </View>
       </TouchableOpacity>
 
       <Modal visible={visible} transparent animationType="slide">
         <Pressable style={styles.overlay} onPress={close}>
           <Pressable
-            style={[styles.drawer, { width: menuWidth }]}
+            style={[styles.drawer, { width: menuWidth, paddingTop: insets.top }]}
             onPress={(e) => e.stopPropagation()}
           >
             <View style={styles.drawerHeader}>
@@ -112,10 +230,11 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
             <ScrollView style={styles.menuList} showsVerticalScrollIndicator={false}>
               <MenuItem icon={Home} label="Info" onPress={() => navigate('/(tabs)/home')} />
               <MenuItem icon={ImageIcon} label="Feed" onPress={() => navigate('/(tabs)/feed')} />
-              <MenuItem icon={Users} label="Community" onPress={() => navigate('/(tabs)/community')} />
               <MenuItem icon={Calendar} label="Agenda" onPress={() => navigate('/(tabs)/schedule')} />
+              <MenuItem icon={Users} label="Community" onPress={() => navigate('/(tabs)/community')} />
               <MenuItem icon={Trophy} label="Rank" onPress={() => navigate('/(tabs)/leaderboard')} />
               <MenuItem icon={LayoutGrid} label="Photo book" onPress={() => navigate('/(tabs)/photo-book')} />
+              <MenuItem icon={Store} label="B2B" onPress={() => navigate('/(tabs)/expo')} />
               <MenuItem icon={Tv} label="Live wall" onPress={openLiveWall} />
               <View style={styles.divider} />
               <MenuItem
@@ -134,7 +253,7 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                 badge={unreadNotifications > 0 ? unreadNotifications : undefined}
                 onPress={() => navigateToProfileScreen('/profile/notifications')}
               />
-              {user && currentEvent && (
+              {(isEventAdmin || isPlatformAdmin) && user && (
                 <MenuItem
                   icon={Shield}
                   label="Event admin"
@@ -187,6 +306,23 @@ const styles = StyleSheet.create({
   trigger: {
     padding: 8,
     marginLeft: 4,
+  },
+  badgeDot: {
+    position: 'absolute',
+    top: -4,
+    right: -6,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: colors.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 5,
+  },
+  badgeDotText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#fff',
   },
   overlay: {
     flex: 1,

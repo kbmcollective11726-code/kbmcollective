@@ -9,13 +9,20 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Image,
+  Modal,
+  Pressable,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
-import { Send, ChevronLeft } from 'lucide-react-native';
+import { Send, ChevronLeft, ImageIcon } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
-import { supabase } from '../../../../lib/supabase';
+import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
+import { createNotificationAndPush } from '../../../../lib/notifications';
+import { pickImage } from '../../../../lib/image';
+import { uploadImage } from '../../../../lib/image';
 import { colors } from '../../../../constants/colors';
 import { format } from 'date-fns';
 
@@ -26,6 +33,8 @@ type MessageRow = {
   content: string;
   is_read: boolean;
   created_at: string;
+  attachment_url?: string | null;
+  attachment_type?: string | null;
 };
 
 export default function ChatScreen() {
@@ -39,9 +48,12 @@ export default function ChatScreen() {
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [otherName, setOtherName] = useState<string>('');
   const [isConnected, setIsConnected] = useState<boolean | null>(null);
+  const [imageUri, setImageUri] = useState<string | null>(null);
+  const [expandedImageUrl, setExpandedImageUrl] = useState<string | null>(null);
 
   const fetchOtherUser = useCallback(async () => {
     if (!userId) return;
@@ -53,41 +65,54 @@ export default function ChatScreen() {
     if (!user?.id || !userId || !currentEvent?.id) {
       setMessages([]);
       setLoading(false);
+      setFetchError(null);
       return;
     }
+    setFetchError(null);
     try {
-      const { data, error } = await supabase
-        .from('messages')
-        .select('id, sender_id, receiver_id, content, is_read, created_at')
-        .eq('event_id', currentEvent.id)
-        .or(`and(sender_id.eq.${user.id},receiver_id.eq.${userId}),and(sender_id.eq.${userId},receiver_id.eq.${user.id})`)
-        .order('created_at', { ascending: true });
+      await withRetryAndRefresh(async () => {
+        const { data, error } = await supabase
+          .from('messages')
+          .select('id, sender_id, receiver_id, content, is_read, created_at, attachment_url, attachment_type')
+          .eq('event_id', currentEvent.id)
+          .or(`and(sender_id.eq.${user.id},receiver_id.eq.${userId}),and(sender_id.eq.${userId},receiver_id.eq.${user.id})`)
+          .order('created_at', { ascending: true });
 
-      if (error) throw error;
-      setMessages((data ?? []) as MessageRow[]);
+        if (error) throw error;
+        setMessages((data ?? []) as MessageRow[]);
 
-      await supabase
-        .from('messages')
-        .update({ is_read: true })
-        .eq('event_id', currentEvent.id)
-        .eq('receiver_id', user.id)
-        .eq('sender_id', userId);
+        await supabase
+          .from('messages')
+          .update({ is_read: true })
+          .eq('event_id', currentEvent.id)
+          .eq('receiver_id', user.id)
+          .eq('sender_id', userId);
+      });
     } catch (err) {
-      console.error('Messages fetch error:', err);
+      if (__DEV__) console.warn('Messages fetch error:', err);
       setMessages([]);
+      setFetchError('Error - page not loading');
     } finally {
       setLoading(false);
     }
   }, [user?.id, userId, currentEvent?.id]);
 
+  const goBack = useCallback(() => {
+    const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
+    if (returnPath) {
+      router.replace(returnPath as any);
+    } else {
+      router.back();
+    }
+  }, [from, router]);
+
   useEffect(() => {
-    if (from) {
-      const returnPath = decodeURIComponent(from);
+    if (from && typeof from === 'string') {
       navigation.setOptions({
         headerBackVisible: false,
         headerLeft: () => (
           <TouchableOpacity
-            onPress={() => router.replace(returnPath as any)}
+            onPress={goBack}
             style={{ padding: 8, marginLeft: 4 }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
@@ -96,7 +121,7 @@ export default function ChatScreen() {
         ),
       });
     }
-  }, [from, navigation, router]);
+  }, [from, goBack, navigation]);
 
   useEffect(() => {
     fetchOtherUser();
@@ -108,18 +133,25 @@ export default function ChatScreen() {
       setLoading(false);
       return;
     }
-    const { data } = await supabase
-      .from('connections')
-      .select('id')
-      .eq('event_id', currentEvent.id)
-      .eq('user_id', user.id)
-      .eq('connected_user_id', userId)
-      .maybeSingle();
-    const connected = !!data;
-    setIsConnected(connected);
-    if (!connected) setLoading(false);
+    try {
+      const { data } = await supabase
+        .from('connections')
+        .select('id')
+        .eq('event_id', currentEvent.id)
+        .eq('user_id', user.id)
+        .eq('connected_user_id', userId)
+        .maybeSingle();
+      const connected = !!data;
+      setIsConnected(connected);
+      if (!connected) setLoading(false);
+    } catch {
+      setIsConnected(false);
+      setLoading(false);
+      setFetchError('Error - page not loading');
+    }
   }, [user?.id, userId, currentEvent?.id]);
 
+  // Like Info: run and wait. No timeout so first try can complete.
   useEffect(() => {
     checkConnection();
   }, [checkConnection]);
@@ -141,7 +173,7 @@ export default function ChatScreen() {
           table: 'messages',
           filter: `event_id=eq.${currentEvent.id}`,
         },
-        () => fetchMessages()
+        () => { fetchMessages().catch(() => {}); }
       )
       .subscribe();
     return () => {
@@ -151,32 +183,73 @@ export default function ChatScreen() {
 
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || !user?.id || !userId || !currentEvent?.id) return;
+    const hasImage = !!imageUri;
+    if ((!text && !hasImage) || !user?.id || !userId || !currentEvent?.id) return;
     setSending(true);
     setInput('');
+    const imageToSend = imageUri;
+    setImageUri(null);
     try {
+      let attachmentUrl: string | null = null;
+      if (imageToSend) {
+        const url = await uploadImage(imageToSend, currentEvent.id, user.id, 'event-photos', { folder: 'chat' });
+        attachmentUrl = url;
+      }
       const { error } = await supabase.from('messages').insert({
         event_id: currentEvent.id,
         sender_id: user.id,
         receiver_id: userId,
-        content: text,
+        content: text || '',
+        attachment_url: attachmentUrl,
+        attachment_type: attachmentUrl ? 'image' : null,
       });
       if (error) throw error;
+      const senderName = user.full_name ?? 'Someone';
+      const notifTitle = `New message from ${senderName}`;
+      const notifBody = attachmentUrl && !text ? 'Sent a photo' : (text || '').slice(0, 100);
+      await createNotificationAndPush(
+        userId,
+        currentEvent.id,
+        'message',
+        notifTitle,
+        notifBody || null,
+        { chat_user_id: user.id }
+      );
       await fetchMessages();
     } catch (err) {
       console.error('Send message error:', err);
       setInput(text);
+      setImageUri(imageToSend || null);
+      Alert.alert('Send failed', err instanceof Error ? err.message : 'Could not send message.');
     } finally {
       setSending(false);
     }
   };
 
+  const handlePickImage = async () => {
+    const uri = await pickImage('library');
+    if (uri) setImageUri(uri);
+  };
+
   const renderItem = ({ item }: { item: MessageRow }) => {
     const isMe = item.sender_id === user?.id;
+    const hasAttachment = !!item.attachment_url;
+    const contentTrimmed = (item.content || '').trim();
     return (
       <View style={[styles.bubbleWrap, isMe ? styles.bubbleWrapMe : styles.bubbleWrapThem]}>
         <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
-          <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.content}</Text>
+          {hasAttachment ? (
+            <TouchableOpacity
+              onPress={() => setExpandedImageUrl(item.attachment_url!)}
+              activeOpacity={0.9}
+              style={styles.attachmentWrap}
+            >
+              <Image source={{ uri: item.attachment_url! }} style={styles.attachmentImage} resizeMode="cover" />
+            </TouchableOpacity>
+          ) : null}
+          {contentTrimmed !== '' && contentTrimmed !== ' ' ? (
+            <Text style={[styles.bubbleText, isMe && styles.bubbleTextMe]}>{item.content}</Text>
+          ) : null}
           <Text style={[styles.time, isMe && styles.timeMe]}>{format(new Date(item.created_at), 'h:mm a')}</Text>
         </View>
       </View>
@@ -220,12 +293,43 @@ export default function ChatScreen() {
     );
   }
 
+  if (fetchError) {
+    return (
+      <SafeAreaView style={styles.container} edges={['bottom']}>
+        <View style={styles.placeholder}>
+          <Text style={styles.placeholderText}>Error - page not loading</Text>
+          <Text style={styles.errorSubtext}>Tap Try again or check your connection.</Text>
+          <TouchableOpacity
+            onPress={() => {
+              setFetchError(null);
+              setLoading(true);
+              fetchMessages();
+            }}
+            style={styles.retryBtn}
+            activeOpacity={0.8}
+          >
+            <Text style={styles.retryBtnText}>Try again</Text>
+          </TouchableOpacity>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  const canSend = (input.trim() || imageUri) && !sending;
+
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
+      <Modal visible={!!expandedImageUrl} transparent animationType="fade">
+        <Pressable style={styles.modalBackdrop} onPress={() => setExpandedImageUrl(null)}>
+          {expandedImageUrl ? (
+            <Image source={{ uri: expandedImageUrl }} style={styles.expandedImage} resizeMode="contain" />
+          ) : null}
+        </Pressable>
+      </Modal>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
       >
         <FlatList
           data={messages}
@@ -238,7 +342,23 @@ export default function ChatScreen() {
             </View>
           }
         />
+        {imageUri ? (
+          <View style={styles.previewRow}>
+            <Image source={{ uri: imageUri }} style={styles.previewThumb} resizeMode="cover" />
+            <TouchableOpacity onPress={() => setImageUri(null)} style={styles.removePreviewBtn}>
+              <Text style={styles.removePreviewText}>Remove</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
         <View style={styles.inputRow}>
+          <TouchableOpacity
+            onPress={handlePickImage}
+            disabled={sending}
+            style={styles.attachButton}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <ImageIcon size={24} color={colors.primary} />
+          </TouchableOpacity>
           <TextInput
             style={styles.input}
             value={input}
@@ -250,9 +370,9 @@ export default function ChatScreen() {
             editable={!sending}
           />
           <TouchableOpacity
-            style={[styles.sendButton, (!input.trim() || sending) && styles.sendButtonDisabled]}
+            style={[styles.sendButton, (!canSend) && styles.sendButtonDisabled]}
             onPress={sendMessage}
-            disabled={!input.trim() || sending}
+            disabled={!canSend}
           >
             {sending ? (
               <ActivityIndicator size="small" color={colors.textOnPrimary} />
@@ -287,6 +407,21 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
   },
+  errorSubtext: {
+    fontSize: 14,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 16,
+  },
+  retryBtn: {
+    marginTop: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    backgroundColor: colors.primary,
+    borderRadius: 10,
+  },
+  retryBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
   connectFirstButton: {
     marginTop: 16,
     paddingVertical: 12,
@@ -374,5 +509,55 @@ const styles = StyleSheet.create({
   },
   sendButtonDisabled: {
     opacity: 0.5,
+  },
+  attachButton: {
+    padding: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachmentWrap: {
+    marginBottom: 4,
+    borderRadius: 12,
+    overflow: 'hidden',
+    maxWidth: 240,
+    maxHeight: 240,
+  },
+  attachmentImage: {
+    width: 240,
+    height: 240,
+  },
+  previewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    gap: 12,
+  },
+  previewThumb: {
+    width: 56,
+    height: 56,
+    borderRadius: 8,
+  },
+  removePreviewBtn: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+  },
+  removePreviewText: {
+    fontSize: 14,
+    color: colors.primary,
+    fontWeight: '600',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  expandedImage: {
+    width: '100%',
+    height: '80%',
   },
 });

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -21,12 +22,12 @@ import { User, Mic, Store, Shield, ChevronRight } from 'lucide-react-native';
 
 type Row = { user_id: string; full_name: string; avatar_url: string | null; role: string; roles: string[]; points: number };
 
-const ROLE_OPTIONS = [
+const ROLE_OPTIONS: { key: string; label: string; icon: typeof User }[] = [
   { key: 'attendee', label: 'Attendee', icon: User },
   { key: 'speaker', label: 'Speaker', icon: Mic },
   { key: 'vendor', label: 'Vendor', icon: Store },
   { key: 'admin', label: 'Admin', icon: Shield },
-] as const;
+];
 
 export default function AdminMembersScreen() {
   const { currentEvent } = useEventStore();
@@ -36,6 +37,29 @@ export default function AdminMembersScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [selectedMember, setSelectedMember] = useState<Row | null>(null);
   const [roleSaving, setRoleSaving] = useState(false);
+  const [canChangeRoles, setCanChangeRoles] = useState(false);
+
+  const fetchCurrentUserRole = useCallback(async () => {
+    if (!currentEvent?.id || !currentUser?.id) {
+      setCanChangeRoles(false);
+      return;
+    }
+    const { data } = await supabase
+      .from('event_members')
+      .select('role, roles')
+      .eq('event_id', currentEvent.id)
+      .eq('user_id', currentUser.id)
+      .single();
+    const row = data as { role?: string; roles?: string[] } | null;
+    const role = row?.role ?? 'attendee';
+    const roles = Array.isArray(row?.roles) ? row.roles : [];
+    const isAdmin = role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin');
+    setCanChangeRoles(!!isAdmin);
+  }, [currentEvent?.id, currentUser?.id]);
+
+  useEffect(() => {
+    fetchCurrentUserRole();
+  }, [fetchCurrentUserRole]);
 
   const fetchMembers = async () => {
     if (!currentEvent?.id) {
@@ -74,6 +98,12 @@ export default function AdminMembersScreen() {
     fetchMembers();
   }, [currentEvent?.id]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (currentEvent?.id) fetchMembers().catch(() => {});
+    }, [currentEvent?.id])
+  );
+
   const onRefresh = async () => {
     setRefreshing(true);
     await fetchMembers();
@@ -81,14 +111,15 @@ export default function AdminMembersScreen() {
   };
 
   const toggleMemberRole = (member: Row, roleKey: string) => {
-    const hasAdmin = member.roles.includes('admin') || member.roles.includes('super_admin');
-    const newRoles = member.roles.includes(roleKey)
+    const hasRole = member.roles.includes(roleKey);
+    const newRoles = hasRole
       ? member.roles.filter((r) => r !== roleKey)
       : [...member.roles, roleKey];
     if (newRoles.length === 0) return;
     const isSelf = member.user_id === currentUser?.id;
-    const removingAdmin = (roleKey === 'admin' || roleKey === 'super_admin') && isSelf;
-    if (removingAdmin && hasAdmin) {
+    const hadAdmin = member.roles.includes('admin') || member.roles.includes('super_admin');
+    const removingAdmin = (roleKey === 'admin' || roleKey === 'super_admin') && hasRole && isSelf;
+    if (removingAdmin && hadAdmin) {
       Alert.alert(
         'Remove your admin role?',
         'You will lose admin access for this event. Continue?',
@@ -102,23 +133,35 @@ export default function AdminMembersScreen() {
     doSaveRoles(member, newRoles);
   };
 
+  const primaryRole = (roles: string[]) =>
+    roles.includes('admin') ? 'admin' : roles.includes('vendor') ? 'vendor' : roles.includes('speaker') ? 'speaker' : roles[0] ?? 'attendee';
+
   const doSaveRoles = async (member: Row, newRoles: string[]) => {
     if (!currentEvent?.id) return;
     setRoleSaving(true);
     try {
+      const primary = primaryRole(newRoles);
       const { error } = await supabase
         .from('event_members')
-        .update({ roles: newRoles })
+        .update({ role: primary, roles: newRoles })
         .eq('event_id', currentEvent.id)
         .eq('user_id', member.user_id);
       if (error) throw error;
-      const updated = { ...member, roles: newRoles, role: newRoles[0] ?? member.role };
+      const updated = { ...member, roles: newRoles, role: primary };
       setRows((prev) =>
         prev.map((r) => (r.user_id === member.user_id ? updated : r))
       );
       setSelectedMember((prev) => (prev?.user_id === member.user_id ? updated : prev));
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Could not update roles.');
+      const e = err as { message?: string; details?: string; code?: string; hint?: string; error?: { message?: string } };
+      const msg =
+        e?.message ??
+        e?.error?.message ??
+        (err instanceof Error ? err.message : null) ??
+        'Could not update role.';
+      const extra = [e?.details, e?.hint, e?.code].filter(Boolean).join(' · ');
+      if (__DEV__) console.error('Role update error:', err);
+      Alert.alert('Error', String(msg).trim() + (extra ? `\n\n${extra}` : ''));
     } finally {
       setRoleSaving(false);
     }
@@ -154,7 +197,17 @@ export default function AdminMembersScreen() {
         renderItem={({ item }) => (
           <TouchableOpacity
             style={styles.row}
-            onPress={() => setSelectedMember(item)}
+            onPress={() => {
+              if (!canChangeRoles) {
+                Alert.alert(
+                  'Change role',
+                  'Only event admins and super admins can change member roles.',
+                  [{ text: 'OK' }]
+                );
+                return;
+              }
+              setSelectedMember(item);
+            }}
             activeOpacity={0.7}
           >
             <Avatar uri={item.avatar_url} name={item.full_name} size={44} />
@@ -187,6 +240,7 @@ export default function AdminMembersScreen() {
                   </Text>
                 </View>
                 <Text style={styles.modalTitle}>Roles (select all that apply)</Text>
+                <Text style={styles.modalSubtitle}>e.g. Speaker + Vendor</Text>
                 {ROLE_OPTIONS.map(({ key, label, icon: Icon }) => (
                   <TouchableOpacity
                     key={key}
@@ -267,7 +321,8 @@ const styles = StyleSheet.create({
   modalHeader: { alignItems: 'center', marginBottom: 20 },
   modalName: { fontSize: 18, fontWeight: '700', color: colors.text, marginTop: 8 },
   modalCurrentRole: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
-  modalTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 12 },
+  modalTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
+  modalSubtitle: { fontSize: 13, color: colors.textMuted, marginBottom: 12 },
   roleOption: {
     flexDirection: 'row',
     alignItems: 'center',

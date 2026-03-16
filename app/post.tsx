@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,7 @@ import { useAuthStore } from '../stores/authStore';
 import { useEventStore } from '../stores/eventStore';
 import { pickImage, uploadImage, compressAndHashImage } from '../lib/image';
 import { awardPoints } from '../lib/points';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseStorage } from '../lib/supabase';
 import { colors } from '../constants/colors';
 
 export default function PostScreen() {
@@ -30,6 +30,9 @@ export default function PostScreen() {
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [caption, setCaption] = useState('');
   const [uploading, setUploading] = useState(false);
+  const safetyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const killSwitchRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const postStartTimeRef = useRef<number>(0);
 
   const handlePick = async (source: 'camera' | 'library') => {
     const uri = await pickImage(source);
@@ -46,11 +49,73 @@ export default function PostScreen() {
       return;
     }
     setUploading(true);
+    postStartTimeRef.current = Date.now();
+    const postTimeoutMs = 90_000;
+    const safetyMs = 95_000;
+    const killSwitchMs = 90_000;
+    safetyTimerRef.current = setTimeout(() => {
+      setUploading(false);
+      safetyTimerRef.current = null;
+    }, safetyMs);
+    killSwitchRef.current = setInterval(() => {
+      if (Date.now() - postStartTimeRef.current >= killSwitchMs) {
+        if (killSwitchRef.current) clearInterval(killSwitchRef.current);
+        killSwitchRef.current = null;
+        setUploading(false);
+        Alert.alert('Post timed out', 'Check your connection and try again.');
+      }
+    }, 2000);
+    const timeoutPromise = new Promise<never>((_, rej) =>
+      setTimeout(() => rej(new Error('Post timed out. Check your connection and try again.')), postTimeoutMs)
+    );
     try {
-      const { compressedUri, imageHash } = await compressAndHashImage(photoUri);
+      await Promise.race([
+        (async () => {
+      const compressTimeoutMs = 30_000;
+      const { compressedUri, imageHash, base64 } = await Promise.race([
+        compressAndHashImage(photoUri),
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('Photo preparation timed out. Try a smaller photo.')), compressTimeoutMs)
+        ),
+      ]);
+
+      // On Android use client with default fetch so insert/select don't hang
+      const db = Platform.OS === 'android' ? supabaseStorage : supabase;
+      // Prevent double-posting the same picture in this event
+      const duplicateCheckTimeoutMs = 12_000;
+      let existing: { id: string } | null = null;
+      try {
+        const result = await Promise.race([
+          db
+            .from('posts')
+            .select('id')
+            .eq('event_id', currentEvent.id)
+            .eq('user_id', user.id)
+            .eq('image_hash', imageHash)
+            .eq('is_deleted', false)
+            .limit(1)
+            .maybeSingle(),
+          new Promise<never>((_, rej) =>
+            setTimeout(() => rej(new Error('Connection slow')), duplicateCheckTimeoutMs)
+          ),
+        ]);
+        existing = (result as { data: { id: string } | null }).data;
+      } catch {
+        existing = null;
+      }
+      if (existing) {
+        Alert.alert(
+          'Same photo already posted',
+          'You’ve already posted this photo in this event. Choose a different photo.',
+          [{ text: 'OK' }]
+        );
+        setUploading(false);
+        return;
+      }
+
       let imageUrl: string | null = null;
       try {
-        imageUrl = await uploadImage(compressedUri, currentEvent.id, user.id, 'event-photos', { skipCompress: true });
+        imageUrl = await uploadImage(compressedUri, currentEvent.id, user.id, 'event-photos', { skipCompress: true, base64 });
       } catch (uploadErr) {
         const msg = uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
         Alert.alert('Upload failed', msg || 'Could not upload the photo. Try again.');
@@ -62,7 +127,9 @@ export default function PostScreen() {
         setUploading(false);
         return;
       }
-      const { data: post, error } = await supabase
+      const savedToStorage = imageUrl.includes('supabase.co/storage');
+      const dbTimeoutMs = Platform.OS === 'android' ? 45_000 : 15_000;
+      const insertPromise = db
         .from('posts')
         .insert({
           event_id: currentEvent.id,
@@ -73,24 +140,65 @@ export default function PostScreen() {
         })
         .select('id')
         .single();
+      const { data: post, error } = await Promise.race([
+        insertPromise,
+        new Promise<never>((_, rej) =>
+          setTimeout(() => rej(new Error('Saving post timed out. Try again.')), dbTimeoutMs)
+        ),
+      ]);
 
       if (error) throw error;
 
-      const result = await awardPoints(user.id, currentEvent.id, 'post_photo', post?.id);
-      if (!result.awarded && result.points === 0) {
-        Toast.show({
-          type: 'info',
-          text1: 'Same photo already posted',
-          text2: 'No points this time.',
-        });
+      if (Platform.OS === 'android') {
+        awardPoints(user.id, currentEvent.id, 'post_photo', post?.id).catch(() => {});
+      } else {
+        const awardTimeoutMs = 15_000;
+        try {
+          const result = await Promise.race([
+            awardPoints(user.id, currentEvent.id, 'post_photo', post?.id),
+            new Promise<{ awarded: boolean; points: number }>((resolve) =>
+              setTimeout(() => resolve({ awarded: false, points: 0 }), awardTimeoutMs)
+            ),
+          ]);
+          if (!result.awarded && result.points === 0) {
+            try { Toast.show({ type: 'info', text1: 'Same photo already posted', text2: 'No points this time.' }); } catch (_) {}
+          }
+        } catch (_) {
+          // Points failed; post is still saved
+        }
       }
       setPhotoUri(null);
       setCaption('');
+      if (safetyTimerRef.current) {
+        clearTimeout(safetyTimerRef.current);
+        safetyTimerRef.current = null;
+      }
+      if (killSwitchRef.current) {
+        clearInterval(killSwitchRef.current);
+        killSwitchRef.current = null;
+      }
+      if (savedToStorage) {
+        const message = Platform.OS === 'android'
+          ? 'Your photo was posted.'
+          : 'Your photo was saved. (Cloud storage was unavailable, so it used backup storage.)';
+        setTimeout(() => Alert.alert('Photo posted', message), 150);
+      }
       router.back();
+        })(),
+        timeoutPromise,
+      ]);
     } catch (err) {
       console.error('Post error:', err);
       Alert.alert('Error', err instanceof Error ? err.message : 'Failed to post.');
     } finally {
+      if (safetyTimerRef.current) {
+        clearTimeout(safetyTimerRef.current);
+        safetyTimerRef.current = null;
+      }
+      if (killSwitchRef.current) {
+        clearInterval(killSwitchRef.current);
+        killSwitchRef.current = null;
+      }
       setUploading(false);
     }
   };
@@ -106,7 +214,7 @@ export default function PostScreen() {
           <TouchableOpacity onPress={handleClose} hitSlop={12}>
             <X size={24} color={colors.text} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Post a photo</Text>
+          <Text style={[styles.headerTitle, { flex: 1, marginLeft: 12 }]}>Post a photo</Text>
           <View style={{ width: 24 }} />
         </View>
         <View style={styles.placeholder}>
@@ -122,7 +230,7 @@ export default function PostScreen() {
         <TouchableOpacity onPress={handleClose} hitSlop={12}>
           <X size={24} color={colors.text} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Post a photo</Text>
+        <Text style={[styles.headerTitle, { flex: 1, marginLeft: 12 }]}>Post a photo</Text>
         <View style={{ width: 24 }} />
       </View>
       <KeyboardAvoidingView
@@ -206,6 +314,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: '600',
     color: colors.text,
+    textAlign: 'left',
   },
   scroll: {
     padding: 16,

@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ImagePlus, X } from 'lucide-react-native';
@@ -157,7 +159,8 @@ export default function AdminInfoPageScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}>
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
         <View style={styles.codeCard}>
           <Text style={styles.codeLabel}>Event code (share with attendees to join)</Text>
           <Text style={styles.codeValue}>{currentEvent.event_code ?? '—'}</Text>
@@ -280,6 +283,7 @@ export default function AdminInfoPageScreen() {
           {saving ? <ActivityIndicator color={colors.textOnPrimary} size="small" /> : <Text style={styles.buttonText}>Save info page</Text>}
         </TouchableOpacity>
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }

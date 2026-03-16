@@ -1,0 +1,7 @@
+# Supabase project config (used when running supabase locally and for function deploy options).
+# get-r2-upload-url: skip gateway JWT verify so the function receives the request and validates the JWT itself (fixes 401 Invalid JWT with some clients).
+[functions.get-r2-upload-url]
+verify_jwt = false
+
+[functions.upload-image-to-r2]
+verify_jwt = false

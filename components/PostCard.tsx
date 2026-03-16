@@ -1,5 +1,6 @@
+import { memo } from 'react';
 import { View, Text, Image, TouchableOpacity, StyleSheet, Platform } from 'react-native';
-import { Heart, MessageCircle } from 'lucide-react-native';
+import { Heart, MessageCircle, Trash2 } from 'lucide-react-native';
 import type { Post } from '../lib/types';
 import { colors } from '../constants/colors';
 import Avatar from './Avatar';
@@ -10,14 +11,17 @@ interface PostCardProps {
   onLike: () => void;
   onComment: () => void;
   onPressUser?: (userId: string) => void;
+  onPressImage?: () => void;
   isOwnPost?: boolean;
+  onDelete?: () => void;
+  likeDisabled?: boolean;
 }
 
-export default function PostCard({ post, onLike, onComment, onPressUser, isOwnPost }: PostCardProps) {
+function PostCard({ post, onLike, onComment, onPressUser, onPressImage, isOwnPost, onDelete, likeDisabled }: PostCardProps) {
   const displayName = post.user?.full_name ?? 'Someone';
   const userId = post.user_id;
 
-  const headerContent = (
+  const headerLeft = (
     <>
       <Avatar uri={post.user?.avatar_url} name={post.user?.full_name} size={40} />
       <View style={styles.headerText}>
@@ -32,20 +36,31 @@ export default function PostCard({ post, onLike, onComment, onPressUser, isOwnPo
       <View style={styles.header}>
         {onPressUser && userId ? (
           <TouchableOpacity style={styles.headerTouch} onPress={() => onPressUser(userId)} activeOpacity={0.7}>
-            {headerContent}
+            {headerLeft}
           </TouchableOpacity>
         ) : (
-          headerContent
+          headerLeft
+        )}
+        {isOwnPost && onDelete && (
+          <TouchableOpacity style={styles.deleteBtn} onPress={onDelete} hitSlop={12}>
+            <Trash2 size={20} color={colors.textMuted} />
+          </TouchableOpacity>
         )}
       </View>
-      <Image source={{ uri: post.image_url }} style={styles.image} resizeMode="cover" />
+      {onPressImage ? (
+        <TouchableOpacity style={styles.imageWrap} onPress={onPressImage} activeOpacity={1}>
+          <Image source={{ uri: post.image_url }} style={styles.image} resizeMode="cover" />
+        </TouchableOpacity>
+      ) : (
+        <Image source={{ uri: post.image_url }} style={styles.image} resizeMode="cover" />
+      )}
       {post.caption ? <Text style={styles.caption}>{post.caption}</Text> : null}
       <View style={styles.actions}>
         <TouchableOpacity
-          style={[styles.actionBtn, isOwnPost && styles.actionBtnDisabled]}
-          onPress={isOwnPost ? undefined : onLike}
+          style={[styles.actionBtn, (isOwnPost || likeDisabled) && styles.actionBtnDisabled]}
+          onPress={isOwnPost || likeDisabled ? undefined : onLike}
           hitSlop={12}
-          disabled={isOwnPost}
+          disabled={isOwnPost || likeDisabled}
         >
           <Heart
             size={22}
@@ -65,6 +80,8 @@ export default function PostCard({ post, onLike, onComment, onPressUser, isOwnPo
     </View>
   );
 }
+
+export default memo(PostCard);
 
 const cardShadow = Platform.select({
   ios: {
@@ -112,6 +129,10 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 2,
   },
+  imageWrap: {
+    width: '100%',
+    aspectRatio: 4 / 3,
+  },
   image: {
     width: '100%',
     aspectRatio: 4 / 3,
@@ -143,5 +164,8 @@ const styles = StyleSheet.create({
   actionText: {
     fontSize: 14,
     color: colors.textSecondary,
+  },
+  deleteBtn: {
+    padding: 8,
   },
 });

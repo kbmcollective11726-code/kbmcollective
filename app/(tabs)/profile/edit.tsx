@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -28,14 +28,22 @@ export default function EditProfileScreen() {
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user, updateProfile, refreshUser } = useAuthStore();
 
+  const goBack = useCallback(() => {
+    const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
+    if (returnPath) {
+      router.replace(returnPath as any);
+    } else {
+      router.back();
+    }
+  }, [from, router]);
+
   useEffect(() => {
     if (from && typeof from === 'string') {
-      const returnPath = decodeURIComponent(from);
       navigation.setOptions({
         headerBackVisible: false,
         headerLeft: () => (
           <TouchableOpacity
-            onPress={() => router.replace(returnPath as any)}
+            onPress={goBack}
             style={{ marginLeft: 8, padding: 4 }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
@@ -44,7 +52,7 @@ export default function EditProfileScreen() {
         ),
       });
     }
-  }, [from, navigation, router]);
+  }, [from, goBack, navigation]);
   const [fullName, setFullName] = useState('');
   const [title, setTitle] = useState('');
   const [company, setCompany] = useState('');
@@ -104,8 +112,9 @@ export default function EditProfileScreen() {
       });
       if (error) throw new Error(error);
       await refreshUser();
-      if (from && typeof from === 'string') {
-        router.replace(decodeURIComponent(from) as any);
+      const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : '';
+      if (returnPath) {
+        router.replace(returnPath as any);
       } else {
         router.back();
       }

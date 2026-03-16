@@ -1,120 +1,251 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
-  TouchableOpacity,
   StyleSheet,
+  TouchableOpacity,
   ScrollView,
   RefreshControl,
   ActivityIndicator,
-  Linking,
   Alert,
-  Modal,
+  Linking,
   Pressable,
+  Modal,
+  AppState,
+  AppStateStatus,
+  Dimensions,
 } from 'react-native';
+import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
-import { ChevronRight, Edit3, Bell, Users, LogOut, Shield, ExternalLink, Mic, Store, User } from 'lucide-react-native';
+import { useRouter, usePathname } from 'expo-router';
+import { User, Mic, Store, ExternalLink, LogOut, Calendar, Building2, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
-import { supabase } from '../../../lib/supabase';
+import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, startForegroundRefresh, getErrorMessage } from '../../../lib/supabase';
+import { addDebugLog } from '../../../lib/debugLog';
 import { colors } from '../../../constants/colors';
 import Avatar from '../../../components/Avatar';
 
-export default function ProfileIndexScreen() {
+export default function ProfileScreen() {
   const router = useRouter();
-  const { user, logout, refreshUser } = useAuthStore();
+  const pathname = usePathname();
+  const { user, refreshUser, logout } = useAuthStore();
   const { currentEvent } = useEventStore();
-  const [points, setPoints] = useState<number | null>(null);
-  const [postsCount, setPostsCount] = useState<number>(0);
-  const [isEventAdmin, setIsEventAdmin] = useState(false);
-  const [myRoles, setMyRoles] = useState<string[]>(['attendee']);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loggingOut, setLoggingOut] = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [fetchErrorDetail, setFetchErrorDetail] = useState<string | null>(null);
+  const [points, setPoints] = useState<number | null>(null);
+  const [postsCount, setPostsCount] = useState(0);
+  const [isEventAdmin, setIsEventAdmin] = useState(false);
+  const [myRoles, setMyRoles] = useState<string[]>(['attendee']);
   const [showRoleModal, setShowRoleModal] = useState(false);
   const [roleSaving, setRoleSaving] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
 
-  const fetchUnreadNotifications = () => {
-    if (!user?.id) return;
-    supabase
-      .from('notifications')
-      .select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id)
-      .eq('is_read', false)
-      .then(({ count }) => setUnreadNotifications(count ?? 0));
-  };
+  const fetchPointsAndRole = useCallback(async (): Promise<boolean> => {
+    if (!user?.id) return false;
+    if (currentEvent?.id) {
+      // Run each query so one failure doesn't take down the whole stats block
+      let pointsOk = false;
+      let postsOk = false;
+      let roleOk = false;
+      try {
+        const memberRes = await supabase.from('event_members').select('points').eq('event_id', currentEvent.id).eq('user_id', user.id).single();
+        if (!memberRes.error) {
+          setPoints(memberRes.data?.points ?? 0);
+          pointsOk = true;
+        }
+      } catch (_) {}
+      try {
+        let postsCount = 0;
+        const postsRes = await supabase.from('posts').select('id', { count: 'exact', head: true }).eq('event_id', currentEvent.id).eq('user_id', user.id).eq('is_deleted', false);
+        if (!postsRes.error && postsRes.count != null) {
+          postsCount = postsRes.count;
+        } else {
+          // Fallback: some setups fail on count header; fetch ids and use length so posts always show
+          const { data: postIds } = await supabase.from('posts').select('id').eq('event_id', currentEvent.id).eq('user_id', user.id).eq('is_deleted', false).limit(500);
+          postsCount = postIds?.length ?? 0;
+        }
+        setPostsCount(postsCount);
+        postsOk = true;
+      } catch (e) {
+        if (__DEV__) console.warn('Profile posts count error:', e);
+      }
+      try {
+        const roleRes = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single();
+        if (!roleRes.error) {
+          const data = roleRes.data as { role?: string; roles?: string[] } | null;
+          const role = data?.role ?? 'attendee';
+          const roles = Array.isArray(data?.roles) ? data.roles : [];
+          setIsEventAdmin(role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin'));
+          setMyRoles(['attendee', 'speaker', 'vendor'].includes(role) ? [role] : ['attendee']);
+          roleOk = true;
+        }
+      } catch (_) {}
+      if (!pointsOk) setPoints(0);
+      if (!postsOk) setPostsCount(0);
+      if (!roleOk) setMyRoles(['attendee']);
+      return pointsOk || postsOk || roleOk;
+    }
+    setPoints(null);
+    setPostsCount(0);
+    setIsEventAdmin(false);
+    setMyRoles(['attendee']);
+    return true;
+  }, [user?.id, currentEvent?.id]);
+
+  const loadInProgressRef = useRef(false);
+  const autoRetryScheduledRef = useRef(false);
+  const loadStats = useCallback(async () => {
+    // #region agent log
+    fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'entry',data:{inFlight:loadInProgressRef.current,hasUser:!!user?.id},timestamp:Date.now(),hypothesisId:'H1,H3,H5'})}).catch(()=>{});
+    // #endregion
+    if (!user?.id) {
+      // #region agent log
+      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'early return no user',data:{},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
+      // #endregion
+      setLoading(false);
+      setFetchError(null);
+      return;
+    }
+    if (loadInProgressRef.current) {
+      // #region agent log
+      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'skip in-flight',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      // #endregion
+      return;
+    }
+    loadInProgressRef.current = true;
+    setFetchError(null);
+    setFetchErrorDetail(null);
+    addDebugLog('Profile', 'Load started');
+    try {
+      const ok = await withRetryAndRefresh(() => fetchPointsAndRole());
+      if (ok) {
+        autoRetryScheduledRef.current = false;
+        setFetchError(null);
+        setFetchErrorDetail(null);
+      } else {
+        setFetchError('Error - page not loading');
+        setFetchErrorDetail('One or more requests failed');
+      }
+    } catch (err: unknown) {
+      const msg = getErrorMessage(err);
+      // #region agent log
+      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'loadStats catch',data:{msg:msg.slice(0,120)},timestamp:Date.now(),hypothesisId:'H2,H4'})}).catch(()=>{});
+      // #endregion
+      addDebugLog('Profile', 'Load failed', msg);
+      if (__DEV__) console.warn('Profile stats error:', err);
+      setFetchError('Error - page not loading');
+      setFetchErrorDetail(msg);
+    } finally {
+      // #region agent log
+      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'loadStats finally',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+      // #endregion
+      loadInProgressRef.current = false;
+      setLoading(false);
+    }
+  }, [user?.id, fetchPointsAndRole]);
+
 
   useEffect(() => {
-    fetchUnreadNotifications();
-  }, [user?.id]);
-
-  useFocusEffect(
-    useCallback(() => {
-      fetchUnreadNotifications();
-    }, [user?.id])
-  );
-
-  const loadStats = async () => {
     if (!user?.id) {
       setLoading(false);
       return;
     }
-    try {
-      if (currentEvent?.id) {
-        const [memberRes, postsRes, roleRes] = await Promise.all([
-          supabase
-            .from('event_members')
-            .select('points')
-            .eq('event_id', currentEvent.id)
-            .eq('user_id', user.id)
-            .single(),
-          supabase
-            .from('posts')
-            .select('id', { count: 'exact', head: true })
-            .eq('event_id', currentEvent.id)
-            .eq('user_id', user.id)
-            .eq('is_deleted', false),
-          supabase
-            .from('event_members')
-            .select('role, roles')
-            .eq('event_id', currentEvent.id)
-            .eq('user_id', user.id)
-            .single(),
-        ]);
-        setPoints(memberRes.data?.points ?? 0);
-        setPostsCount(postsRes.count ?? 0);
-        const data = roleRes.data as { role?: string; roles?: string[] } | null;
-        const roles = data?.roles?.length ? data.roles : (data?.role ? [data.role] : ['attendee']);
-        setIsEventAdmin(roles.includes('admin') || roles.includes('super_admin'));
-        const selectable = roles.filter((r) => ['attendee', 'speaker', 'vendor'].includes(r));
-        setMyRoles(selectable.length ? selectable : ['attendee']);
-      } else {
-        setPoints(null);
-        setPostsCount(0);
-        setIsEventAdmin(false);
-        setMyRoles(['attendee']);
-      }
-    } catch (err) {
-      console.error('Profile stats error:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
+    setFetchError(null);
+    setLoading(true);
+    loadStats().finally(() => setLoading(false));
+  }, [user?.id, currentEvent?.id, loadStats]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id) loadStats().catch(() => {});
+    }, [user?.id, loadStats])
+  );
+
+  // When app comes back from background: wait for root’s refresh, then load (so token is valid and data loads).
   useEffect(() => {
-    loadStats();
-  }, [user?.id, currentEvent?.id]);
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state === 'active' && user?.id) {
+        // #region agent log
+        fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:AppState',message:'app became active',data:{screen:'Profile'},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+        // #endregion
+        loadInProgressRef.current = false;
+        setLoading(true);
+        (async () => {
+          const refreshTimeoutMs = 8000;
+          try {
+            await Promise.race([
+              refreshSessionIfNeeded(),
+              new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Refresh timeout')), refreshTimeoutMs)),
+            ]);
+          } catch (_) {}
+          loadStats().catch(() => {}).finally(() => setLoading(false));
+        })();
+      }
+    });
+    return () => sub.remove();
+  }, [user?.id, loadStats]);
+
+  const screenLoadTimeoutMs = 30000; // show error after 30s, then auto-retry once
+  const loadingStartRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!loading) {
+      loadingStartRef.current = null;
+      return;
+    }
+    loadingStartRef.current = Date.now();
+    const t = setTimeout(() => {
+      if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= screenLoadTimeoutMs) {
+        addDebugLog('Profile', 'Load timed out', 'Request never completed — check network or Supabase');
+        loadInProgressRef.current = false;
+        setLoading(false);
+        setFetchError('Error - page not loading');
+        setFetchErrorDetail('Timed out');
+        if (!autoRetryScheduledRef.current && user?.id) {
+          autoRetryScheduledRef.current = true;
+          setTimeout(() => {
+            loadStats().catch(() => {});
+          }, 2000);
+        }
+      }
+    }, screenLoadTimeoutMs);
+    return () => clearTimeout(t);
+  }, [loading, user?.id, loadStats]);
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await Promise.all([refreshUser(), loadStats()]);
-    setRefreshing(false);
+    setFetchError(null);
+    addDebugLog('Profile', 'Pull-to-refresh started');
+    if (__DEV__) Toast.show({ type: 'info', text1: 'Refreshing...', visibilityTime: 1500 });
+    try {
+      await refreshSessionIfNeeded();
+      await refreshUser();
+      await loadStats().catch(() => loadStats());
+      addDebugLog('Profile', 'Pull-to-refresh finished');
+      if (__DEV__) Toast.show({ type: 'success', text1: 'Refresh done', visibilityTime: 2000 });
+    } catch (e) {
+      const msg = getErrorMessage(e);
+      addDebugLog('Profile', 'Pull-to-refresh failed', msg);
+      if (__DEV__) Toast.show({ type: 'error', text1: 'Refresh failed', text2: msg.slice(0, 50), visibilityTime: 4000 });
+      setFetchError('Error - page not loading');
+    } finally {
+      setRefreshing(false);
+    }
   };
 
   const handleLogout = async () => {
-    await logout();
-    router.replace('/(auth)/login');
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await logout();
+      router.replace('/(auth)/login');
+    } finally {
+      setLoggingOut(false);
+    }
   };
 
   const ROLE_OPTIONS = [
@@ -135,27 +266,28 @@ export default function ProfileIndexScreen() {
       Alert.alert('Select at least one role', 'e.g. Attendee, Speaker, or Vendor.');
       return;
     }
+    // Users cannot remove their own admin role via Profile; only an event admin can do that
+    const data = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single();
+    const currentRoles = Array.isArray(data.data?.roles) ? data.data.roles : (data.data?.role ? [data.data.role] : []);
+    const hasAdmin = currentRoles.includes('admin') || currentRoles.includes('super_admin');
+    const savingAdmin = myRoles.includes('admin') || myRoles.includes('super_admin');
+    if (hasAdmin && !savingAdmin) {
+      Alert.alert('Admin role', 'Only an event admin can change or remove your admin role. Go to Event admin → Manage members.');
+      return;
+    }
     setRoleSaving(true);
     try {
-      const { data: existing } = await supabase
-        .from('event_members')
-        .select('roles, role')
-        .eq('event_id', currentEvent.id)
-        .eq('user_id', user.id)
-        .single();
-      const existingRoles = (existing as { roles?: string[]; role?: string } | null)?.roles ?? 
-        ((existing as { role?: string })?.role ? [(existing as { role: string }).role] : ['attendee']);
-      const adminRoles = existingRoles.filter((r) => r === 'admin' || r === 'super_admin');
-      const newRoles = [...new Set([...myRoles, ...adminRoles])];
+      const newRoles = [...myRoles];
+      const newRole = newRoles[0] ?? 'attendee';
       const { error } = await supabase
         .from('event_members')
-        .update({ roles: newRoles })
+        .update({ role: newRole, roles: newRoles })
         .eq('event_id', currentEvent.id)
         .eq('user_id', user.id);
       if (error) throw error;
       setShowRoleModal(false);
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Could not update roles.');
+      Alert.alert('Error', err instanceof Error ? err.message : 'Could not update role.');
     } finally {
       setRoleSaving(false);
     }
@@ -169,7 +301,7 @@ export default function ProfileIndexScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['bottom']}>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={[styles.content, { minHeight: Dimensions.get('window').height + 2 }]}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -220,7 +352,35 @@ export default function ProfileIndexScreen() {
         {currentEvent && (
           <>
             <View style={styles.stats}>
-              {loading ? (
+              {fetchError ? (
+                <View style={{ alignItems: 'center', paddingVertical: 8 }}>
+                  <Text style={[styles.statLabel, { marginBottom: 4 }]}>Error - page not loading</Text>
+                  {fetchErrorDetail ? (
+                    <Text style={[styles.statLabel, { fontSize: 10, color: colors.textMuted, marginBottom: 4, fontStyle: 'italic' }]} numberOfLines={2}>
+                      {fetchErrorDetail}
+                    </Text>
+                  ) : null}
+                  <Text style={[styles.statLabel, { fontSize: 11, color: colors.textMuted, marginBottom: 8 }]}>Pull down to refresh or tap Try again.</Text>
+                  {fetchErrorDetail?.toLowerCase().includes('timed out') ? (
+                    <Text style={[styles.statLabel, { fontSize: 11, color: colors.textMuted, marginBottom: 8, fontStyle: 'italic' }]}>
+                      Open Debug (bottom-right) → Test connection to see if this device can reach Supabase.
+                    </Text>
+                  ) : null}
+                  <TouchableOpacity
+                    onPress={async () => {
+                      setFetchError(null);
+                      setFetchErrorDetail(null);
+                      setLoading(true);
+                      await refreshSessionIfNeeded();
+                      await loadStats();
+                    }}
+                    style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: colors.primary, borderRadius: 8 }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ color: '#fff', fontWeight: '600' }}>Try again</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : loading ? (
                 <ActivityIndicator size="small" color={colors.primary} />
               ) : (
                 <>
@@ -307,7 +467,7 @@ export default function ProfileIndexScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.menuRow}
-            onPress={() => router.push('/profile/notifications')}
+            onPress={() => router.push(pathname ? `/profile/notifications?from=${encodeURIComponent(pathname)}` : '/profile/notifications' as any)}
             activeOpacity={0.7}
           >
             <Bell size={22} color={colors.textSecondary} />
@@ -330,18 +490,52 @@ export default function ProfileIndexScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.menuRow}
-            onPress={() => router.push('/profile/admin')}
+            onPress={() => router.push('/(tabs)/profile/groups/index' as any)}
             activeOpacity={0.7}
           >
-            <Shield size={22} color={isEventAdmin && currentEvent ? colors.primary : colors.textSecondary} />
-            <Text style={styles.menuText}>Event admin</Text>
+            <MessageCircle size={22} color={colors.textSecondary} />
+            <Text style={styles.menuText}>Groups</Text>
             <ChevronRight size={20} color={colors.textMuted} />
           </TouchableOpacity>
+          {(isEventAdmin || user?.is_platform_admin) && (
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => router.push('/(tabs)/profile/groups/new')}
+              activeOpacity={0.7}
+            >
+              <MessageCircle size={22} color={colors.primary} />
+              <Text style={[styles.menuText, { color: colors.primary, fontWeight: '600' }]}>Create group</Text>
+              <ChevronRight size={20} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
+          {(isEventAdmin || user?.is_platform_admin) && (
+            <TouchableOpacity
+              style={styles.menuRow}
+              onPress={() => router.push('/profile/admin')}
+              activeOpacity={0.7}
+            >
+              <Shield size={22} color={isEventAdmin && currentEvent ? colors.primary : colors.textSecondary} />
+              <Text style={styles.menuText}>Event admin</Text>
+              <ChevronRight size={20} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
         </View>
 
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <LogOut size={22} color={colors.danger} />
-          <Text style={styles.logoutText}>Logout</Text>
+        <TouchableOpacity
+          style={styles.logoutButton}
+          onPress={handleLogout}
+          disabled={loggingOut}
+          activeOpacity={0.7}
+          hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+        >
+          {loggingOut ? (
+            <ActivityIndicator size="small" color={colors.danger} />
+          ) : (
+            <>
+              <LogOut size={22} color={colors.danger} />
+              <Text style={styles.logoutText}>Logout</Text>
+            </>
+          )}
         </TouchableOpacity>
       </ScrollView>
     </SafeAreaView>
@@ -354,6 +548,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.background,
   },
   content: {
+    flexGrow: 1,
     padding: 24,
     paddingBottom: 48,
   },

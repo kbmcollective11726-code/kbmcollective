@@ -3,13 +3,14 @@
 -- Run this in Supabase SQL Editor to check tables and data
 -- ============================================
 
--- Expected public tables (must match supabase-schema.sql)
+-- Expected public tables (must match supabase-schema.sql + migrations)
 WITH expected AS (
   SELECT unnest(ARRAY[
     'users', 'events', 'event_members', 'posts', 'likes', 'comments',
     'schedule_sessions', 'user_schedule', 'messages', 'announcements',
     'notifications', 'point_rules', 'point_log', 'vendor_booths',
-    'meeting_slots', 'meeting_bookings', 'connections'
+    'meeting_slots', 'meeting_bookings', 'connections', 'connection_requests',
+    'blocked_users', 'user_reports', 'session_reminder_sent'
   ]) AS table_name
 ),
 existing AS (
@@ -36,7 +37,8 @@ WHERE t.table_schema = 'public'
     'users', 'events', 'event_members', 'posts', 'likes', 'comments',
     'schedule_sessions', 'user_schedule', 'messages', 'announcements',
     'notifications', 'point_rules', 'point_log', 'vendor_booths',
-    'meeting_slots', 'meeting_bookings', 'connections'
+    'meeting_slots', 'meeting_bookings', 'connections', 'connection_requests',
+    'blocked_users', 'user_reports', 'session_reminder_sent'
   )
 ORDER BY t.table_name;
 

@@ -6,35 +6,42 @@ import { colors } from '../constants/colors';
 
 export default function IndexScreen() {
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuthStore();
+  const { isAuthenticated, isLoading, user, session } = useAuthStore();
+  const mustChangePassword = !!session?.user?.user_metadata?.must_change_password;
   const navigated = useRef(false);
   const [showSkip, setShowSkip] = useState(false);
 
   useEffect(() => {
-    const t = setTimeout(() => setShowSkip(true), 2000);
+    const t = setTimeout(() => setShowSkip(true), 1000);
     return () => clearTimeout(t);
   }, []);
 
-  // Navigate as soon as auth state is known
+  // Navigate as soon as auth state is known. Force password change first if required.
   useEffect(() => {
     if (isLoading) return;
     if (navigated.current) return;
     navigated.current = true;
 
     if (isAuthenticated) {
-      router.replace('/(tabs)/home');
+      if (mustChangePassword) {
+        router.replace('/(auth)/change-password');
+      } else if (user?.is_platform_admin) {
+        router.replace('/profile/admin-all-events');
+      } else {
+        router.replace('/(tabs)/home');
+      }
     } else {
       router.replace('/(auth)/login');
     }
-  }, [isAuthenticated, isLoading, router]);
+  }, [isAuthenticated, isLoading, mustChangePassword, user?.is_platform_admin, router]);
 
-  // Safety: if still on this screen after 4s, force go to login (avoids stuck white screen)
+  // Safety: force go to login after 1.5s so we never stay on loading (Expo Go / slow auth)
   useEffect(() => {
     const t = setTimeout(() => {
       if (navigated.current) return;
       navigated.current = true;
       router.replace('/(auth)/login');
-    }, 4000);
+    }, 1500);
     return () => clearTimeout(t);
   }, [router]);
 

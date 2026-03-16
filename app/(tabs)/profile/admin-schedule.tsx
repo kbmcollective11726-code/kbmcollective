@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -8,30 +8,59 @@ import {
   RefreshControl,
   ActivityIndicator,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
-import { Plus, Pencil, Trash2, Clock, ChevronLeft } from 'lucide-react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import { Plus, Pencil, Trash2, Clock, ChevronLeft, Search, X } from 'lucide-react-native';
 import { useEventStore } from '../../../stores/eventStore';
+import { useAuthStore } from '../../../stores/authStore';
 import { supabase } from '../../../lib/supabase';
+import { createNotificationAndPush } from '../../../lib/notifications';
+import { sendAnnouncementPush } from '../../../lib/pushNotifications';
 import { colors, sessionTypeColors } from '../../../constants/colors';
 import type { ScheduleSession } from '../../../lib/types';
-import { format } from 'date-fns';
+import { format, parseISO } from 'date-fns';
+
+/** Day number (1-based) from session start_time relative to event start_date. */
+function getDisplayDayNumber(startTime: string, eventStartDate: string | null | undefined): number {
+  if (!eventStartDate) return 1;
+  const sessionDate = new Date(startTime);
+  const sessionKey = format(sessionDate, 'yyyy-MM-dd');
+  const startKey = eventStartDate.slice(0, 10);
+  if (!startKey || startKey.length < 10) return 1;
+  const start = parseISO(startKey);
+  const session = parseISO(sessionKey);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(session.getTime())) return 1;
+  const diffMs = session.getTime() - start.getTime();
+  const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
+  return Math.max(1, diffDays + 1);
+}
 
 export default function AdminScheduleScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { currentEvent } = useEventStore();
+  const { user } = useAuthStore();
+
+  const goBack = useCallback(() => {
+    const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
+    if (returnPath) {
+      router.replace(returnPath as any);
+    } else {
+      router.back();
+    }
+  }, [from, router]);
 
   useEffect(() => {
     if (from && typeof from === 'string') {
-      const returnPath = decodeURIComponent(from);
       navigation.setOptions({
         headerBackVisible: false,
         headerLeft: () => (
           <TouchableOpacity
-            onPress={() => router.replace(returnPath as any)}
+            onPress={goBack}
             style={styles.backButton}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
@@ -40,10 +69,27 @@ export default function AdminScheduleScreen() {
         ),
       });
     }
-  }, [from, navigation, router]);
+  }, [from, goBack, navigation]);
   const [sessions, setSessions] = useState<ScheduleSession[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+
+  const filteredSessions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return sessions;
+    return sessions.filter(
+      (s) =>
+        s.title?.toLowerCase().includes(q) ||
+        s.speaker_name?.toLowerCase().includes(q) ||
+        (Array.isArray(s.speakers) && (s.speakers as { name?: string }[]).some((sp) => sp?.name?.toLowerCase().includes(q))) ||
+        s.location?.toLowerCase().includes(q) ||
+        s.room?.toLowerCase().includes(q) ||
+        s.description?.toLowerCase().includes(q) ||
+        (s.session_type && s.session_type.toLowerCase().includes(q)) ||
+        String(getDisplayDayNumber(s.start_time, currentEvent?.start_date)).includes(q)
+    );
+  }, [sessions, searchQuery]);
 
   const fetchSessions = async () => {
     if (!currentEvent?.id) {
@@ -74,6 +120,12 @@ export default function AdminScheduleScreen() {
     fetchSessions();
   }, [currentEvent?.id]);
 
+  useFocusEffect(
+    useCallback(() => {
+      if (currentEvent?.id) fetchSessions();
+    }, [currentEvent?.id])
+  );
+
   const onRefresh = () => {
     setRefreshing(true);
     fetchSessions();
@@ -90,14 +142,53 @@ export default function AdminScheduleScreen() {
           style: 'destructive',
           onPress: async () => {
             try {
+              // Notify event members of session removal (in-app + push) before deleting
+              const notifTitle = 'Session removed';
+              const notifBody = `"${session.title ?? 'A session'}" was removed from the schedule.`;
+              const { data: members } = await supabase
+                .from('event_members')
+                .select('user_id')
+                .eq('event_id', currentEvent?.id);
+              const recipientIds = (members ?? [])
+                .map((m: { user_id: string }) => m.user_id)
+                .filter((id: string) => id !== user?.id);
+              for (const uid of recipientIds) {
+                await createNotificationAndPush(
+                  uid,
+                  currentEvent?.id ?? null,
+                  'schedule_change',
+                  notifTitle,
+                  notifBody,
+                  {}
+                );
+              }
+              const { data: { session: authSession } } = await supabase.auth.getSession();
+              if (authSession?.access_token && currentEvent?.id && recipientIds.length > 0) {
+                sendAnnouncementPush(
+                  authSession.access_token,
+                  currentEvent.id,
+                  notifTitle,
+                  notifBody,
+                  recipientIds
+                ).catch(() => {});
+              }
+              // Remove bookmarks for this session first (foreign key), then delete session
+              await supabase.from('user_schedule').delete().eq('session_id', session.id);
               const { error } = await supabase
                 .from('schedule_sessions')
                 .delete()
                 .eq('id', session.id);
               if (error) throw error;
               setSessions((prev) => prev.filter((s) => s.id !== session.id));
-            } catch (err) {
-              Alert.alert('Error', err instanceof Error ? err.message : 'Failed to delete.');
+            } catch (err: unknown) {
+              const message =
+                err instanceof Error
+                  ? err.message
+                  : typeof (err as { message?: string })?.message === 'string'
+                    ? (err as { message: string }).message
+                    : 'Failed to delete.';
+              if (__DEV__ && err) console.error('Schedule delete error:', err);
+              Alert.alert('Error', message);
             }
           },
         },
@@ -128,6 +219,24 @@ export default function AdminScheduleScreen() {
         <Text style={styles.addButtonText}>Add session</Text>
       </TouchableOpacity>
 
+      {!loading && sessions.length > 0 && (
+        <View style={styles.searchWrap}>
+          <Search size={18} color={colors.textMuted} />
+          <TextInput
+            style={styles.searchInput}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+            placeholder="Search sessions by title, speaker, location…"
+            placeholderTextColor={colors.textMuted}
+          />
+          {searchQuery.length > 0 && (
+            <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={8}>
+              <X size={18} color={colors.textMuted} />
+            </TouchableOpacity>
+          )}
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
@@ -147,9 +256,15 @@ export default function AdminScheduleScreen() {
                 Tap "Add session" above to create the first one. Sessions appear in the Schedule tab and on the live wall.
               </Text>
             </View>
+          ) : filteredSessions.length === 0 ? (
+            <View style={styles.placeholder}>
+              <Text style={styles.title}>No matching sessions</Text>
+              <Text style={styles.subtitle}>Try a different search.</Text>
+            </View>
           ) : (
-            sessions.map((session) => {
-              const typeColor = sessionTypeColors[session.session_type] ?? colors.primary;
+            filteredSessions.map((session) => {
+              const firstType = session.session_type?.split(',')[0]?.trim() ?? '';
+              const typeColor = sessionTypeColors[firstType] ?? colors.primary;
               return (
                 <View key={session.id} style={[styles.card, { borderLeftColor: typeColor }]}>
                   <View style={styles.cardBody}>
@@ -157,11 +272,17 @@ export default function AdminScheduleScreen() {
                     <View style={styles.meta}>
                       <Clock size={14} color={colors.textMuted} />
                       <Text style={styles.metaText}>
-                        Day {session.day_number} · {formatTime(session.start_time)} – {format(new Date(session.end_time), 'h:mm a')}
+                        Day {getDisplayDayNumber(session.start_time, currentEvent?.start_date)} · {formatTime(session.start_time)} – {format(new Date(session.end_time), 'h:mm a')}
                       </Text>
                     </View>
-                    {session.speaker_name && (
-                      <Text style={styles.speaker}>{session.speaker_name}</Text>
+                    {(Array.isArray(session.speakers) && session.speakers.length > 0
+                      ? (session.speakers as { name?: string }[]).map((s) => s?.name).filter(Boolean).join(', ')
+                      : session.speaker_name) && (
+                      <Text style={styles.speaker}>
+                        {Array.isArray(session.speakers) && session.speakers.length > 0
+                          ? (session.speakers as { name?: string }[]).map((s) => s?.name).filter(Boolean).join(', ')
+                          : session.speaker_name}
+                      </Text>
                     )}
                   </View>
                   <View style={styles.actions}>
@@ -200,6 +321,25 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   addButtonText: { fontSize: 16, fontWeight: '600', color: '#fff' },
+  searchWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: colors.surface,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: colors.text,
+    paddingVertical: 0,
+  },
   scrollContent: { padding: 16, paddingBottom: 32 },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   title: { fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8 },

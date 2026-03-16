@@ -10,11 +10,15 @@ import {
   ActivityIndicator,
   Alert,
   ScrollView,
+  Image,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { StatusBar } from 'expo-status-bar';
 import { useAuthStore } from '../../stores/authStore';
-import { colors } from '../../constants/colors';
+import { isSupabaseConfigured } from '../../lib/supabase';
+
+const LOGO = require('../../assets/logo-full-transparent.png');
 
 export default function RegisterScreen() {
   const router = useRouter();
@@ -25,26 +29,61 @@ export default function RegisterScreen() {
   const [loading, setLoading] = useState(false);
 
   const handleRegister = async () => {
-    if (!fullName.trim() || !email.trim() || !password) {
+    const trimmedName = fullName.trim();
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedName || !trimmedEmail || !password) {
       Alert.alert('Missing fields', 'Please enter name, email, and password.');
       return;
     }
-    if (password.length < 6) {
-      Alert.alert('Weak password', 'Password must be at least 6 characters.');
+    if (password.length < 8) {
+      Alert.alert('Weak password', 'Password must be at least 8 characters.');
+      return;
+    }
+    if (!isSupabaseConfigured) {
+      Alert.alert(
+        'Not configured',
+        'Supabase URL is missing. Add EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY to .env in the project root, then run: npx expo start --clear'
+      );
       return;
     }
     setLoading(true);
-    const { error } = await register(email.trim(), password, fullName.trim());
+    const timeoutId = setTimeout(() => {
+      setLoading(false);
+      Alert.alert(
+        'Taking longer than usual',
+        'Your account may still have been created. Try signing in with your email and password in a moment.',
+        [{ text: 'OK' }]
+      );
+    }, 25000);
+    const { error, needsEmailConfirmation } = await register(trimmedEmail, password, trimmedName);
+    clearTimeout(timeoutId);
     setLoading(false);
     if (error) {
       Alert.alert('Registration failed', error);
       return;
     }
-    router.replace('/(tabs)/home');
+    if (needsEmailConfirmation) {
+      Alert.alert(
+        'Check your email',
+        'We sent a confirmation link to ' + trimmedEmail + '. Open it to activate your account, then sign in here.',
+        [{ text: 'OK' }, { text: 'Sign in', onPress: () => router.replace('/(auth)/login') }]
+      );
+      return;
+    }
+    const session = useAuthStore.getState().session;
+    const mustChangePassword = !!session?.user?.user_metadata?.must_change_password;
+    if (mustChangePassword) {
+      router.replace('/(auth)/change-password');
+    } else if (useAuthStore.getState().user?.is_platform_admin) {
+      router.replace('/profile/admin-all-events');
+    } else {
+      router.replace('/(tabs)/home');
+    }
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <StatusBar style="light" />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboard}
@@ -54,13 +93,15 @@ export default function RegisterScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.title}>Create account</Text>
-          <Text style={styles.subtitle}>Join CollectiveLive</Text>
+          <View style={styles.logoWrap}>
+            <Image source={LOGO} style={styles.logo} resizeMode="contain" />
+          </View>
+          <Text style={styles.subtitle}>Create your account</Text>
 
           <TextInput
             style={styles.input}
             placeholder="Full name"
-            placeholderTextColor={colors.textMuted}
+            placeholderTextColor="#94a3b8"
             value={fullName}
             onChangeText={setFullName}
             autoCapitalize="words"
@@ -69,7 +110,7 @@ export default function RegisterScreen() {
           <TextInput
             style={styles.input}
             placeholder="Email"
-            placeholderTextColor={colors.textMuted}
+            placeholderTextColor="#94a3b8"
             value={email}
             onChangeText={setEmail}
             autoCapitalize="none"
@@ -79,8 +120,8 @@ export default function RegisterScreen() {
           />
           <TextInput
             style={styles.input}
-            placeholder="Password (min 6 characters)"
-            placeholderTextColor={colors.textMuted}
+            placeholder="Password (min 8 characters)"
+            placeholderTextColor="#94a3b8"
             value={password}
             onChangeText={setPassword}
             secureTextEntry
@@ -94,7 +135,7 @@ export default function RegisterScreen() {
             disabled={loading}
           >
             {loading ? (
-              <ActivityIndicator color={colors.textOnPrimary} />
+              <ActivityIndicator color="#0f172a" />
             ) : (
               <Text style={styles.buttonText}>Sign Up</Text>
             )}
@@ -118,7 +159,7 @@ export default function RegisterScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: '#0a0a0a',
   },
   keyboard: {
     flex: 1,
@@ -126,35 +167,39 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingHorizontal: 24,
-    paddingTop: 48,
-    paddingBottom: 32,
+    paddingTop: 0,
+    paddingBottom: 24,
   },
-  title: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 4,
+  logoWrap: {
+    alignItems: 'center',
+    marginBottom: 0,
+  },
+  logo: {
+    width: '100%',
+    maxWidth: 380,
+    height: 220,
   },
   subtitle: {
     fontSize: 16,
-    color: colors.textSecondary,
-    marginBottom: 32,
+    color: '#94a3b8',
+    marginBottom: 16,
+    textAlign: 'center',
   },
   input: {
     height: 48,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: '#334155',
     borderRadius: 12,
     paddingHorizontal: 16,
     fontSize: 16,
-    color: colors.text,
+    color: '#f8fafc',
     marginBottom: 16,
-    backgroundColor: colors.surface,
+    backgroundColor: '#1a1a1a',
   },
   button: {
     height: 48,
     borderRadius: 12,
-    backgroundColor: colors.primary,
+    backgroundColor: '#d4af37',
     justifyContent: 'center',
     alignItems: 'center',
     marginTop: 8,
@@ -165,7 +210,7 @@ const styles = StyleSheet.create({
   buttonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: colors.textOnPrimary,
+    color: '#0f172a',
   },
   link: {
     marginTop: 24,
@@ -173,10 +218,10 @@ const styles = StyleSheet.create({
   },
   linkText: {
     fontSize: 14,
-    color: colors.textSecondary,
+    color: '#94a3b8',
   },
   linkBold: {
-    color: colors.primary,
+    color: '#d4af37',
     fontWeight: '600',
   },
 });

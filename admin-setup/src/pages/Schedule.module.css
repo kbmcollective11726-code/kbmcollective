@@ -1,0 +1,228 @@
+.page {
+  max-width: 720px;
+}
+
+.head {
+  margin-bottom: 20px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-accent);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-muted);
+  transition: background var(--transition), color var(--transition);
+}
+
+.back:hover {
+  text-decoration: none;
+  background: rgba(212, 175, 55, 0.25);
+  color: var(--color-accent-hover);
+}
+
+.page h1 {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+  color: var(--color-text);
+}
+
+.hint {
+  margin: 0 0 16px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.importBtn {
+  padding: 10px 16px;
+  background: var(--color-accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 600;
+}
+
+.importBtn:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.templateBtn {
+  padding: 10px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.templateBtn:hover {
+  background: var(--color-surface-hover);
+}
+
+.result {
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+  font-size: 14px;
+}
+
+.errorList {
+  margin: 8px 0 0;
+  padding-left: 20px;
+  color: var(--color-danger);
+  font-size: 13px;
+}
+
+.listTitle {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+  color: var(--color-text);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.item {
+  padding: 12px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.itemTitle {
+  font-weight: 600;
+  display: block;
+  margin-bottom: 4px;
+}
+
+.itemMeta {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.itemActions {
+  margin-top: 8px;
+  display: flex;
+  gap: 8px;
+}
+
+.itemBtn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: var(--radius);
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.itemBtnEdit {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+
+.itemBtnEdit:hover {
+  background: var(--color-surface-hover);
+}
+
+.itemBtnDanger {
+  background: var(--color-danger, #dc2626);
+  color: white;
+}
+
+.itemBtnDanger:hover {
+  opacity: 0.9;
+}
+
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 24px;
+}
+
+.modal {
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  max-width: 480px;
+  width: 100%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modalHead {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.modalHead h2 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.modalClose {
+  background: none;
+  border: none;
+  font-size: 1.25rem;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+}
+
+.modalBody {
+  padding: 20px;
+}
+
+.modalBody label {
+  display: block;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: 6px;
+}
+
+.modalBody input,
+.modalBody select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.empty {
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+.loading {
+  padding: 24px 0;
+}
