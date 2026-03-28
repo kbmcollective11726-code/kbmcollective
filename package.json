@@ -3,9 +3,10 @@
   "version": "1.0.0",
   "main": "expo-router/entry",
   "scripts": {
-    "start": "expo start",
-    "start:clear": "expo start -c",
-    "tunnel": "expo start --tunnel",
+    "start": "node scripts/expo-start.mjs",
+    "start:clear": "node scripts/expo-start.mjs -c",
+    "start:with-doctor": "expo start",
+    "tunnel": "node scripts/expo-start.mjs --tunnel",
     "android": "expo run:android",
     "ios": "expo run:ios",
     "web": "expo start --web",

@@ -1,12 +1,19 @@
 import { supabase, supabaseUrl } from './supabase';
 
-const MAX_WIDTH = 1920;
-const JPEG_QUALITY = 0.85;
+const DEFAULT_MAX_WIDTH = 1920;
+const DEFAULT_JPEG_QUALITY = 0.85;
+/** Booth logos display small in UI; smaller encode + payload = faster Edge upload. */
+const VENDOR_LOGO_MAX_WIDTH = 768;
+const VENDOR_LOGO_JPEG_QUALITY = 0.82;
+
+export type CompressJpegOptions = { maxWidth?: number; quality?: number };
 
 /**
  * Resize/compress to JPEG in the browser (similar to mobile compressImage).
  */
-export async function compressImageToJpegBlob(file: File): Promise<Blob> {
+export async function compressImageToJpegBlob(file: File, opts?: CompressJpegOptions): Promise<Blob> {
+  const MAX_WIDTH = opts?.maxWidth ?? DEFAULT_MAX_WIDTH;
+  const JPEG_QUALITY = opts?.quality ?? DEFAULT_JPEG_QUALITY;
   const bitmap = await createImageBitmap(file).catch(() => {
     throw new Error('Could not read this image. Try JPG or PNG.');
   });
@@ -66,7 +73,10 @@ export async function uploadEventImage(file: File, eventId: string, folder: 'ven
     throw new Error('Sign in required to upload images.');
   }
   const userId = session.user.id;
-  const jpegBlob = await compressImageToJpegBlob(file);
+  const jpegBlob = await compressImageToJpegBlob(file, {
+    maxWidth: VENDOR_LOGO_MAX_WIDTH,
+    quality: VENDOR_LOGO_JPEG_QUALITY,
+  });
   const storagePath = buildStoragePath(eventId, userId, folder);
   const r2Key = buildR2Key(storagePath);
   const base64 = await blobToBase64(jpegBlob);

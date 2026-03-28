@@ -10,7 +10,10 @@ import { supabase, supabaseStorage, supabaseUrl } from './supabase';
 
 const MAX_WIDTH = 1920;
 const MAX_WIDTH_POST = 1280;
+/** Vendor booth logos: keep uploads small (faster R2 / storage). */
+const MAX_WIDTH_VENDOR_LOGO = 768;
 const COMPRESSION_QUALITY = 0.8;
+const VENDOR_LOGO_QUALITY = 0.82;
 const ANDROID_POST_MAX_WIDTH = 1024;
 const ANDROID_POST_QUALITY = 0.75;
 
@@ -392,7 +395,7 @@ export async function uploadImage(
   eventId: string,
   userId: string,
   bucket: string = 'event-photos',
-  options: { skipCompress?: boolean; base64?: string; folder?: string } = {}
+  options: { skipCompress?: boolean; base64?: string; folder?: string; maxWidth?: number; quality?: number } = {}
 ): Promise<string | null> {
   try {
     let base64: string;
@@ -400,9 +403,12 @@ export async function uploadImage(
     if (options.base64 != null && options.base64.length > 0) {
       base64 = options.base64;
     } else {
+      const logo = options.folder === 'vendor-logos';
+      const maxW = options.maxWidth ?? (logo ? MAX_WIDTH_VENDOR_LOGO : MAX_WIDTH);
+      const qual = options.quality ?? (logo ? VENDOR_LOGO_QUALITY : COMPRESSION_QUALITY);
       uploadFileUri = options.skipCompress
         ? localUri
-        : await compressImage(localUri);
+        : await compressImage(localUri, maxW, qual);
       base64 = await FileSystem.readAsStringAsync(uploadFileUri, {
         encoding: 'base64',
       });
