@@ -141,6 +141,17 @@
   margin-right: auto;
 }
 
+.flash {
+  color: var(--color-text, #e2e8f0);
+  background: rgba(234, 179, 8, 0.12);
+  border: 1px solid rgba(234, 179, 8, 0.45);
+  border-radius: var(--radius-sm, 8px);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .error {
   color: var(--color-danger, #dc2626);
   padding: 16px 0;

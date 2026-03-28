@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import { uploadEventImage } from '../lib/uploadEventImage';
 import type { VendorBooth } from '../lib/types';
 import styles from './VendorBoothForm.module.css';
@@ -66,7 +67,7 @@ export default function VendorBoothForm() {
         setRepUserIds(b.contact_user_id ? [b.contact_user_id] : []);
       }
     } catch (e) {
-      setFormError(e instanceof Error ? e.message : 'Failed to load booth');
+      setFormError(postgrestErrorMessage(e) || 'Failed to load booth');
     } finally {
       setLoading(false);
     }
@@ -122,7 +123,21 @@ export default function VendorBoothForm() {
 
         const { data: created, error } = await supabase.from('vendor_booths').insert(payload).select('id').single();
         if (error) throw error;
-        if (created?.id) await syncBoothReps(created.id);
+        const newId = created?.id;
+        if (newId) {
+          try {
+            await syncBoothReps(newId);
+          } catch (repErr) {
+            const repMsg = postgrestErrorMessage(repErr);
+            navigate(`/events/${eventId}/vendor-booths`, {
+              state: {
+                vendorBoothFlash:
+                  `Booth was created, but saving representatives failed: ${repMsg}. Run migrations 20260326090000_vendor_booth_multi_reps.sql and 20260327130000_vendor_booths_rls_fix.sql in Supabase if needed, then edit the booth to set reps again.`,
+              },
+            });
+            return;
+          }
+        }
         navigate(`/events/${eventId}/vendor-booths`);
         return;
       }
@@ -130,14 +145,22 @@ export default function VendorBoothForm() {
       if (!boothId) return;
       const { error } = await supabase.from('vendor_booths').update(basePayload).eq('id', boothId);
       if (error) throw error;
-      await syncBoothReps(boothId);
+      try {
+        await syncBoothReps(boothId);
+      } catch (repErr) {
+        const repMsg = postgrestErrorMessage(repErr);
+        setFormError(
+          `Booth details saved, but representatives failed to sync: ${repMsg}. Check Supabase RLS and migrations for vendor_booth_reps.`
+        );
+        return;
+      }
       navigate(`/events/${eventId}/vendor-booths`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Save failed';
+      const msg = postgrestErrorMessage(err) || 'Save failed';
       const hint =
-        msg.includes('row-level security') || msg.includes('policy') || msg.includes('permission') || msg.includes('403')
-          ? ' You must be an event admin (or platform admin). In Supabase SQL Editor, run migration 20260327130000_vendor_booths_rls_fix.sql if saves still fail.'
-          : msg.includes('vendor_booth_reps') || msg.includes('42P01') || msg.includes('does not exist')
+        /row-level security|policy|permission|403|42501|PGRST/i.test(msg)
+          ? ' You must be an event admin or platform admin. In Supabase SQL Editor, run migration 20260327130000_vendor_booths_rls_fix.sql.'
+          : /vendor_booth_reps|42P01|does not exist/i.test(msg)
             ? ' Apply migration 20260326090000_vendor_booth_multi_reps.sql in Supabase SQL Editor.'
             : '';
       setFormError(msg + hint);
@@ -162,7 +185,7 @@ export default function VendorBoothForm() {
       setLogoUrl(url);
       await persistLogo(url);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Logo upload failed');
+      setFormError(postgrestErrorMessage(err) || 'Logo upload failed');
     } finally {
       setUploadingLogo(false);
     }
@@ -185,7 +208,7 @@ export default function VendorBoothForm() {
       if (error) throw error;
       navigate(`/events/${eventId}/vendor-booths`);
     } catch (err) {
-      setFormError(err instanceof Error ? err.message : 'Delete failed');
+      setFormError(postgrestErrorMessage(err) || 'Delete failed');
     } finally {
       setSaving(false);
     }

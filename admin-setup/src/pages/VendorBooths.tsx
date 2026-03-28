@@ -1,14 +1,28 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import type { VendorBooth } from '../lib/types';
 import styles from './VendorBooths.module.css';
 
+type LocationState = { vendorBoothFlash?: string };
+
 export default function VendorBooths() {
   const { eventId } = useParams<{ eventId: string }>();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [booths, setBooths] = useState<VendorBooth[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [flash, setFlash] = useState('');
+
+  useEffect(() => {
+    const st = location.state as LocationState | null;
+    if (st?.vendorBoothFlash) {
+      setFlash(st.vendorBoothFlash);
+      navigate(location.pathname + location.search, { replace: true, state: {} });
+    }
+  }, [location, navigate]);
 
   const fetchBooths = useCallback(async () => {
     if (!eventId) return;
@@ -22,7 +36,7 @@ export default function VendorBooths() {
       if (error) throw error;
       setBooths((data as VendorBooth[]) ?? []);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to load booths');
+      setError(postgrestErrorMessage(e) || 'Failed to load booths');
       setBooths([]);
     } finally {
       setLoading(false);
@@ -52,6 +66,7 @@ export default function VendorBooths() {
         </Link>
       </div>
 
+      {flash ? <div className={styles.flash}>{flash}</div> : null}
       {error ? <div className={styles.error}>{error}</div> : null}
 
       {loading ? (
