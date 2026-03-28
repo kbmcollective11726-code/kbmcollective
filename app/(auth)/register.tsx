@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -27,6 +27,14 @@ export default function RegisterScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const timeoutHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (__DEV__) console.log('[Register] component did mount');
+    return () => {
+      if (__DEV__) console.log('[Register] component will unmount');
+    };
+  }, []);
 
   const handleRegister = async () => {
     const trimmedName = fullName.trim();
@@ -47,7 +55,9 @@ export default function RegisterScreen() {
       return;
     }
     setLoading(true);
+    timeoutHandledRef.current = false;
     const timeoutId = setTimeout(() => {
+      timeoutHandledRef.current = true;
       setLoading(false);
       Alert.alert(
         'Taking longer than usual',
@@ -55,12 +65,22 @@ export default function RegisterScreen() {
         [{ text: 'OK' }]
       );
     }, 25000);
+    if (__DEV__) console.log('[Register] calling register() with email:', trimmedEmail);
     const { error, needsEmailConfirmation } = await register(trimmedEmail, password, trimmedName);
     clearTimeout(timeoutId);
+    if (timeoutHandledRef.current) return;
     setLoading(false);
+    if (__DEV__) console.log('[Register] register() returned:', { error, needsEmailConfirmation });
     if (error) {
+      if (__DEV__) console.log('[Register] registration failed — error:', error);
       Alert.alert('Registration failed', error);
       return;
+    }
+    const session = useAuthStore.getState().session;
+    const user = useAuthStore.getState().user;
+    if (__DEV__) console.log('[Register] after register — session:', session ? 'present' : 'null', 'user:', user ? 'present' : 'null');
+    if (!session && !needsEmailConfirmation) {
+      if (__DEV__) console.log('[Register] session is null or expired after successful register');
     }
     if (needsEmailConfirmation) {
       Alert.alert(
@@ -70,9 +90,11 @@ export default function RegisterScreen() {
       );
       return;
     }
-    const session = useAuthStore.getState().session;
-    const mustChangePassword = !!session?.user?.user_metadata?.must_change_password;
+    const sessionAfter = useAuthStore.getState().session;
+    if (__DEV__) console.log('[Register] before redirect — session:', sessionAfter ? 'present' : 'null', 'expires_at:', sessionAfter?.expires_at ?? 'n/a');
+    const mustChangePassword = !!sessionAfter?.user?.user_metadata?.must_change_password;
     if (mustChangePassword) {
+      if (__DEV__) console.log('[Register] redirecting to change-password');
       router.replace('/(auth)/change-password');
     } else if (useAuthStore.getState().user?.is_platform_admin) {
       router.replace('/profile/admin-all-events');

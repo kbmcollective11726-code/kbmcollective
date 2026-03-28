@@ -141,7 +141,6 @@ export interface VendorBooth {
   vendor_name: string;
   description: string | null;
   logo_url: string | null;
-  banner_url: string | null;
   booth_location: string | null;
   contact_user_id: string | null;
   website: string | null;
@@ -242,7 +241,6 @@ export interface VendorBoothWithRelations {
   vendor_name: string;
   description: string | null;
   logo_url: string | null;
-  banner_url: string | null;
   booth_location: string | null;
   contact_user_id: string | null;
   website: string | null;
@@ -308,4 +306,6 @@ export type PointAction =
   | 'daily_streak'
   | 'vendor_meeting'
   | 'checkin'
-  | 'share_linkedin';
+  | 'share_linkedin'
+  | 'session_feedback'
+  | 'b2b_feedback';

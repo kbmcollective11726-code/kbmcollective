@@ -68,15 +68,6 @@ export default function UserProfileScreen() {
     }
   };
 
-  // When user leaves this profile screen (e.g. switches to another tab), reset Feed stack to main feed
-  useFocusEffect(
-    useCallback(() => {
-      return () => {
-        navigation.reset({ index: 0, routes: [{ name: 'index' as never }] });
-      };
-    }, [navigation])
-  );
-
   useEffect(() => {
     if (from && typeof from === 'string') {
       navigation.setOptions({
@@ -184,6 +175,16 @@ export default function UserProfileScreen() {
       setLoading(false);
     }
   }, [userId, currentEvent?.id, currentUser?.id]);
+
+  // Reload user data when screen gains focus (e.g. after background or navigating back)
+  useFocusEffect(
+    useCallback(() => {
+      if (userId && currentUser?.id) fetchUser().catch(() => {});
+      return () => {
+        navigation.reset({ index: 0, routes: [{ name: 'index' as never }] });
+      };
+    }, [userId, currentUser?.id, fetchUser, navigation])
+  );
 
   // Like Info: run and wait. No timer so first try can complete.
   useEffect(() => {
@@ -318,6 +319,14 @@ export default function UserProfileScreen() {
       });
       if (ins2) throw ins2;
       await awardPoints(currentUser.id, currentEvent.id, 'connect');
+      await createNotificationAndPush(
+        userId,
+        currentEvent.id,
+        'system',
+        'Connection accepted',
+        `${currentUser.full_name ?? 'Someone'} accepted your connection request`,
+        { chat_user_id: currentUser.id }
+      );
       setIsConnected(true);
       setRequestReceivedFromThem(false);
       Toast.show({ type: 'success', text1: 'Connected', text2: "You're now connected. You can message them." });

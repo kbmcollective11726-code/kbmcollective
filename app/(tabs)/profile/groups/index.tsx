@@ -7,18 +7,18 @@ import {
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
+  Dimensions,
   AppState,
   AppStateStatus,
-  Dimensions,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { Users, PlusCircle } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
-import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, startForegroundRefresh, getErrorMessage } from '../../../../lib/supabase';
+import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../../lib/supabase';
 import { addDebugLog } from '../../../../lib/debugLog';
 import { colors } from '../../../../constants/colors';
 import Avatar from '../../../../components/Avatar';
@@ -32,11 +32,26 @@ type ChatGroup = {
   member_count?: number;
 };
 
+const RESUME_REFETCH_DEBOUNCE_MS = 12000;
+
 export default function GroupsListScreen() {
   const router = useRouter();
+  const isFocused = useIsFocused();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const lastResumeRefetchAt = useRef<number>(0);
   const [groups, setGroups] = useState<ChatGroup[]>([]);
+
+  useEffect(() => {
+    if (__DEV__) console.log('[Groups] component did mount');
+    return () => {
+      if (__DEV__) console.log('[Groups] component will unmount');
+    };
+  }, []);
+
+  useEffect(() => {
+    if ((!user?.id || !currentEvent?.id) && __DEV__) console.log('[Groups] user session null or expired or no event — user?.id:', user?.id, 'currentEvent?.id:', currentEvent?.id);
+  }, [user?.id, currentEvent?.id]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
@@ -45,15 +60,17 @@ export default function GroupsListScreen() {
 
   const fetchAdmin = useCallback(async (): Promise<boolean> => {
     if (!user?.id || !currentEvent?.id) {
+      if (__DEV__) console.log('[Groups] fetchAdmin skipped — no user or event');
       setIsEventAdmin(false);
       return false;
     }
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('event_members')
       .select('role, roles')
       .eq('event_id', currentEvent.id)
       .eq('user_id', user.id)
       .single();
+    if (__DEV__) console.log('[Groups] Supabase event_members (fetchAdmin) — data:', data, 'error:', error);
     const row = data as { role?: string; roles?: string[] } | null;
     const role = row?.role ?? 'attendee';
     const roles = Array.isArray(row?.roles) ? row.roles : [];
@@ -69,22 +86,20 @@ export default function GroupsListScreen() {
 
   const fetchInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
+  const mountedRef = useRef(false);
   const fetchGroups = useCallback(async (_adminOverride?: boolean) => {
-    // #region agent log
-    fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/groups/index.tsx:fetchGroups',message:'entry',data:{inFlight:fetchInProgressRef.current,hasUser:!!user?.id,hasEvent:!!currentEvent?.id},timestamp:Date.now(),hypothesisId:'H1,H3,H5'})}).catch(()=>{});
-    // #endregion
     if (!user?.id || !currentEvent?.id) {
+      if (__DEV__) console.log('[Groups] fetch skipped — no user or event');
       setGroups([]);
       setFetchError(null);
       setLoading(false);
       return;
     }
     if (fetchInProgressRef.current) {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/groups/index.tsx:fetchGroups',message:'skip in-flight',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
+      if (__DEV__) console.log('[Groups] fetch skipped — already in progress');
       return;
     }
+    if (__DEV__) console.log('[Groups] fetch starting');
     fetchInProgressRef.current = true;
     setLoading(true);
     setFetchError(null);
@@ -98,6 +113,7 @@ export default function GroupsListScreen() {
           .eq('event_id', currentEvent.id)
           .order('created_at', { ascending: false });
 
+        if (__DEV__) console.log('[Groups] Supabase chat_groups query — data:', groupRows, 'error:', error);
         if (error) throw error;
         const rows = (groupRows ?? []) as ChatGroup[];
         if (!rows.length) {
@@ -108,12 +124,20 @@ export default function GroupsListScreen() {
           rows
             .filter((g: ChatGroup) => g.created_by === user?.id)
             .map((g: ChatGroup) =>
-              Promise.resolve(supabase.from('chat_group_members').insert({ group_id: g.id, user_id: user!.id })).then(() => {}).catch(() => {})
+              supabase.from('chat_group_members').insert({ group_id: g.id, user_id: user!.id }).select().then(
+                (res) => {
+                  if (__DEV__) console.log('[Groups] Supabase chat_group_members insert — group:', g.id, 'data:', res.data, 'error:', res.error);
+                },
+                (err: unknown) => {
+                  if (__DEV__) console.log('[Groups] Supabase chat_group_members insert failed — exact error object:', err);
+                }
+              )
             )
         );
         const withCount = await Promise.all(
           rows.map(async (g: ChatGroup) => {
-            const { data: rpcCount } = await supabase.rpc('get_chat_group_member_count', { p_group_id: g.id });
+            const { data: rpcCount, error: rpcError } = await supabase.rpc('get_chat_group_member_count', { p_group_id: g.id });
+            if (__DEV__) console.log('[Groups] Supabase get_chat_group_member_count — group:', g.id, 'data:', rpcCount, 'error:', rpcError);
             if (typeof rpcCount === 'number') return { ...g, member_count: rpcCount };
             const { count } = await supabase
               .from('chat_group_members')
@@ -122,6 +146,7 @@ export default function GroupsListScreen() {
             return { ...g, member_count: count ?? 0 };
           })
         );
+        if (__DEV__) console.log('[Groups] Supabase fetchGroups returned data (count):', withCount?.length ?? 0);
         setGroups(withCount);
       });
       autoRetryScheduledRef.current = false;
@@ -130,14 +155,11 @@ export default function GroupsListScreen() {
     } catch (err: unknown) {
       const msg = getErrorMessage(err);
       addDebugLog('Groups', 'Load failed', msg);
-      if (__DEV__) console.warn('Fetch groups error:', err);
+      if (__DEV__) console.log('[Groups] Supabase call failed — exact error object:', err);
       setFetchError('Error - page not loading');
       setFetchErrorDetail(msg);
       setGroups([]);
     } finally {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/groups/index.tsx:fetchGroups',message:'fetchGroups finally',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      // #endregion
       fetchInProgressRef.current = false;
       setLoading(false);
     }
@@ -149,6 +171,8 @@ export default function GroupsListScreen() {
       setLoading(false);
       return;
     }
+    if (mountedRef.current) return;
+    mountedRef.current = true;
     setFetchError(null);
     setLoading(true);
     fetchAdmin()
@@ -158,33 +182,24 @@ export default function GroupsListScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (user?.id && currentEvent?.id) fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {});
+      if (user?.id && currentEvent?.id) {
+        fetchInProgressRef.current = false;
+        fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {});
+      }
     }, [user?.id, currentEvent?.id, fetchAdmin, fetchGroups])
   );
 
   // When app comes back from background: wait for root’s refresh, then load.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && user?.id && currentEvent?.id) {
-        // #region agent log
-        fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/groups/index.tsx:AppState',message:'app became active',data:{screen:'Groups'},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-        // #endregion
-        fetchInProgressRef.current = false;
-        setLoading(true);
-        (async () => {
-          const refreshTimeoutMs = 8000;
-          try {
-            await Promise.race([
-              refreshSessionIfNeeded(),
-              new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Refresh timeout')), refreshTimeoutMs)),
-            ]);
-          } catch (_) {}
-          fetchAdmin()
-            .then((admin) => fetchGroups(admin))
-            .catch(() => {})
-            .finally(() => setLoading(false));
-        })();
-      }
+      if (state !== 'active' || !user?.id || !currentEvent?.id) return;
+      const now = Date.now();
+      if (now - lastResumeRefetchAt.current < RESUME_REFETCH_DEBOUNCE_MS) return;
+      lastResumeRefetchAt.current = now;
+      fetchInProgressRef.current = false;
+      refreshSessionIfNeeded()
+        .catch(() => {})
+        .finally(() => fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {}));
     });
     return () => sub.remove();
   }, [user?.id, currentEvent?.id, fetchAdmin, fetchGroups]);
@@ -227,6 +242,7 @@ export default function GroupsListScreen() {
     } catch (e) {
       const msg = getErrorMessage(e);
       addDebugLog('Groups', 'Pull-to-refresh failed', msg);
+      if (__DEV__) console.log('[Groups] onRefresh failed — exact error object:', e);
       if (__DEV__) Toast.show({ type: 'error', text1: 'Refresh failed', text2: msg.slice(0, 50), visibilityTime: 4000 });
       setFetchError('Error - page not loading');
     } finally {
@@ -274,7 +290,7 @@ export default function GroupsListScreen() {
           <Text style={styles.errorHint}>Pull down to refresh or tap Try again.</Text>
           {fetchErrorDetail?.toLowerCase().includes('timed out') ? (
             <Text style={[styles.errorHint, { marginTop: 4, fontStyle: 'italic', fontSize: 11 }]}>
-              Open Debug (bottom-right) → Test connection to see if this device can reach Supabase.
+              Check Metro console or try: npx expo start --tunnel
             </Text>
           ) : null}
           <TouchableOpacity

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -163,8 +164,17 @@ export default function GroupChatScreen() {
       router.replace('/(tabs)/profile/groups' as any);
       return;
     }
-    fetchGroupAndMembership();
+    fetchGroupAndMembership().catch(() => {});
   }, [groupId, fetchGroupAndMembership, router]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (groupId && user?.id) {
+        fetchGroupAndMembership().catch(() => {});
+        fetchMessages().catch(() => {});
+      }
+    }, [groupId, user?.id, fetchGroupAndMembership, fetchMessages])
+  );
 
   useEffect(() => {
     if (groupName) {

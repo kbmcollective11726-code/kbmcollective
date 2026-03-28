@@ -86,7 +86,12 @@ export interface VendorBooth {
   event_id: string;
   vendor_name: string;
   description: string | null;
+  logo_url: string | null;
+  booth_location: string | null;
+  contact_user_id: string | null;
+  website: string | null;
   is_active: boolean;
+  created_at: string;
 }
 
 export interface MeetingSlot {

@@ -1,4 +1,5 @@
-// Platform admin only: delete a user account and all associated data.
+// Delete a user account and all associated data.
+// Caller can delete their own account (self-deletion) or, if platform admin, delete another user.
 // Clears FKs that use NO ACTION, then calls auth.admin.deleteUser (cascade removes public.users and related rows).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
@@ -45,16 +46,6 @@ Deno.serve(async (req: Request) => {
     return json({ error: "Invalid token" }, 401);
   }
 
-  const admin = createClient(supabaseUrl, serviceRoleKey);
-  const { data: profile } = await admin
-    .from("users")
-    .select("is_platform_admin")
-    .eq("id", caller.id)
-    .single();
-  if (!(profile as { is_platform_admin?: boolean } | null)?.is_platform_admin) {
-    return json({ error: "Platform admin only" }, 403);
-  }
-
   let body: { user_id?: string };
   try {
     body = await req.json();
@@ -65,13 +56,25 @@ Deno.serve(async (req: Request) => {
   if (!targetUserId) {
     return json({ error: "user_id required" }, 400);
   }
-  if (targetUserId === caller.id) {
-    return json({ error: "Cannot delete your own account" }, 400);
+
+  const admin = createClient(supabaseUrl, serviceRoleKey);
+  const isSelfDelete = targetUserId === caller.id;
+  if (!isSelfDelete) {
+    // Deleting another user: platform admin only
+    const { data: profile } = await admin
+      .from("users")
+      .select("is_platform_admin")
+      .eq("id", caller.id)
+      .single();
+    if (!(profile as { is_platform_admin?: boolean } | null)?.is_platform_admin) {
+      return json({ error: "Platform admin only" }, 403);
+    }
   }
 
   await admin.from("announcements").update({ sent_by: null }).eq("sent_by", targetUserId);
   await admin.from("events").update({ created_by: null }).eq("created_by", targetUserId);
   await admin.from("vendor_booths").update({ contact_user_id: null }).eq("contact_user_id", targetUserId);
+  await admin.from("vendor_booth_reps").delete().eq("user_id", targetUserId);
 
   const { error: deleteError } = await admin.auth.admin.deleteUser(targetUserId);
   if (deleteError) {

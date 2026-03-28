@@ -18,7 +18,7 @@ import {
 import { X } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
-import { useGlobalSearchParams, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
@@ -39,7 +39,6 @@ export default function FeedScreen() {
   const { currentEvent } = useEventStore();
   const blockedUserIds = useBlockStore((s) => s.blockedUserIds);
   const { fetchBlockedUsers, isBlocked } = useBlockStore();
-  const params = useGlobalSearchParams<{ postId?: string }>();
   const router = useRouter();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
@@ -48,10 +47,10 @@ export default function FeedScreen() {
   const [expandedImagePost, setExpandedImagePost] = useState<Post | null>(null);
   const [likingPostId, setLikingPostId] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const deepLinkPostIdHandled = useRef(false);
   const fetchPostsRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const fetchPosts = useCallback(async () => {
-    if (!currentEvent?.id || !user?.id) {
+    const eventId = useEventStore.getState().currentEvent?.id;
+    if (!eventId || !user?.id) {
       setPosts([]);
       setLoading(false);
       setFetchError(null);
@@ -63,7 +62,7 @@ export default function FeedScreen() {
         const { data: postsData, error } = await supabase
           .from('posts')
           .select('id, event_id, user_id, image_url, caption, image_hash, likes_count, comments_count, is_pinned, is_approved, is_deleted, created_at, user:users(id, full_name, avatar_url)')
-          .eq('event_id', currentEvent.id)
+          .eq('event_id', eventId)
           .eq('is_deleted', false)
           .eq('is_approved', true)
           .order('is_pinned', { ascending: false })
@@ -109,7 +108,7 @@ export default function FeedScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentEvent?.id, user?.id, blockedUserIds]);
+  }, [user?.id, blockedUserIds]);
   fetchPostsRef.current = fetchPosts;
 
   useEffect(() => {
@@ -161,35 +160,6 @@ export default function FeedScreen() {
     }, 40000);
     return () => clearTimeout(t);
   }, [loading]);
-
-  // Deep link: open comment sheet for post when opened via collectivelive://post/<id>
-  useEffect(() => {
-    const postId = params.postId;
-    if (!postId || deepLinkPostIdHandled.current || !currentEvent?.id) return;
-    const found = posts.find((p) => p.id === postId);
-    if (found) {
-      deepLinkPostIdHandled.current = true;
-      setCommentPost(found);
-      router.setParams({ postId: undefined });
-      return;
-    }
-    if (!loading && posts.length >= 0) {
-      supabase
-        .from('posts')
-        .select('*, user:users(id, full_name, avatar_url)')
-        .eq('id', postId)
-        .eq('event_id', currentEvent.id)
-        .eq('is_deleted', false)
-        .single()
-        .then(({ data }) => {
-          if (data && !deepLinkPostIdHandled.current) {
-            deepLinkPostIdHandled.current = true;
-            setCommentPost({ ...data, user_liked: false } as Post);
-            router.setParams({ postId: undefined });
-          }
-        });
-    }
-  }, [params.postId, posts, currentEvent?.id, loading, router]);
 
   useEffect(() => {
     if (!currentEvent?.id) return;

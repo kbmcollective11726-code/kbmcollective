@@ -35,13 +35,28 @@ export default function IndexScreen() {
     }
   }, [isAuthenticated, isLoading, mustChangePassword, user?.is_platform_admin, router]);
 
-  // Safety: force go to login after 1.5s so we never stay on loading (Expo Go / slow auth)
+  // Safety: only after auth init finishes — never redirect while isLoading (slow getSession was
+  // firing this at 1.5s and sending signed-in users to login = "random sign out" reports).
   useEffect(() => {
     const t = setTimeout(() => {
       if (navigated.current) return;
+      const { isLoading: loading, isAuthenticated: authed } = useAuthStore.getState();
+      if (loading) return;
+      navigated.current = true;
+      router.replace(authed ? '/(tabs)/home' : '/(auth)/login');
+    }, 4000);
+    return () => clearTimeout(t);
+  }, [router]);
+
+  // Last resort if initialize() never clears isLoading (very rare)
+  useEffect(() => {
+    const t = setTimeout(() => {
+      if (navigated.current) return;
+      const { isLoading: loading } = useAuthStore.getState();
+      if (!loading) return;
       navigated.current = true;
       router.replace('/(auth)/login');
-    }, 1500);
+    }, 25000);
     return () => clearTimeout(t);
   }, [router]);
 

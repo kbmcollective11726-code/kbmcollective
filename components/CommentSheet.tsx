@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
+  Image,
   StyleSheet,
   Modal,
   TouchableOpacity,
@@ -29,6 +30,8 @@ interface CommentSheetProps {
   currentUserId: string | null;
   currentUserFullName?: string | null;
   onCommentAdded?: () => void;
+  /** Full-screen page (notification / deep link): show post + comments, no bottom sheet modal */
+  embedded?: boolean;
 }
 
 export default function CommentSheet({
@@ -39,6 +42,7 @@ export default function CommentSheet({
   currentUserId,
   currentUserFullName,
   onCommentAdded,
+  embedded = false,
 }: CommentSheetProps) {
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -68,15 +72,17 @@ export default function CommentSheet({
     }
   }, [post?.id]);
 
+  const active = embedded || visible;
+
   useEffect(() => {
-    if (visible && post?.id) {
+    if (active && post?.id) {
       setLoading(true);
       fetchComments();
     }
-  }, [visible, post?.id, fetchComments]);
+  }, [active, post?.id, fetchComments]);
 
   useEffect(() => {
-    if (!visible || !post?.id) return;
+    if (!active || !post?.id) return;
     const channel = supabase
       .channel('comments-' + post.id)
       .on(
@@ -88,7 +94,7 @@ export default function CommentSheet({
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [visible, post?.id, fetchComments]);
+  }, [active, post?.id, fetchComments]);
 
   const handleSend = async () => {
     const content = input.trim();
@@ -129,14 +135,111 @@ export default function CommentSheet({
   };
 
   if (!post) return null;
+  if (!embedded && !visible) return null;
+
+  const postListHeader = embedded ? (
+    <View style={styles.embeddedPost}>
+      <View style={styles.postHeaderRow}>
+        <Avatar uri={post.user?.avatar_url} name={post.user?.full_name} size={44} />
+        <View style={styles.postHeaderText}>
+          <Text style={styles.postAuthor}>{post.user?.full_name ?? 'Someone'}</Text>
+          <Text style={styles.postTime}>
+            {formatDistanceToNow(new Date(post.created_at), { addSuffix: true })}
+          </Text>
+        </View>
+      </View>
+      {post.image_url ? (
+        <Image source={{ uri: post.image_url }} style={styles.postImage} resizeMode="cover" />
+      ) : null}
+      {post.caption ? <Text style={styles.postCaption}>{post.caption}</Text> : null}
+      <Text style={styles.commentsSectionLabel}>Comments</Text>
+    </View>
+  ) : null;
+
+  const listEmptyText = <Text style={styles.empty}>No comments yet. Be the first!</Text>;
+
+  const renderComment = ({ item }: { item: Comment }) => (
+    <View style={styles.commentRow}>
+      <Avatar uri={item.user?.avatar_url} name={item.user?.full_name} size={36} />
+      <View style={styles.commentBody}>
+        <Text style={styles.commentName}>{item.user?.full_name ?? 'Someone'}</Text>
+        <Text style={styles.commentContent}>{item.content}</Text>
+        <Text style={styles.commentTime}>
+          {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
+        </Text>
+      </View>
+    </View>
+  );
+
+  const inputBar = (
+    <View style={styles.inputRow}>
+      <TextInput
+        style={styles.input}
+        placeholder="Add a comment..."
+        placeholderTextColor={colors.textMuted}
+        value={input}
+        onChangeText={setInput}
+        multiline
+        maxLength={500}
+        editable={!sending}
+      />
+      <TouchableOpacity
+        style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
+        onPress={handleSend}
+        disabled={!input.trim() || sending}
+      >
+        {sending ? (
+          <ActivityIndicator size="small" color={colors.textOnPrimary} />
+        ) : (
+          <Text style={styles.sendText}>Post</Text>
+        )}
+      </TouchableOpacity>
+    </View>
+  );
+
+  if (embedded && postListHeader) {
+    return (
+      <KeyboardAvoidingView
+        style={styles.embeddedRoot}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={0}
+      >
+        <SafeAreaView style={styles.embeddedSafe} edges={['bottom']}>
+          <FlatList
+            data={comments}
+            keyExtractor={(item) => item.id}
+            style={styles.listFlex}
+            contentContainerStyle={styles.listContentEmbedded}
+            ListHeaderComponent={postListHeader}
+            ListEmptyComponent={
+              loading ? (
+                <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
+              ) : (
+                listEmptyText
+              )
+            }
+            renderItem={renderComment}
+          />
+          {inputBar}
+        </SafeAreaView>
+      </KeyboardAvoidingView>
+    );
+  }
+
+  const commentListModal = loading ? (
+    <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
+  ) : (
+    <FlatList
+      data={comments}
+      keyExtractor={(item) => item.id}
+      contentContainerStyle={styles.list}
+      ListEmptyComponent={listEmptyText}
+      renderItem={renderComment}
+    />
+  );
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="slide"
-      onRequestClose={onClose}
-    >
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
       <TouchableOpacity style={styles.overlay} activeOpacity={1} onPress={onClose}>
         <KeyboardAvoidingView
           style={styles.sheetWrap}
@@ -151,57 +254,8 @@ export default function CommentSheet({
                   <X size={24} color={colors.text} />
                 </TouchableOpacity>
               </View>
-              {loading ? (
-                <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
-              ) : (
-                <FlatList
-                  data={comments}
-                  keyExtractor={(item) => item.id}
-                  contentContainerStyle={styles.list}
-                  ListEmptyComponent={
-                    <Text style={styles.empty}>No comments yet. Be the first!</Text>
-                  }
-                  renderItem={({ item }) => (
-                    <View style={styles.commentRow}>
-                      <Avatar
-                        uri={item.user?.avatar_url}
-                        name={item.user?.full_name}
-                        size={36}
-                      />
-                      <View style={styles.commentBody}>
-                        <Text style={styles.commentName}>{item.user?.full_name ?? 'Someone'}</Text>
-                        <Text style={styles.commentContent}>{item.content}</Text>
-                        <Text style={styles.commentTime}>
-                          {formatDistanceToNow(new Date(item.created_at), { addSuffix: true })}
-                        </Text>
-                      </View>
-                    </View>
-                  )}
-                />
-              )}
-              <View style={styles.inputRow}>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Add a comment..."
-                  placeholderTextColor={colors.textMuted}
-                  value={input}
-                  onChangeText={setInput}
-                  multiline
-                  maxLength={500}
-                  editable={!sending}
-                />
-                <TouchableOpacity
-                  style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
-                  onPress={handleSend}
-                  disabled={!input.trim() || sending}
-                >
-                  {sending ? (
-                    <ActivityIndicator size="small" color={colors.textOnPrimary} />
-                  ) : (
-                    <Text style={styles.sendText}>Post</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
+              {commentListModal}
+              {inputBar}
             </SafeAreaView>
           </TouchableOpacity>
         </KeyboardAvoidingView>
@@ -317,5 +371,65 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: colors.textOnPrimary,
+  },
+  embeddedRoot: {
+    flex: 1,
+    backgroundColor: colors.surface,
+  },
+  embeddedSafe: {
+    flex: 1,
+  },
+  listFlex: {
+    flex: 1,
+  },
+  listContentEmbedded: {
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    flexGrow: 1,
+  },
+  embeddedPost: {
+    paddingTop: 8,
+    paddingBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+  postHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  postHeaderText: {
+    marginLeft: 12,
+    flex: 1,
+  },
+  postAuthor: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  postTime: {
+    fontSize: 13,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  postImage: {
+    width: '100%',
+    aspectRatio: 1,
+    maxHeight: 360,
+    borderRadius: 12,
+    backgroundColor: colors.borderLight,
+  },
+  postCaption: {
+    fontSize: 15,
+    color: colors.text,
+    marginTop: 12,
+    lineHeight: 22,
+  },
+  commentsSectionLabel: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.text,
+    marginTop: 20,
+    marginBottom: 4,
   },
 });

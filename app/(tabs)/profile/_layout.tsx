@@ -24,6 +24,7 @@ export default function ProfileStackLayout() {
         }}
       />
       <Stack.Screen name="edit" options={{ title: 'Edit Profile', headerBackTitle: 'Back' }} />
+      <Stack.Screen name="change-password" options={{ title: 'Change password', headerBackTitle: 'Back' }} />
       <Stack.Screen name="notifications" options={{ title: 'Notifications', headerBackTitle: 'Back' }} />
       <Stack.Screen name="announcements" options={{ title: 'Announcements', headerBackTitle: 'Back' }} />
       <Stack.Screen name="people" options={{ title: 'Community', headerShown: false }} />
@@ -45,6 +46,7 @@ export default function ProfileStackLayout() {
       <Stack.Screen name="admin-vendor-booths" options={{ title: 'Vendor booths (B2B)', headerBackTitle: 'Back' }} />
       <Stack.Screen name="admin-vendor-booth-edit" options={{ title: 'Vendor booth', headerBackTitle: 'Back' }} />
       <Stack.Screen name="admin-delete-user" options={{ title: 'Delete user account', headerBackTitle: 'Back' }} />
+      <Stack.Screen name="delete-account" options={{ title: 'Delete account', headerBackTitle: 'Back' }} />
     </Stack>
   );
 }

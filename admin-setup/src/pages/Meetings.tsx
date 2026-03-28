@@ -309,7 +309,9 @@ export default function Meetings() {
       )}
 
       {booths.length === 0 && (
-        <p className={styles.empty}>No vendor booths for this event. Create booths in the mobile app first.</p>
+        <p className={styles.empty}>
+          No vendor booths for this event. Add booths under <strong>Vendor booths (B2B)</strong> on the event home page, then return here to add slots and assign attendees.
+        </p>
       )}
 
       {addSlotOpen && (
@@ -321,25 +323,46 @@ export default function Meetings() {
                 ×
               </button>
             </div>
-            <form onSubmit={handleAddSlot} className={styles.modalBody}>
-              <label>Start (date & time)</label>
-              <input
-                type="datetime-local"
-                value={newSlotStart}
-                onChange={(e) => setNewSlotStart(e.target.value)}
-                required
-              />
-              <label>End (date & time)</label>
-              <input
-                type="datetime-local"
-                value={newSlotEnd}
-                onChange={(e) => setNewSlotEnd(e.target.value)}
-                required
-              />
-              <button type="submit" className={`${styles.btn} ${styles.btnPrimary}`} disabled={addingSlot}>
+            <div className={styles.modalScroll}>
+              <p className={styles.modalPickerHint}>
+                <strong>Tip:</strong> Chrome and Edge often don’t show an “OK” on the calendar — pick your date and time,
+                then <strong>click outside</strong> the calendar (or press <kbd>Esc</kbd>) to close it. Your choice is saved
+                automatically.
+              </p>
+              <p className={styles.modalPickerHintSecondary}>
+                <strong>Cancel</strong> and <strong>Add slot</strong> are on <em>this dialog</em> at the bottom — not inside
+                the calendar popup. Close the calendar first, then scroll this window if needed to see them.
+              </p>
+              <form id="add-meeting-slot-form" onSubmit={handleAddSlot} className={styles.modalBody}>
+                <label>Start (date & time)</label>
+                <input
+                  type="datetime-local"
+                  value={newSlotStart}
+                  onChange={(e) => setNewSlotStart(e.target.value)}
+                  required
+                />
+                <label>End (date & time)</label>
+                <input
+                  type="datetime-local"
+                  value={newSlotEnd}
+                  onChange={(e) => setNewSlotEnd(e.target.value)}
+                  required
+                />
+              </form>
+            </div>
+            <div className={styles.modalFooter}>
+              <button type="button" className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setAddSlotOpen(false)}>
+                Cancel
+              </button>
+              <button
+                type="submit"
+                form="add-meeting-slot-form"
+                className={`${styles.btn} ${styles.btnPrimary}`}
+                disabled={addingSlot}
+              >
                 {addingSlot ? 'Adding…' : 'Add slot'}
               </button>
-            </form>
+            </div>
           </div>
         </div>
       )}

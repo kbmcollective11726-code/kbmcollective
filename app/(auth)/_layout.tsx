@@ -17,6 +17,7 @@ export default function AuthLayout() {
       <Stack.Screen name="login" options={{ headerShown: false }} />
       <Stack.Screen name="register" options={{ headerShown: false, title: 'Sign up', headerBackTitle: 'Back' }} />
       <Stack.Screen name="change-password" options={{ title: 'Change password', headerBackVisible: false, gestureEnabled: false }} />
+      <Stack.Screen name="reset-password" options={{ title: 'Reset password', headerShown: false }} />
     </Stack>
   );
 }

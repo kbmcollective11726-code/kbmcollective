@@ -40,9 +40,17 @@ export async function registerPushToken(userId: string): Promise<void> {
       projectId: Constants.expoConfig?.extra?.eas?.projectId ?? undefined,
     });
     const token = tokenResult?.data;
-    if (!token) return;
+    if (!token) {
+      if (__DEV__) console.warn('[push] No Expo push token from device (check EAS projectId and a real device build).');
+      return;
+    }
 
-    await supabase.from('users').update({ push_token: token }).eq('id', userId);
+    const { error } = await supabase.from('users').update({ push_token: token }).eq('id', userId);
+    if (error) {
+      console.warn('[push] Could not save push_token to profile:', error.message);
+      return;
+    }
+    if (__DEV__) console.log('[push] Token registered for user', userId.slice(0, 8) + '…');
   } catch (err) {
     console.warn('Push registration failed:', err);
   }

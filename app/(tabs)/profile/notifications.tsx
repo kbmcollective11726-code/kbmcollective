@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -9,16 +9,17 @@ import {
   RefreshControl,
   ActivityIndicator,
   Alert,
+  Dimensions,
   AppState,
   AppStateStatus,
-  Dimensions,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
 import { ChevronLeft, Check, X } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
-import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, startForegroundRefresh, getErrorMessage } from '../../../lib/supabase';
+import { useEventStore } from '../../../stores/eventStore';
+import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
 import { addDebugLog } from '../../../lib/debugLog';
 import { setAppBadgeCount } from '../../../lib/pushNotifications';
 import { colors, notificationIcons } from '../../../constants/colors';
@@ -32,14 +33,63 @@ type NotificationRow = {
   is_read: boolean;
   created_at: string;
   event_id: string | null;
-  data?: { post_id?: string; comment_id?: string; chat_user_id?: string; group_id?: string };
+  /** Parsed JSON from DB; keys are normalized to strings */
+  data?: Record<string, string>;
 };
+
+const NOTIFICATIONS_PATH = '/profile/notifications';
+const FROM_NOTIFICATIONS = `?from=${encodeURIComponent(NOTIFICATIONS_PATH)}`;
+
+/** Supabase may return jsonb as object or (rarely) a JSON string */
+function parseNotificationData(raw: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (raw == null) return out;
+  let obj: Record<string, unknown> | null = null;
+  if (typeof raw === 'string') {
+    try {
+      obj = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      return out;
+    }
+  } else if (typeof raw === 'object' && !Array.isArray(raw)) {
+    obj = raw as Record<string, string>;
+  }
+  if (!obj) return out;
+  for (const [k, v] of Object.entries(obj)) {
+    if (v != null && v !== '') out[k] = String(v);
+  }
+  return out;
+}
+
+function dataPick(data: Record<string, string>, ...keys: string[]): string | undefined {
+  for (const k of keys) {
+    const v = data[k];
+    if (v) return v;
+  }
+  return undefined;
+}
+
+const RESUME_REFETCH_DEBOUNCE_MS = 12000;
 
 export default function NotificationsScreen() {
   const router = useRouter();
   const navigation = useNavigation();
+  const isFocused = useIsFocused();
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user } = useAuthStore();
+  const currentEvent = useEventStore((s) => s.currentEvent);
+  const lastResumeRefetchAt = useRef<number>(0);
+
+  useEffect(() => {
+    if (__DEV__) console.log('[Notifications] component did mount');
+    return () => {
+      if (__DEV__) console.log('[Notifications] component will unmount');
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user?.id && __DEV__) console.log('[Notifications] user session is null or expired — user?.id:', user?.id);
+  }, [user?.id]);
 
   const goBack = useCallback(() => {
     const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
@@ -72,22 +122,27 @@ export default function NotificationsScreen() {
 
   const fetchInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
+  const mountedRef = useRef(false);
   const fetchNotifications = useCallback(async () => {
-    // #region agent log
-    fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/notifications.tsx:fetchNotifications',message:'entry',data:{inFlight:fetchInProgressRef.current,hasUser:!!user?.id},timestamp:Date.now(),hypothesisId:'H1,H3,H5'})}).catch(()=>{});
-    // #endregion
     if (!user?.id) {
+      if (__DEV__) console.log('[Notifications] fetch skipped — no user (session null or expired)');
       setItems([]);
       setLoading(false);
       setFetchError(null);
       return;
     }
-    if (fetchInProgressRef.current) {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/notifications.tsx:fetchNotifications',message:'skip in-flight',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
+    if (!currentEvent?.id) {
+      setItems([]);
+      setLoading(false);
+      setFetchError(null);
+      setAppBadgeCount(0);
       return;
     }
+    if (fetchInProgressRef.current) {
+      if (__DEV__) console.log('[Notifications] fetch skipped — already in progress');
+      return;
+    }
+    if (__DEV__) console.log('[Notifications] fetch starting');
     fetchInProgressRef.current = true;
     setFetchError(null);
     setFetchErrorDetail(null);
@@ -98,11 +153,17 @@ export default function NotificationsScreen() {
           .from('notifications')
           .select('id, type, title, body, is_read, created_at, event_id, data')
           .eq('user_id', user.id)
+          .eq('event_id', currentEvent.id)
           .order('created_at', { ascending: false })
           .limit(50);
+        if (__DEV__) console.log('[Notifications] Supabase notifications query — data:', notifRes.data, 'error:', notifRes.error);
         if (notifRes.error) throw notifRes.error;
-        return (notifRes.data ?? []) as NotificationRow[];
+        return (notifRes.data ?? []).map((row: NotificationRow & { data?: unknown }) => ({
+          ...row,
+          data: parseNotificationData(row.data),
+        }));
       });
+      if (__DEV__) console.log('[Notifications] Supabase query returned data (count):', all?.length ?? 0);
       setItems(all);
       autoRetryScheduledRef.current = false;
       setFetchError(null);
@@ -111,29 +172,25 @@ export default function NotificationsScreen() {
       setAppBadgeCount(unread);
     } catch (err: unknown) {
       const msg = getErrorMessage(err);
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/notifications.tsx:fetchNotifications',message:'fetchNotifications catch',data:{msg:msg.slice(0,120)},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-      // #endregion
       addDebugLog('Notifications', 'Load failed', msg);
-      if (__DEV__) console.warn('Notifications fetch error:', err);
+      if (__DEV__) console.log('[Notifications] Supabase call failed — exact error object:', err);
       setItems([]);
       setFetchError('Error - page not loading');
       setFetchErrorDetail(msg);
     } finally {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/notifications.tsx:fetchNotifications',message:'fetchNotifications finally',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      // #endregion
       fetchInProgressRef.current = false;
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, currentEvent?.id]);
 
-  // Up to 3 attempts (immediate, +2s, +5s) so transient failures often recover.
+  // Up to 3 attempts (immediate, +2s, +5s) so transient failures often recover. Only on first mount.
   useEffect(() => {
     if (!user?.id) {
       setLoading(false);
       return;
     }
+    if (mountedRef.current) return;
+    mountedRef.current = true;
     let cancelled = false;
     const retry = (attemptIndex: number) => {
       if (cancelled) return;
@@ -147,32 +204,33 @@ export default function NotificationsScreen() {
     return () => { cancelled = true; };
   }, [fetchNotifications]);
 
+  // Switching the active event should reload the list (event-scoped notifications only).
+  useEffect(() => {
+    if (!user?.id || !currentEvent?.id) return;
+    fetchInProgressRef.current = false;
+    fetchNotifications().catch(() => {});
+  }, [currentEvent?.id, user?.id, fetchNotifications]);
+
   useFocusEffect(
     useCallback(() => {
-      if (user?.id) fetchNotifications().catch(() => {});
+      if (user?.id) {
+        fetchInProgressRef.current = false;
+        fetchNotifications().catch(() => {});
+      }
     }, [user?.id, fetchNotifications])
   );
 
   // When app comes back from background: wait for root’s refresh, then load.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && user?.id) {
-        // #region agent log
-        fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/notifications.tsx:AppState',message:'app became active',data:{screen:'Notifications'},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-        // #endregion
-        fetchInProgressRef.current = false;
-        setLoading(true);
-        (async () => {
-          const refreshTimeoutMs = 8000;
-          try {
-            await Promise.race([
-              refreshSessionIfNeeded(),
-              new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Refresh timeout')), refreshTimeoutMs)),
-            ]);
-          } catch (_) {}
-          fetchNotifications().catch(() => {}).finally(() => setLoading(false));
-        })();
-      }
+      if (state !== 'active' || !user?.id) return;
+      const now = Date.now();
+      if (now - lastResumeRefetchAt.current < RESUME_REFETCH_DEBOUNCE_MS) return;
+      lastResumeRefetchAt.current = now;
+      fetchInProgressRef.current = false;
+      refreshSessionIfNeeded()
+        .catch(() => {})
+        .finally(() => fetchNotifications().catch(() => {}));
     });
     return () => sub.remove();
   }, [user?.id, fetchNotifications]);
@@ -214,6 +272,7 @@ export default function NotificationsScreen() {
     } catch (e) {
       const msg = getErrorMessage(e);
       addDebugLog('Notifications', 'Pull-to-refresh failed', msg);
+      if (__DEV__) console.log('[Notifications] onRefresh failed — exact error object:', e);
       if (__DEV__) Toast.show({ type: 'error', text1: 'Refresh failed', text2: msg.slice(0, 50), visibilityTime: 4000 });
       setFetchError('Error - page not loading');
     } finally {
@@ -224,33 +283,42 @@ export default function NotificationsScreen() {
   const markAsRead = async (id: string) => {
     if (!user?.id) return;
     try {
-      await supabase.from('notifications').update({ is_read: true }).eq('id', id).eq('user_id', user.id);
+      const res = await supabase.from('notifications').update({ is_read: true }).eq('id', id).eq('user_id', user.id).select();
+      if (__DEV__) console.log('[Notifications] Supabase markAsRead — data:', res.data, 'error:', res.error);
       setItems((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
       const newUnread = Math.max(0, unreadCount - 1);
       setAppBadgeCount(newUnread);
     } catch (err) {
-      console.error('Mark read error:', err);
+      if (__DEV__) console.log('[Notifications] markAsRead failed — exact error object:', err);
     }
   };
 
   const markAllAsRead = useCallback(async () => {
-    if (!user?.id) return;
+    if (!user?.id || !currentEvent?.id) return;
     try {
-      await supabase.from('notifications').update({ is_read: true }).eq('user_id', user.id).eq('is_read', false);
+      const res = await supabase
+        .from('notifications')
+        .update({ is_read: true })
+        .eq('user_id', user.id)
+        .eq('is_read', false)
+        .eq('event_id', currentEvent.id)
+        .select();
+      if (__DEV__) console.log('[Notifications] Supabase markAllAsRead — data:', res.data, 'error:', res.error);
       setItems((prev) => prev.map((n) => ({ ...n, is_read: true })));
       setAppBadgeCount(0);
     } catch (err) {
-      console.error('Mark all read error:', err);
+      if (__DEV__) console.log('[Notifications] markAllAsRead failed — exact error object:', err);
     }
-  }, [user?.id]);
+  }, [user?.id, currentEvent?.id]);
 
   const deleteNotification = async (id: string) => {
     if (!user?.id) return;
     try {
-      await supabase.from('notifications').delete().eq('id', id).eq('user_id', user.id);
+      const res = await supabase.from('notifications').delete().eq('id', id).eq('user_id', user.id).select();
+      if (__DEV__) console.log('[Notifications] Supabase deleteNotification — data:', res.data, 'error:', res.error);
       setItems((prev) => prev.filter((n) => n.id !== id));
     } catch (err) {
-      console.error('Delete notification error:', err);
+      if (__DEV__) console.log('[Notifications] deleteNotification failed — exact error object:', err);
     }
   };
 
@@ -279,18 +347,78 @@ export default function NotificationsScreen() {
   const handleNotificationPress = (item: NotificationRow) => {
     markAsRead(item.id);
     const data = item.data ?? {};
-    if (item.type === 'message' && data.chat_user_id) {
-      router.push(`/profile/chat/${data.chat_user_id}?from=${encodeURIComponent('/profile/notifications')}` as any);
+
+    // Direct message (not group invite — those use group_id below)
+    if (item.type === 'message' && dataPick(data, 'chat_user_id', 'chatUserId')) {
+      const uid = dataPick(data, 'chat_user_id', 'chatUserId')!;
+      router.push(`/profile/chat/${uid}${FROM_NOTIFICATIONS}` as any);
       return;
     }
-    if (data.group_id) {
-      router.push(`/profile/groups/${data.group_id}?from=${encodeURIComponent('/profile/notifications')}` as any);
+    if (dataPick(data, 'group_id', 'groupId')) {
+      const gid = dataPick(data, 'group_id', 'groupId')!;
+      router.push(`/profile/groups/${gid}${FROM_NOTIFICATIONS}` as any);
       return;
     }
-    if ((item.type === 'like' || item.type === 'comment') && data.post_id) {
-      router.replace({ pathname: '/(tabs)/feed', params: { postId: data.post_id } } as any);
+    if ((item.type === 'like' || item.type === 'comment') && dataPick(data, 'post_id', 'postId')) {
+      const pid = dataPick(data, 'post_id', 'postId')!;
+      const q = item.event_id ? `?eventId=${encodeURIComponent(item.event_id)}` : '';
+      router.replace(`/(tabs)/feed/comment/${pid}${q}` as any);
       return;
     }
+    if (item.type === 'schedule_change') {
+      const sid = dataPick(data, 'session_id', 'sessionId');
+      if (sid) {
+        router.push(`/(tabs)/schedule?sessionId=${encodeURIComponent(sid)}` as any);
+      } else {
+        router.push('/(tabs)/schedule' as any);
+      }
+      return;
+    }
+    if (item.type === 'connection_request' && dataPick(data, 'requester_id', 'requesterId')) {
+      const rid = dataPick(data, 'requester_id', 'requesterId')!;
+      router.push(`/(tabs)/feed/user/${rid}${FROM_NOTIFICATIONS}` as any);
+      return;
+    }
+    if (item.type === 'system' && dataPick(data, 'chat_user_id', 'chatUserId')) {
+      const uid = dataPick(data, 'chat_user_id', 'chatUserId')!;
+      router.push(`/profile/chat/${uid}${FROM_NOTIFICATIONS}` as any);
+      return;
+    }
+    if (item.type === 'meeting' && dataPick(data, 'booth_id', 'boothId')) {
+      const boothId = dataPick(data, 'booth_id', 'boothId')!;
+      const slotId = dataPick(data, 'slot_id', 'slotId');
+      const fromEnc = encodeURIComponent('/(tabs)/schedule');
+      const rateParam = slotId ? `&rate_slot_id=${encodeURIComponent(slotId)}` : '';
+      router.push(`/(tabs)/expo/${boothId}?from=${fromEnc}${rateParam}` as any);
+      return;
+    }
+    if (item.type === 'announcement') {
+      router.push(`/profile/announcements${FROM_NOTIFICATIONS}` as any);
+      return;
+    }
+    if (item.type === 'points') {
+      router.push('/(tabs)/leaderboard' as any);
+      return;
+    }
+    if (item.type === 'badge') {
+      router.push('/(tabs)/profile' as any);
+      return;
+    }
+    if (item.type === 'message' && !dataPick(data, 'chat_user_id', 'chatUserId')) {
+      Toast.show({
+        type: 'info',
+        text1: 'No link',
+        text2: 'Open Messages from your profile to continue the conversation.',
+        visibilityTime: 3500,
+      });
+      return;
+    }
+    Toast.show({
+      type: 'info',
+      text1: 'Notification',
+      text2: 'There is no screen linked to this notification.',
+      visibilityTime: 3000,
+    });
   };
 
   const handleClearOne = (item: NotificationRow) => {
@@ -332,6 +460,18 @@ export default function NotificationsScreen() {
 
   if (!user) return null;
 
+  if (!currentEvent?.id) {
+    return (
+      <SafeAreaView style={styles.container} edges={['bottom']}>
+        <View style={styles.placeholder}>
+          <Text style={styles.placeholderText}>
+            Join or select an event to see notifications for that event only.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   if (loading) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -356,7 +496,7 @@ export default function NotificationsScreen() {
           <Text style={styles.errorSubtext}>Pull down to refresh or tap Try again.</Text>
           {fetchErrorDetail?.toLowerCase().includes('timed out') ? (
             <Text style={[styles.errorSubtext, { marginTop: 8, fontStyle: 'italic', fontSize: 11 }]}>
-              Open Debug (bottom-right) → Test connection to see if this device can reach Supabase.
+              Check Metro console or try: npx expo start --tunnel
             </Text>
           ) : null}
           <TouchableOpacity

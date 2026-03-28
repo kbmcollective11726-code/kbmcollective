@@ -5,6 +5,10 @@ import { PointAction } from './types';
  * Award points to a user for an action.
  * Checks the event's point rules and daily limits.
  * The database trigger automatically updates event_members.points.
+ *
+ * When a post is soft-deleted (`posts.is_deleted`), DB trigger `remove_points_on_post_soft_delete`
+ * removes the author's `post_photo` row from `point_log` and recalculates their total (migration
+ * `20260323120000_remove_post_photo_points_on_soft_delete.sql`).
  */
 export async function awardPoints(
   userId: string,
@@ -20,7 +24,7 @@ export async function awardPoints(
       .select('points_value, max_per_day')
       .eq('event_id', eventId)
       .eq('action', action)
-      .single();
+      .maybeSingle();
 
     if (ruleError || !rule) {
       console.log(`No point rule found for action: ${action}`);
@@ -122,7 +126,7 @@ export async function getUserPoints(
     .select('points')
     .eq('user_id', userId)
     .eq('event_id', eventId)
-    .single();
+    .maybeSingle();
 
   return data?.points ?? 0;
 }

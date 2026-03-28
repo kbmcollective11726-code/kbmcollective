@@ -1,8 +1,48 @@
 import { create } from 'zustand';
 import Constants from 'expo-constants';
 import { supabase } from '../lib/supabase';
+import { getPasswordResetRedirectUrl } from '../lib/passwordResetRedirect';
 import { registerPushToken } from '../lib/pushNotifications';
+import { useEventStore } from './eventStore';
 import { User } from '../lib/types';
+
+/** Single listener for login / logout / refresh (call once after session restore). */
+function bindSupabaseAuthListener(
+  set: (partial: Record<string, unknown> | ((state: AuthStore) => Record<string, unknown>)) => void,
+  get: () => AuthStore
+) {
+  supabase.auth.onAuthStateChange(async (event, session) => {
+    if (event === 'SIGNED_OUT') {
+      useEventStore.getState().clearForLogout();
+      set({
+        session: null,
+        user: null,
+        isAuthenticated: false,
+      });
+      return;
+    }
+    if (session?.user) {
+      if (event === 'TOKEN_REFRESHED') {
+        set({ session, isAuthenticated: true });
+        return;
+      }
+      const { data: profile } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', session.user.id)
+        .maybeSingle();
+
+      set({
+        session,
+        user: profile ?? get().user,
+        isAuthenticated: true,
+      });
+      if (Constants.appOwnership !== 'expo' && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
+        registerPushToken(session.user.id).catch(() => {});
+      }
+    }
+  });
+}
 
 interface AuthStore {
   user: User | null;
@@ -38,16 +78,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       ]);
 
       if (session?.user) {
-        // Fetch the full user profile
+        // Fetch the full user profile (maybeSingle avoids throw when row missing or duplicate)
         const { data: profile } = await supabase
           .from('users')
           .select('*')
           .eq('id', session.user.id)
-          .single();
+          .maybeSingle();
 
         set({
           session,
-          user: profile,
+          user: profile ?? null,
           isAuthenticated: true,
           isLoading: false,
         });
@@ -55,40 +95,34 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       } else {
         set({ isLoading: false });
       }
-
-      // Listen for auth changes (login, logout, token refresh)
-      supabase.auth.onAuthStateChange(async (event, session) => {
-        if (event === 'SIGNED_OUT') {
-          set({
-            session: null,
-            user: null,
-            isAuthenticated: false,
-          });
-          return;
-        }
-        // Keep session in sync: SIGNED_IN, INITIAL_SESSION, TOKEN_REFRESHED
-        if (session?.user) {
+    } catch (error) {
+      console.error('Auth initialization error:', error);
+      // Race timeout or network glitch: session may still exist in AsyncStorage — recover instead of showing logged out
+      try {
+        const { data: { session: recovered } } = await supabase.auth.getSession();
+        if (recovered?.user) {
           const { data: profile } = await supabase
             .from('users')
             .select('*')
-            .eq('id', session.user.id)
-            .single();
-
+            .eq('id', recovered.user.id)
+            .maybeSingle();
           set({
-            session,
-            user: profile ?? get().user,
+            session: recovered,
+            user: profile ?? null,
             isAuthenticated: true,
+            isLoading: false,
           });
-          // Register push token only on sign-in or initial load, not on TOKEN_REFRESHED (avoids redundant updates, no duplicate notifications)
-          if (Constants.appOwnership !== 'expo' && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
-            registerPushToken(session.user.id).catch(() => {});
-          }
+          if (Constants.appOwnership !== 'expo') registerPushToken(recovered.user.id).catch(() => {});
         }
-      });
-    } catch (error) {
-      console.error('Auth initialization error:', error);
-      set({ isLoading: false });
+      } catch {
+        /* fall through */
+      }
+      if (!get().isAuthenticated) {
+        set({ isLoading: false });
+      }
     }
+
+    bindSupabaseAuthListener(set, get);
   },
 
   login: async (email, password) => {
@@ -109,7 +143,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
           .from('users')
           .select('*')
           .eq('id', data.session.user.id)
-          .single();
+          .maybeSingle();
         set({
           session: data.session,
           user: profile ?? null,
@@ -164,10 +198,13 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       });
 
     try {
+      if (__DEV__) console.log('[Register authStore] calling supabase.auth.signUp');
       let result = await withTimeout(doSignUp(), REGISTER_TIMEOUT_MS);
       const { data, error } = result;
+      if (__DEV__) console.log('[Register authStore] signUp returned — data:', JSON.stringify(data ? { session: !!data.session, user: !!data.user } : null), 'error:', error ? { message: error.message, name: error.name } : null);
 
       if (error) {
+        if (__DEV__) console.log('[Register authStore] Supabase signUp failed — exact error object:', error);
         const msg = (error.message || '').toLowerCase();
         if (msg.includes('already registered') || msg.includes('already exists') || msg.includes('already been registered')) {
           return { error: 'User already registered. Sign in with your email and password instead.' };
@@ -206,13 +243,19 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         user: minimalUser,
         isAuthenticated: true,
       });
-      supabase.from('users').select('*').eq('id', authUser.id).single().then(
-        ({ data: profile }) => { if (profile) void get().refreshUser(); },
-        () => {}
+      supabase.from('users').select('*').eq('id', authUser.id).maybeSingle().then(
+        ({ data: profile, error: profileError }) => {
+          if (__DEV__) console.log('[Register authStore] users select after signUp — data:', profile, 'error:', profileError);
+          if (profile) void get().refreshUser();
+        },
+        (e) => {
+          if (__DEV__) console.log('[Register authStore] users select after signUp — catch error object:', e);
+        }
       );
 
       return { error: null };
     } catch (err: any) {
+      if (__DEV__) console.log('[Register authStore] signUp catch — exact error object:', err);
       const msg = String(err?.message ?? err);
       if (msg.includes('timed out')) {
         // One automatic retry for slow connections (e.g. iOS / first request)
@@ -251,7 +294,7 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
               user: minimalUser,
               isAuthenticated: true,
             });
-            supabase.from('users').select('*').eq('id', authUser.id).single().then(
+            supabase.from('users').select('*').eq('id', authUser.id).maybeSingle().then(
               ({ data: profile }) => { if (profile) void get().refreshUser(); },
               () => {}
             );
@@ -266,8 +309,9 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
 
   resetPassword: async (email) => {
     try {
+      const redirectTo = getPasswordResetRedirectUrl();
       const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-        redirectTo: 'collectivelive://reset-password',
+        redirectTo,
       });
       if (error) return { error: error.message };
       return { error: null };
@@ -277,6 +321,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   logout: async () => {
+    // Clear event store so next user never sees previous user's event
+    useEventStore.getState().clearForLogout();
     // Clear state first so UI updates immediately; signOut in background so logout never "hangs"
     set({
       user: null,
@@ -296,11 +342,10 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
         .update(updates)
         .eq('id', user.id)
         .select()
-        .single();
+        .maybeSingle();
 
       if (error) return { error: error.message };
-
-      set({ user: data });
+      if (data) set({ user: data });
       return { error: null };
     } catch (err: any) {
       return { error: err.message || 'Update failed' };
@@ -308,14 +353,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   refreshUser: async () => {
-    const { user } = get();
-    if (!user) return;
+    const { session, user } = get();
+    // Allow loading profile when session exists but `user` row wasn't loaded yet (e.g. after password change).
+    const id = user?.id ?? session?.user?.id;
+    if (!id) return;
 
     const { data } = await supabase
       .from('users')
       .select('*')
-      .eq('id', user.id)
-      .single();
+      .eq('id', id)
+      .maybeSingle();
 
     if (data) set({ user: data });
   },

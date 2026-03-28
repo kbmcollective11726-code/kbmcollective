@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -74,6 +75,12 @@ export default function EditProfileScreen() {
       setAvatarUrl(user.avatar_url ?? null);
     }
   }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshUser().catch(() => {});
+    }, [refreshUser])
+  );
 
   const handlePickAvatar = async () => {
     if (!user?.id) return;

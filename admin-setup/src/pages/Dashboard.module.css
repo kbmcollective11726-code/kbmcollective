@@ -88,6 +88,46 @@
   color: var(--color-success);
 }
 
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 24px;
+  padding: 4px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  width: fit-content;
+}
+
+.tab {
+  padding: 10px 20px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.tab:hover {
+  color: var(--color-text);
+  background: var(--color-surface-hover);
+}
+
+.tabActive {
+  color: var(--color-text);
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+}
+
+.tabActive:hover {
+  color: var(--color-accent-hover);
+  background: rgba(212, 175, 55, 0.25);
+}
+
 /* Summary cards */
 .cards {
   display: grid;

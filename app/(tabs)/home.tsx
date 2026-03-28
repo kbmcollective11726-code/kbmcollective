@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -31,7 +31,13 @@ import { theme } from '../../constants/theme';
 import type { Event } from '../../lib/types';
 import { isEventAccessible } from '../../lib/eventAccess';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
-import { getNowNextSessions, formatSessionTime, type SessionForNowNext } from '../../lib/scheduleNowNext';
+import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
+import {
+  getNowNextSessions,
+  formatSessionTime,
+  formatB2BSlotTimeLocal,
+  type SessionForNowNext,
+} from '../../lib/scheduleNowNext';
 
 type PointRuleDisplay = { action: string; points_value: number; description: string | null };
 const DISPLAY_ACTIONS = [
@@ -73,7 +79,10 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [pointRules, setPointRules] = useState<PointRuleDisplay[]>([]);
   const [scheduleSessions, setScheduleSessions] = useState<SessionForNowNext[]>([]);
-  const [nextB2B, setNextB2B] = useState<{ vendor_name: string; start_time: string; end_time: string; booth_id: string } | null>(null);
+  /** User's B2B slots for this event (from bookings); live vs next derived with `nowNextTick`. */
+  const [b2bHomeRows, setB2bHomeRows] = useState<
+    { booth_id: string; start_time: string; end_time: string; vendor_name: string }[]
+  >([]);
   const [announcements, setAnnouncements] = useState<{ id: string; title: string; content: string; created_at: string }[]>([]);
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<Set<string>>(new Set());
   const [announcementsSectionHidden, setAnnouncementsSectionHidden] = useState(false);
@@ -105,9 +114,13 @@ export default function HomeScreen() {
       return;
     }
     let cancelled = false;
-    fetchPointRules(currentEvent.id).then((rules) => {
-      if (!cancelled) setPointRules(rules);
-    });
+    fetchPointRules(currentEvent.id)
+      .then((rules) => {
+        if (!cancelled) setPointRules(rules ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setPointRules([]);
+      });
     return () => { cancelled = true; };
   }, [currentEvent?.id]);
 
@@ -119,23 +132,28 @@ export default function HomeScreen() {
     }
     let cancelled = false;
     (async () => {
-      const { data, error } = await supabase
-        .from('schedule_sessions')
-        .select('id, title, start_time, end_time, day_number')
-        .eq('event_id', currentEvent.id)
-        .eq('is_active', true)
-        .order('day_number', { ascending: true })
-        .order('start_time', { ascending: true });
-      if (cancelled || error) return;
-      setScheduleSessions((data ?? []) as SessionForNowNext[]);
+      try {
+        const { data, error } = await supabase
+          .from('schedule_sessions')
+          .select('id, title, start_time, end_time, day_number')
+          .eq('event_id', currentEvent.id)
+          .eq('is_active', true)
+          .order('day_number', { ascending: true })
+          .order('start_time', { ascending: true });
+        if (cancelled) return;
+        if (error) throw error;
+        setScheduleSessions((data ?? []) as SessionForNowNext[]);
+      } catch {
+        if (!cancelled) setScheduleSessions([]);
+      }
     })();
     return () => { cancelled = true; };
   }, [currentEvent?.id]);
 
-  // Fetch next B2B meeting for this user (current event)
-  const fetchNextB2B = useCallback(async () => {
+  // Fetch user's B2B slots for this event; live + next lines are derived in useMemo (updates every minute).
+  const fetchB2BHomeRows = useCallback(async () => {
     if (!currentEvent?.id || !user?.id) {
-      setNextB2B(null);
+      setB2bHomeRows([]);
       return;
     }
     try {
@@ -151,44 +169,33 @@ export default function HomeScreen() {
         const slot = r.meeting_slots;
         if (slot?.booth_id && slot.start_time && slot.end_time) slots.push(slot);
       }
-      const nowMs = Date.now();
-      const upcoming = slots
-        .map((s) => {
-          try {
-            const startMs = parseISO(s.start_time.replace(' ', 'T')).getTime();
-            return { ...s, startMs: Number.isNaN(startMs) ? 0 : startMs };
-          } catch {
-            return { ...s, startMs: 0 };
-          }
-        })
-        .filter((s) => s.startMs > nowMs)
-        .sort((a, b) => a.startMs - b.startMs);
-      if (upcoming.length === 0) {
-        setNextB2B(null);
+      if (slots.length === 0) {
+        setB2bHomeRows([]);
         return;
       }
-      const first = upcoming[0];
       const boothIds = [...new Set(slots.map((s) => s.booth_id))];
       const { data: boothData } = await supabase
         .from('vendor_booths')
         .select('id, vendor_name')
         .eq('event_id', currentEvent.id)
         .in('id', boothIds);
-      const booth = (boothData ?? []).find((b: { id: string }) => b.id === first.booth_id) as { vendor_name: string } | undefined;
-      setNextB2B({
-        vendor_name: booth?.vendor_name ?? 'B2B meeting',
-        start_time: first.start_time,
-        end_time: first.end_time,
-        booth_id: first.booth_id,
-      });
+      const nameByBooth = new Map((boothData ?? []).map((b: { id: string; vendor_name: string | null }) => [b.id, b.vendor_name ?? 'B2B meeting']));
+      setB2bHomeRows(
+        slots.map((s) => ({
+          booth_id: s.booth_id,
+          start_time: s.start_time,
+          end_time: s.end_time,
+          vendor_name: nameByBooth.get(s.booth_id) ?? 'B2B meeting',
+        }))
+      );
     } catch {
-      setNextB2B(null);
+      setB2bHomeRows([]);
     }
   }, [currentEvent?.id, user?.id]);
 
   useEffect(() => {
-    fetchNextB2B();
-  }, [fetchNextB2B]);
+    fetchB2BHomeRows();
+  }, [fetchB2BHomeRows]);
 
   // Fetch announcements for current event
   useEffect(() => {
@@ -282,9 +289,53 @@ export default function HomeScreen() {
   };
 
   const { nowSessions, nextSessions } = useMemo(
-    () => getNowNextSessions(scheduleSessions, currentEvent?.start_date ?? null),
-    [scheduleSessions, currentEvent?.start_date, nowNextTick]
+    () =>
+      getNowNextSessions(
+        scheduleSessions,
+        currentEvent?.start_date ?? null,
+        currentEvent?.end_date ?? null
+      ),
+    [scheduleSessions, currentEvent?.start_date, currentEvent?.end_date, nowNextTick]
   );
+
+  const { liveB2BList, nextB2B } = useMemo(() => {
+    const now = Date.now();
+    const parsed = b2bHomeRows
+      .map((r) => {
+        try {
+          const startMs = parseISO(r.start_time.replace(/\s/, 'T')).getTime();
+          const endMs = parseISO(r.end_time.replace(/\s/, 'T')).getTime();
+          return { ...r, startMs, endMs };
+        } catch {
+          return { ...r, startMs: NaN, endMs: NaN };
+        }
+      })
+      .filter((r) => !Number.isNaN(r.startMs) && !Number.isNaN(r.endMs));
+
+    const live = parsed
+      .filter((r) => now >= r.startMs && now <= r.endMs)
+      .sort((a, b) => a.startMs - b.startMs)
+      .map((r) => {
+        const { startMs: _a, endMs: _b, ...rest } = r;
+        return rest;
+      });
+
+    const upcoming = parsed
+      .filter((r) => r.startMs > now)
+      .sort((a, b) => a.startMs - b.startMs);
+    const first = upcoming[0];
+    return {
+      liveB2BList: live,
+      nextB2B: first
+        ? {
+            vendor_name: first.vendor_name,
+            start_time: first.start_time,
+            end_time: first.end_time,
+            booth_id: first.booth_id,
+          }
+        : null,
+    };
+  }, [b2bHomeRows, nowNextTick]);
 
   const refetchInfoData = useCallback(async () => {
     if (!user?.id) return;
@@ -298,15 +349,26 @@ export default function HomeScreen() {
       setPointRules(rules);
       setScheduleSessions((sessions ?? []) as SessionForNowNext[]);
       setAnnouncements((ann ?? []) as { id: string; title: string; content: string; created_at: string }[]);
-      fetchNextB2B();
+      fetchB2BHomeRows();
     }
-  }, [user?.id, currentEvent?.id, refresh, fetchNextB2B]);
+  }, [user?.id, currentEvent?.id, refresh, fetchB2BHomeRows]);
+
+  const refetchInfoDataRef = useRef(refetchInfoData);
+  refetchInfoDataRef.current = refetchInfoData;
 
   useFocusEffect(
     useCallback(() => {
       withRefreshTimeout(refetchInfoData()).catch(() => {});
     }, [refetchInfoData])
   );
+
+  // Refetch when root layout refreshes session after app resume (notifyAfterSessionRefreshed).
+  useEffect(() => {
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      withRefreshTimeout(refetchInfoDataRef.current()).catch(() => {});
+    });
+    return unregister;
+  }, []);
 
   const onRefresh = async () => {
     if (!user?.id) return;
@@ -597,7 +659,7 @@ export default function HomeScreen() {
         </View>
 
         {/* Now & next — compact, tappable to Agenda. Sessions only show for the current event. Next B2B shown when user has one. */}
-        {(nowSessions.length > 0 || nextSessions.length > 0 || nextB2B) ? (
+        {(nowSessions.length > 0 || nextSessions.length > 0 || nextB2B || liveB2BList.length > 0) ? (
           <View style={styles.nowNextCard}>
             <TouchableOpacity
               style={styles.nowNextCardTouchable}
@@ -625,13 +687,30 @@ export default function HomeScreen() {
                   ))
                 )
               ) : null}
+              {liveB2BList.map((b) => (
+                <TouchableOpacity
+                  key={`live-b2b-${b.booth_id}-${b.start_time}`}
+                  style={styles.nowNextRow}
+                  onPress={() =>
+                    router.push(`/(tabs)/expo/${b.booth_id}?from=${encodeURIComponent('/(tabs)/home')}` as any)
+                  }
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.liveDot} />
+                  <Text style={styles.nowNextNowLabel}>Now:</Text>
+                  <Text style={styles.nowNextText} numberOfLines={1}>
+                    {b.vendor_name}
+                  </Text>
+                  <Text style={styles.nowNextB2bTag}>B2B</Text>
+                </TouchableOpacity>
+              ))}
               {nextSessions.length > 0 ? (
                 <View style={styles.nowNextRow}>
                   <Text style={styles.nowNextNextLabel}>Next:</Text>
                   <Text style={styles.nowNextText} numberOfLines={1}>{nextSessions[0].title}</Text>
                   <Text style={styles.nowNextTime}>{formatSessionTime(nextSessions[0].start_time)}</Text>
                 </View>
-              ) : nowSessions.length === 0 && !nextB2B ? (
+              ) : nowSessions.length === 0 && liveB2BList.length === 0 && !nextB2B ? (
                 <Text style={styles.nowNextEmpty}>No more sessions today</Text>
               ) : null}
               {nextB2B ? (
@@ -643,7 +722,7 @@ export default function HomeScreen() {
                   <Store size={14} color={colors.primary} style={{ marginRight: 6 }} />
                   <Text style={styles.nowNextNextLabel}>Next B2B:</Text>
                   <Text style={styles.nowNextText} numberOfLines={1}>{nextB2B.vendor_name}</Text>
-                  <Text style={styles.nowNextTime}>{formatSessionTime(nextB2B.start_time)}</Text>
+                  <Text style={styles.nowNextTime}>{formatB2BSlotTimeLocal(nextB2B.start_time)}</Text>
                 </TouchableOpacity>
               ) : null}
               <Text style={styles.nowNextTap}>Tap to view full agenda</Text>
@@ -1058,6 +1137,12 @@ const styles = StyleSheet.create({
   nowNextTime: {
     fontSize: 12,
     color: colors.textMuted,
+  },
+  nowNextB2bTag: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: colors.primary,
+    letterSpacing: 0.3,
   },
   nowNextEmpty: {
     fontSize: 13,

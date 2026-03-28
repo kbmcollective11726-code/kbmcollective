@@ -32,14 +32,22 @@ import {
   Store,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Constants from 'expo-constants';
 import { useAuthStore } from '../stores/authStore';
 import { useEventStore } from '../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../lib/supabase';
 import { setAppBadgeCount } from '../lib/pushNotifications';
 import { colors } from '../constants/colors';
 
-// Set EXPO_PUBLIC_LIVE_WALL_URL in .env (e.g. http://localhost:3000) or it defaults to localhost
-const LIVE_WALL_BASE_URL = (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_LIVE_WALL_URL) || 'http://localhost:3000';
+function getLiveWallBaseUrl(): string {
+  const fromEnv =
+    (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_LIVE_WALL_URL
+      ? String(process.env.EXPO_PUBLIC_LIVE_WALL_URL).trim().replace(/\/+$/, '')
+      : '') || '';
+  const extra = Constants.expoConfig?.extra as { liveWallUrl?: string } | undefined;
+  const fromExtra = (extra?.liveWallUrl && String(extra.liveWallUrl).trim().replace(/\/+$/, '')) || '';
+  return fromEnv || fromExtra || 'http://localhost:3000';
+}
 
 type HamburgerMenuProps = {
   onLogout?: () => void;
@@ -59,19 +67,22 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
 
   const fetchUnreadCount = useCallback(() => {
     if (!user?.id) return;
-    let query = supabase
+    if (!currentEvent?.id) {
+      setUnreadNotifications(0);
+      setAppBadgeCount(0);
+      return;
+    }
+    supabase
       .from('notifications')
       .select('id', { count: 'exact', head: true })
       .eq('user_id', user.id)
-      .eq('is_read', false);
-    if (currentEvent?.id) {
-      query = query.eq('event_id', currentEvent.id);
-    }
-    query.then(({ count }) => {
-      const n = count ?? 0;
-      setUnreadNotifications(n);
-      setAppBadgeCount(n);
-    });
+      .eq('is_read', false)
+      .eq('event_id', currentEvent.id)
+      .then(({ count }) => {
+        const n = count ?? 0;
+        setUnreadNotifications(n);
+        setAppBadgeCount(n);
+      });
   }, [user?.id, currentEvent?.id]);
 
   useEffect(() => {
@@ -187,9 +198,8 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
 
   const openLiveWall = () => {
     close();
-    const url = currentEvent?.id
-      ? `${LIVE_WALL_BASE_URL}/wall?event=${currentEvent.id}`
-      : LIVE_WALL_BASE_URL;
+    const base = getLiveWallBaseUrl();
+    const url = currentEvent?.id ? `${base}/wall?event=${currentEvent.id}` : base;
     Linking.openURL(url).catch(() => {});
   };
 

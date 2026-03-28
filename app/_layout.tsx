@@ -10,7 +10,9 @@ import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../stores/authStore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useDeepLink } from '../lib/useDeepLink';
-import { supabase, isSupabaseConfigured, startForegroundRefresh } from '../lib/supabase';
+import { abortAllRequests, supabase, isSupabaseConfigured, startForegroundRefresh, awaitForegroundRefresh, testSupabaseConnection } from '../lib/supabase';
+import { notifyAfterSessionRefreshed } from '../lib/onSessionRefreshed';
+import { registerPushToken } from '../lib/pushNotifications';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -59,21 +61,48 @@ const SPLASH_HIDE_MAX_MS = 500;
 export default function RootLayout() {
   const { initialize, isLoading } = useAuthStore();
   const splashHidden = useRef(false);
+  const appStateRef = useRef<AppStateStatus>(AppState.currentState);
   useDeepLink();
 
   useEffect(() => {
     initialize();
   }, [initialize]);
 
-  // When app returns from background: start one shared refresh so Profile/Notifications/Groups can wait for it then load.
-  const { user } = useAuthStore();
+  // When app returns from background: abort stale requests, refresh Supabase session, then notify screens.
   useEffect(() => {
-    if (!user?.id) return;
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active') startForegroundRefresh();
+      const prev = appStateRef.current;
+      appStateRef.current = state;
+      if (state === 'background') {
+        abortAllRequests();
+      }
+      if (state === 'active') {
+        if (prev === 'background' || prev === 'inactive') {
+          const uid = useAuthStore.getState().session?.user?.id;
+          if (uid && Constants.appOwnership !== 'expo') {
+            registerPushToken(uid).catch(() => {});
+          }
+        }
+        abortAllRequests(); // clear any stale connections
+        startForegroundRefresh();
+        awaitForegroundRefresh().then(() => {
+          notifyAfterSessionRefreshed();
+        }).catch(() => {
+          notifyAfterSessionRefreshed();
+        });
+        // Dev-only: after 2s log whether device can reach Supabase (helps debug "Request timed out" after resume).
+        if (__DEV__ && isSupabaseConfigured) {
+          setTimeout(() => {
+            testSupabaseConnection().then(({ ok, message }) => {
+              if (ok) console.log('[Supabase] Reachable after resume:', message);
+              else console.warn('[Supabase] Not reachable after resume:', message);
+            });
+          }, 2000);
+        }
+      }
     });
     return () => sub.remove();
-  }, [user?.id]);
+  }, []);
 
   // Ensure Android notification channel exists after mount (sound + vibration).
   useEffect(() => {

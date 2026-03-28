@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>KBM Connect — password reset</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; max-width: 520px; margin: 0 auto; line-height: 1.5; color: #111; }
+    h1 { font-size: 1.25rem; }
+    .muted { color: #555; font-size: 0.95rem; }
+  </style>
+</head>
+<body>
+  <h1>Opening KBM Connect…</h1>
+  <p id="status" class="muted">Redirecting you to the app to finish resetting your password.</p>
+  <p id="fallback" class="muted" style="display:none; margin-top:16px;">
+    If the app doesn’t open, install <strong>KBM Connect</strong> on this device, then open the reset link from your email again.
+    You can also use <strong>Profile → Change password</strong> while signed in.
+  </p>
+  <script>
+    (function () {
+      var statusEl = document.getElementById('status');
+      var fallbackEl = document.getElementById('fallback');
+      var hash = window.location.hash || '';
+      var search = window.location.search || '';
+      var hasTokens =
+        hash.indexOf('access_token') !== -1 ||
+        search.indexOf('access_token') !== -1 ||
+        hash.indexOf('type=recovery') !== -1 ||
+        search.indexOf('type=recovery') !== -1;
+
+      if (!hasTokens) {
+        if (statusEl) {
+          statusEl.textContent =
+            'This link is missing login data (expired or already used). Request a new password reset from the KBM Connect app.';
+        }
+        if (fallbackEl) fallbackEl.style.display = 'block';
+        return;
+      }
+
+      var target = 'collectivelive://reset-password';
+      if (hash) target += hash;
+      else if (search) target += search;
+
+      window.location.replace(target);
+      setTimeout(function () {
+        if (fallbackEl) fallbackEl.style.display = 'block';
+        if (statusEl) {
+          statusEl.textContent =
+            'We tried to open the app. If nothing happened, use the options below.';
+        }
+      }, 3500);
+    })();
+  </script>
+</body>
+</html>

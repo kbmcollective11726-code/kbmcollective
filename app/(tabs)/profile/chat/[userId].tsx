@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -57,8 +58,12 @@ export default function ChatScreen() {
 
   const fetchOtherUser = useCallback(async () => {
     if (!userId) return;
-    const { data } = await supabase.from('users').select('full_name, avatar_url').eq('id', userId).single();
-    if (data) setOtherName((data as { full_name: string }).full_name ?? '');
+    try {
+      const { data, error } = await supabase.from('users').select('full_name, avatar_url').eq('id', userId).single();
+      if (!error && data) setOtherName((data as { full_name: string }).full_name ?? '');
+    } catch {
+      // leave otherName as-is on error
+    }
   }, [userId]);
 
   const fetchMessages = useCallback(async () => {
@@ -124,8 +129,17 @@ export default function ChatScreen() {
   }, [from, goBack, navigation]);
 
   useEffect(() => {
-    fetchOtherUser();
+    fetchOtherUser().catch(() => {});
   }, [fetchOtherUser]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id && userId && currentEvent?.id) {
+        fetchOtherUser().catch(() => {});
+        fetchMessages().catch(() => {});
+      }
+    }, [user?.id, userId, currentEvent?.id, fetchOtherUser, fetchMessages])
+  );
 
   const checkConnection = useCallback(async () => {
     if (!user?.id || !userId || !currentEvent?.id) {

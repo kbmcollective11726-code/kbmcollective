@@ -15,6 +15,8 @@ import SessionFeedback from './pages/SessionFeedback';
 import Meetings from './pages/Meetings';
 import Announcements from './pages/Announcements';
 import Dashboard from './pages/Dashboard';
+import VendorBooths from './pages/VendorBooths';
+import VendorBoothForm from './pages/VendorBoothForm';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -68,6 +70,8 @@ export default function App() {
         <Route path="events/:eventId/b2b-feedback" element={<B2BFeedback />} />
         <Route path="events/:eventId/session-feedback" element={<SessionFeedback />} />
         <Route path="events/:eventId/meetings" element={<Meetings />} />
+        <Route path="events/:eventId/vendor-booths/:boothId" element={<VendorBoothForm />} />
+        <Route path="events/:eventId/vendor-booths" element={<VendorBooths />} />
         <Route path="events/:eventId/announcements" element={<Announcements />} />
       </Route>
       <Route path="/login" element={<Navigate to="/" replace />} />

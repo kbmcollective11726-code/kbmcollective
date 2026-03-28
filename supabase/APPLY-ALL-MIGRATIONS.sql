@@ -196,6 +196,15 @@ CREATE TABLE IF NOT EXISTS public.meeting_bookings (
   created_at TIMESTAMPTZ DEFAULT now(),
   UNIQUE(slot_id, attendee_id)
 );
+
+-- B2B "meeting in 5 min" push deduplication (notify-b2b-meeting-soon Edge Function)
+CREATE TABLE IF NOT EXISTS public.b2b_meeting_reminder_sent (
+  booking_id UUID PRIMARY KEY REFERENCES public.meeting_bookings(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE public.b2b_meeting_reminder_sent IS 'One row per booking when we sent the "meeting in 5 min" push. Used by notify-b2b-meeting-soon.';
+ALTER TABLE public.b2b_meeting_reminder_sent ENABLE ROW LEVEL SECURITY;
+
 ALTER TABLE public.vendor_booths ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.meeting_slots ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.meeting_bookings ENABLE ROW LEVEL SECURITY;
@@ -254,7 +263,8 @@ END; $$;
 
 -- Meeting bookings: admin assign + vendors view/update
 CREATE POLICY "Admins can assign meeting bookings" ON public.meeting_bookings FOR INSERT WITH CHECK (
-  EXISTS (SELECT 1 FROM public.meeting_slots ms JOIN public.vendor_booths vb ON vb.id = ms.booth_id JOIN public.event_members em ON em.event_id = vb.event_id AND em.user_id = auth.uid() AND em.role IN ('admin', 'super_admin') WHERE ms.id = meeting_bookings.slot_id)
+  public.is_platform_admin(auth.uid())
+  OR EXISTS (SELECT 1 FROM public.meeting_slots ms JOIN public.vendor_booths vb ON vb.id = ms.booth_id JOIN public.event_members em ON em.event_id = vb.event_id AND em.user_id = auth.uid() AND em.role IN ('admin', 'super_admin') WHERE ms.id = meeting_bookings.slot_id)
 );
 CREATE POLICY "Vendors and admins can view event booth bookings" ON public.meeting_bookings FOR SELECT USING (
   EXISTS (SELECT 1 FROM public.meeting_slots ms JOIN public.vendor_booths vb ON vb.id = ms.booth_id JOIN public.event_members em ON em.event_id = vb.event_id AND em.user_id = auth.uid() AND em.role IN ('admin', 'super_admin', 'vendor') WHERE ms.id = meeting_bookings.slot_id)
@@ -272,7 +282,7 @@ WHERE table_schema = 'public' AND table_name IN (
   'users','events','event_members','posts','likes','comments','messages','notifications','announcements',
   'schedule_sessions','user_schedule','point_rules','point_log','connections','connection_requests',
   'blocked_users','user_reports','chat_groups','chat_group_members','group_messages',
-  'session_reminder_sent','vendor_booths','meeting_slots','meeting_bookings','session_ratings'
+  'session_reminder_sent','vendor_booths','meeting_slots','meeting_bookings','b2b_meeting_reminder_sent','session_ratings'
 )
 ORDER BY table_name;
 */

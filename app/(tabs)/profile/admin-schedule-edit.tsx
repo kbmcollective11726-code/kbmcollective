@@ -15,6 +15,10 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { format, parseISO } from 'date-fns';
+import {
+  sessionIsoToWallClockLocalDate,
+  wallClockLocalPickerToSessionIso,
+} from '../../../lib/scheduleNowNext';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
@@ -208,9 +212,16 @@ export default function AdminScheduleEditScreen() {
       }
       setLocation(data.location ?? '');
       setRoom(data.room ?? '');
-      const start = data.start_time ? new Date(data.start_time) : getDefaultStart();
+      const start =
+        data.start_time != null
+          ? sessionIsoToWallClockLocalDate(String(data.start_time)) ?? new Date(data.start_time)
+          : getDefaultStart(currentEvent?.start_date);
+      const end =
+        data.end_time != null
+          ? sessionIsoToWallClockLocalDate(String(data.end_time)) ?? new Date(data.end_time)
+          : getDefaultEnd(currentEvent?.start_date);
       setStartDate(start);
-      setEndDate(data.end_time ? new Date(data.end_time) : getDefaultEnd());
+      setEndDate(end);
       // Session types: support comma-separated for multiple
       const types = (data.session_type ?? 'breakout').toString().split(',').map((t: string) => t.trim()).filter(Boolean);
       setSessionTypes(types.length > 0 ? types : ['breakout']);
@@ -408,8 +419,8 @@ export default function AdminScheduleEditScreen() {
       Alert.alert('Error', 'Title is required.');
       return;
     }
-    const startTime = startDate.toISOString();
-    const endTime = endDate.toISOString();
+    const startTime = wallClockLocalPickerToSessionIso(startDate);
+    const endTime = wallClockLocalPickerToSessionIso(endDate);
     if (endDate.getTime() <= startDate.getTime()) {
       Alert.alert('Error', 'End time must be after start time.');
       return;

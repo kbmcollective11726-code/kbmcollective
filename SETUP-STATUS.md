@@ -2,6 +2,10 @@
 
 Quick reference so you can confirm everything is fully set up.
 
+**End-to-end checklist for “session in 5 min” + “B2B meeting in 5 min”:** **[REMINDERS-5MIN-DEPLOY.md](./REMINDERS-5MIN-DEPLOY.md)** (SQL, vault, cron, `npm run supabase:deploy-reminders`).
+
+**Full Supabase vs app audit (tables, all Edge Functions, cron gaps):** **[docs/SUPABASE-LIVE-AUDIT.md](./docs/SUPABASE-LIVE-AUDIT.md)** — run **`scripts/verify-cron-jobs.sql`** in the SQL Editor to see which scheduled jobs exist.
+
 ---
 
 ## Done in code / deploy

@@ -13,6 +13,84 @@ type MemberRow = {
 
 const ROLES = ['attendee', 'speaker', 'vendor', 'admin'] as const;
 
+/** Raw `role` cell is sent to bulk-create-users; comma-separated values become `event_members.roles` (same as the app). */
+export type CsvMemberRow = { email: string; full_name?: string; role?: string; roles?: string[] };
+
+/** Parse role cell into valid roles (deduped, order preserved). Empty → [fallback]. */
+function rolesFromCsvCell(roleCellRaw: string, fallback: string): string[] {
+  const fb = ROLES.includes(fallback as (typeof ROLES)[number]) ? fallback : 'attendee';
+  const cell = roleCellRaw.trim().toLowerCase();
+  if (!cell) return [fb];
+  const parts = cell.split(',').map((p) => p.trim().toLowerCase()).filter(Boolean);
+  const valid = parts.filter((p) => ROLES.includes(p as (typeof ROLES)[number]));
+  const deduped = [...new Set(valid)];
+  if (deduped.length > 0) return deduped;
+  if (ROLES.includes(cell as (typeof ROLES)[number])) return [cell];
+  return [fb];
+}
+
+/** Parse CSV with columns: email (required), full_name or name (optional), role (optional). */
+export function parseMemberCsv(text: string, defaultRole: string): { rows: CsvMemberRow[]; error?: string } {
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) {
+    return { rows: [], error: 'CSV must have a header row and at least one data row.' };
+  }
+  const header = parseCsvLine(lines[0] ?? '').map((h) => h.toLowerCase().trim());
+  const emailIdx = header.indexOf('email');
+  if (emailIdx === -1) {
+    return { rows: [], error: 'CSV must include an "email" column.' };
+  }
+  const nameIdx = header.includes('full_name') ? header.indexOf('full_name') : header.indexOf('name');
+  const roleIdx = header.indexOf('role');
+  const dr = ROLES.includes(defaultRole as (typeof ROLES)[number]) ? defaultRole : 'attendee';
+  const rows: CsvMemberRow[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const values = parseCsvLine(lines[i] ?? '');
+    const email = (values[emailIdx] ?? '').trim().toLowerCase();
+    if (!email || !email.includes('@')) continue;
+    const fn = nameIdx >= 0 ? (values[nameIdx] ?? '').trim() : '';
+    const roleCell = roleIdx >= 0 ? (values[roleIdx] ?? '').trim() : '';
+    const roles = rolesFromCsvCell(roleCell, dr);
+    rows.push({
+      email,
+      full_name: fn || undefined,
+      role: roleCell.length > 0 ? roleCell : undefined,
+      roles,
+    });
+  }
+  if (rows.length === 0) {
+    return { rows: [], error: 'No valid email rows found.' };
+  }
+  return { rows };
+}
+
+/** Refresh session so Edge Functions get a valid JWT (reduces 401 after the tab was idle). */
+async function getEdgeFunctionAccessToken(): Promise<string | null> {
+  const { data: refreshed } = await supabase.auth.refreshSession();
+  if (refreshed.session?.access_token) return refreshed.session.access_token;
+  const { data: { session } } = await supabase.auth.getSession();
+  return session?.access_token ?? null;
+}
+
+async function parseEdgeErrorJson(res: Response): Promise<{ error?: string }> {
+  try {
+    return (await res.json()) as { error?: string };
+  } catch {
+    return {};
+  }
+}
+
+function edgeHttpErrorMessage(status: number, body: { error?: string }): string {
+  if (body.error) return body.error;
+  if (status === 401) {
+    return 'Unauthorized (401). Sign out and sign in again, then retry. Also confirm Vercel env uses the same Supabase project as this admin login, and deploy the bulk-create-users Edge Function.';
+  }
+  if (status === 403) {
+    return 'Forbidden (403). You must be a platform admin or an event admin for this event.';
+  }
+  return `Request failed (${status})`;
+}
+
 function parseCsvLine(line: string): string[] {
   const out: string[] = [];
   let i = 0;
@@ -53,11 +131,16 @@ export default function Members() {
   const [members, setMembers] = useState<MemberRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
-  const [result, setResult] = useState<{ added: number; skipped: number; notFound: string[] } | null>(null);
+  const [result, setResult] = useState<{ linked: number; failed: number; errors: string[] } | null>(null);
   const [bulkPassword, setBulkPassword] = useState('');
   const [bulkRole, setBulkRole] = useState<string>('attendee');
   const [bulkCreating, setBulkCreating] = useState(false);
-  const [bulkResult, setBulkResult] = useState<{ created: number; failed: number; errors: string[] } | null>(null);
+  const [bulkResult, setBulkResult] = useState<{
+    created: number;
+    linked: number;
+    failed: number;
+    errors: string[];
+  } | null>(null);
   const [updatingRole, setUpdatingRole] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
 
@@ -121,86 +204,86 @@ export default function Members() {
     return () => { cancelled = true; };
   }, [eventId]);
 
+  const reloadMembers = async () => {
+    if (!eventId) return;
+    const { data: rows } = await supabase
+      .from('event_members')
+      .select('user_id, role, users!inner(full_name, email)')
+      .eq('event_id', eventId)
+      .order('role');
+    const list: MemberRow[] = (rows ?? []).map((r: { user_id: string; role: string; users: { full_name: string; email: string } | { full_name: string; email: string }[] }) => {
+      const u = Array.isArray(r.users) ? r.users[0] : r.users;
+      return { user_id: r.user_id, full_name: u?.full_name ?? '', email: u?.email ?? '', role: r.role };
+    });
+    setMembers(list);
+  };
+
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !eventId) return;
     e.target.value = '';
     setResult(null);
     setAdding(true);
-    const notFound: string[] = [];
-    let added = 0;
-    let skipped = 0;
     try {
       const text = await file.text();
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      if (lines.length < 2) {
-        setResult({ added: 0, skipped: 0, notFound: ['CSV must have header and at least one row. Use: email,role (role optional, default attendee).'] });
+      const parsed = parseMemberCsv(text, 'attendee');
+      if (parsed.error) {
+        setResult({ linked: 0, failed: 0, errors: [parsed.error] });
         setAdding(false);
         return;
       }
-      const header = parseCsvLine(lines[0] ?? '').map((h) => h.toLowerCase());
-      const emailIdx = header.indexOf('email');
-      const roleIdx = header.indexOf('role');
-      if (emailIdx === -1) {
-        setResult({ added: 0, skipped: 0, notFound: ['CSV must have an "email" column.'] });
+      const token = await getEdgeFunctionAccessToken();
+      if (!token) {
+        setResult({ linked: 0, failed: 0, errors: ['You must be signed in.'] });
         setAdding(false);
         return;
       }
-      for (let i = 1; i < lines.length; i++) {
-        const values = parseCsvLine(lines[i] ?? '');
-        const email = (values[emailIdx] ?? '').trim().toLowerCase();
-        if (!email) continue;
-        const roleRaw = (roleIdx >= 0 ? values[roleIdx] ?? '' : '').trim().toLowerCase() || 'attendee';
-        const role = ROLES.includes(roleRaw as (typeof ROLES)[number]) ? roleRaw : 'attendee';
-        const { data: userRow } = await supabase.from('users').select('id').eq('email', email).maybeSingle();
-        const userId = (userRow as { id: string } | null)?.id;
-        if (!userId) {
-          notFound.push(email);
-          skipped++;
-          continue;
-        }
-        const { error } = await supabase.from('event_members').upsert(
-          { event_id: eventId, user_id: userId, role },
-          { onConflict: 'event_id,user_id' }
-        );
-        if (error) {
-          skipped++;
-          notFound.push(`${email}: ${error.message}`);
-        } else {
-          added++;
-        }
+      const res = await fetch(`${supabaseUrl}/functions/v1/bulk-create-users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          rows: parsed.rows,
+          event_id: eventId,
+          link_only: true,
+        }),
+      });
+      const data = (await parseEdgeErrorJson(res)) as {
+        error?: string;
+        linked?: number;
+        failed?: number;
+        errors?: string[];
+      };
+      if (!res.ok) {
+        setResult({ linked: 0, failed: 0, errors: [edgeHttpErrorMessage(res.status, data)] });
+        setAdding(false);
+        return;
       }
-      setResult({ added, skipped, notFound: notFound.slice(0, 30) });
-      if (added > 0) {
-        const { data: rows } = await supabase
-          .from('event_members')
-          .select('user_id, role, users!inner(full_name, email)')
-          .eq('event_id', eventId)
-          .order('role');
-        const list: MemberRow[] = (rows ?? []).map((r: { user_id: string; role: string; users: { full_name: string; email: string } | { full_name: string; email: string }[] }) => {
-          const u = Array.isArray(r.users) ? r.users[0] : r.users;
-          return { user_id: r.user_id, full_name: u?.full_name ?? '', email: u?.email ?? '', role: r.role };
-        });
-        setMembers(list);
-      }
+      const errors = data.errors ?? [];
+      setResult({
+        linked: data.linked ?? 0,
+        failed: data.failed ?? errors.length,
+        errors: errors.slice(0, 30),
+      });
+      if ((data.linked ?? 0) > 0) await reloadMembers();
     } catch (err) {
       setResult({
-        added: 0,
-        skipped: 0,
-        notFound: [err instanceof Error ? err.message : 'Failed to process CSV'],
+        linked: 0,
+        failed: 0,
+        errors: [err instanceof Error ? err.message : 'Failed to process CSV'],
       });
     } finally {
       setAdding(false);
     }
   };
 
-  const downloadUserTemplate = () => {
-    const csv = 'email\nuser1@example.com\nuser2@example.com';
+  const downloadMembersTemplate = () => {
+    const csv =
+      'full_name,email,role\nJane Doe,jane@example.com,attendee\nAcme Vendor,vendor@example.com,vendor\n"Speaker + vendor",speaker@example.com,"attendee,speaker,vendor"';
     const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'user-emails-template.csv';
+    a.download = 'members-import-template.csv';
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -208,76 +291,60 @@ export default function Members() {
   const handleBulkCreateFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
-    if (!file) return;
+    if (!file || !eventId) return;
     if (bulkPassword.length < 8) {
-      setBulkResult({ created: 0, failed: 0, errors: ['Set a default password (at least 8 characters) first.'] });
+      setBulkResult({ created: 0, linked: 0, failed: 0, errors: ['Set a default password (at least 8 characters) first.'] });
       return;
     }
     setBulkResult(null);
     setBulkCreating(true);
     try {
       const text = await file.text();
-      const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-      const header = lines[0] ?? '';
-      const emailIdx = parseCsvLine(header).map((h) => h.toLowerCase()).indexOf('email');
-      if (emailIdx === -1) {
-        setBulkResult({ created: 0, failed: 0, errors: ['CSV must have an "email" column.'] });
+      const parsed = parseMemberCsv(text, bulkRole);
+      if (parsed.error) {
+        setBulkResult({ created: 0, linked: 0, failed: 0, errors: [parsed.error] });
         setBulkCreating(false);
         return;
       }
-      const emails: string[] = [];
-      for (let i = 1; i < lines.length; i++) {
-        const values = parseCsvLine(lines[i] ?? '');
-        const email = (values[emailIdx] ?? '').trim().toLowerCase();
-        if (email && email.includes('@')) emails.push(email);
-      }
-      if (emails.length === 0) {
-        setBulkResult({ created: 0, failed: 0, errors: ['No valid emails in CSV.'] });
-        setBulkCreating(false);
-        return;
-      }
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        setBulkResult({ created: 0, failed: 0, errors: ['You must be signed in.'] });
+      const token = await getEdgeFunctionAccessToken();
+      if (!token) {
+        setBulkResult({ created: 0, linked: 0, failed: 0, errors: ['You must be signed in.'] });
         setBulkCreating(false);
         return;
       }
       const res = await fetch(`${supabaseUrl}/functions/v1/bulk-create-users`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          emails,
+          rows: parsed.rows,
           default_password: bulkPassword,
-          event_id: eventId || undefined,
-          role: eventId ? bulkRole : undefined,
+          event_id: eventId,
+          link_only: false,
         }),
       });
-      const data = (await res.json()) as { error?: string; created?: number; failed?: number; errors?: string[] };
+      const data = (await parseEdgeErrorJson(res)) as {
+        error?: string;
+        created?: number;
+        linked?: number;
+        failed?: number;
+        errors?: string[];
+      };
       if (!res.ok) {
-        setBulkResult({ created: 0, failed: 0, errors: [data.error ?? `Request failed (${res.status})`] });
+        setBulkResult({ created: 0, linked: 0, failed: 0, errors: [edgeHttpErrorMessage(res.status, data)] });
         setBulkCreating(false);
         return;
       }
       setBulkResult({
         created: data.created ?? 0,
+        linked: data.linked ?? 0,
         failed: data.failed ?? 0,
         errors: data.errors ?? [],
       });
-      if ((data.created ?? 0) > 0) {
-        const { data: rows } = await supabase
-          .from('event_members')
-          .select('user_id, role, users!inner(full_name, email)')
-          .eq('event_id', eventId!)
-          .order('role');
-        const list: MemberRow[] = (rows ?? []).map((r: { user_id: string; role: string; users: { full_name: string; email: string } | { full_name: string; email: string }[] }) => {
-          const u = Array.isArray(r.users) ? r.users[0] : r.users;
-          return { user_id: r.user_id, full_name: u?.full_name ?? '', email: u?.email ?? '', role: r.role };
-        });
-        setMembers(list);
-      }
+      if ((data.created ?? 0) + (data.linked ?? 0) > 0) await reloadMembers();
     } catch (err) {
       setBulkResult({
         created: 0,
+        linked: 0,
         failed: 0,
         errors: [err instanceof Error ? err.message : 'Failed to create accounts'],
       });
@@ -298,11 +365,15 @@ export default function Members() {
       <section className={styles.bulkSection}>
         <h2 className={styles.listTitle}>Create new user accounts (bulk)</h2>
         <p className={styles.hint}>
-          Download a template, fill in one email per row, then upload. Each user gets a default password and must change it on first sign-in.
+          <strong>Buttons:</strong> <em>Download CSV template</em> — sample file. <em>Default password</em> — used for brand-new accounts only (min 8 characters).
+          <em>Default role</em> — used when a row has no <code>role</code> column or it’s empty. <em>Upload CSV and create accounts</em> — pick your filled CSV to run the import.
+          Columns: <code>full_name</code>, <code>email</code>, and optional <code>role</code>. If you skip <code>role</code> or leave it empty, the default role above is used.
+          Use one or more roles per row: <code>attendee</code>, <code>speaker</code>, <code>vendor</code>, <code>admin</code>. Separate multiple roles with commas (e.g. <code>attendee,speaker,vendor</code>) — same as in the app.
+          New users get this password and must change it on first sign-in. Existing emails are linked to the event (name updated if provided).
         </p>
         <div className={styles.bulkRow}>
-          <button type="button" className={styles.importBtn} onClick={downloadUserTemplate}>
-            Download template (email)
+          <button type="button" className={styles.importBtn} onClick={downloadMembersTemplate}>
+            Download CSV template
           </button>
           <input
             ref={bulkFileInputRef}
@@ -324,7 +395,7 @@ export default function Members() {
           </label>
           {eventId && (
             <label className={styles.bulkLabel}>
-              Add to this event as:{' '}
+              Default role (when CSV has no role column):{' '}
               <select
                 className={styles.bulkSelect}
                 value={bulkRole}
@@ -347,7 +418,8 @@ export default function Members() {
         </div>
         {bulkResult && (
           <div className={styles.result}>
-            <strong>Bulk create:</strong> {bulkResult.created} created, {bulkResult.failed} failed.
+            <strong>Bulk create:</strong> {bulkResult.created} new accounts, {bulkResult.linked} linked to event
+            (already existed), {bulkResult.failed} failed.
             {bulkResult.errors.length > 0 && (
               <ul className={styles.errorList}>
                 {bulkResult.errors.map((msg, i) => (
@@ -361,7 +433,8 @@ export default function Members() {
 
       <h2 className={styles.listTitle}>Add existing users to this event</h2>
       <p className={styles.hint}>
-        CSV: <code>email,role</code> (role optional: attendee, speaker, vendor, admin). Users not in the app are skipped.
+        <strong>Button:</strong> <em>Add from CSV (batch)</em> — upload the same CSV format; <strong>no password</strong> (only accounts that already exist in the app are linked; others are listed as errors).
+        Columns: <code>full_name</code>, <code>email</code>, <code>role</code> (optional). Names are updated when provided. Multiple roles in one cell are comma-separated (e.g. <code>attendee,speaker,vendor</code>).
       </p>
       <div className={styles.toolbar}>
         <input
@@ -382,13 +455,13 @@ export default function Members() {
       </div>
       {result && (
         <div className={styles.result}>
-          <strong>Result:</strong> {result.added} added, {result.skipped} skipped.
-          {result.notFound.length > 0 && (
+          <strong>Result:</strong> {result.linked} linked to event, {result.failed} failed / skipped.
+          {result.errors.length > 0 && (
             <ul className={styles.errorList}>
-              {result.notFound.map((msg, i) => (
+              {result.errors.map((msg, i) => (
                 <li key={i}>{msg}</li>
               ))}
-              {result.notFound.length >= 30 && <li>…and more</li>}
+              {result.errors.length >= 30 && <li>…and more</li>}
             </ul>
           )}
         </div>

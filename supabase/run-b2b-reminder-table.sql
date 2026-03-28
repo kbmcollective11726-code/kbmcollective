@@ -7,3 +7,6 @@ CREATE TABLE IF NOT EXISTS public.b2b_meeting_reminder_sent (
 );
 
 COMMENT ON TABLE public.b2b_meeting_reminder_sent IS 'One row per booking when we sent the "meeting in 5 min" push. Used by notify-b2b-meeting-soon Edge Function.';
+
+-- No policies: clients cannot read/write; service role (Edge Functions) bypasses RLS.
+ALTER TABLE public.b2b_meeting_reminder_sent ENABLE ROW LEVEL SECURITY;

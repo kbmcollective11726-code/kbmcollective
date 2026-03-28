@@ -48,6 +48,8 @@ const ACTION_LABELS: Record<string, string> = {
   vendor_meeting: 'Visit a vendor booth',
   checkin: 'Check in at event',
   share_linkedin: 'Share on LinkedIn',
+  session_feedback: 'Leave feedback for a session',
+  b2b_feedback: 'Leave feedback for a B2B / vendor meeting',
 };
 
 export default function LeaderboardScreen() {

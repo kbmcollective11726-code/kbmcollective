@@ -105,17 +105,46 @@ Deno.serve(async (req: Request) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(messages),
     });
+    const rawText = await pushRes.text();
     if (!pushRes.ok) {
-      const errText = await pushRes.text();
-      console.warn("Expo push error:", errText);
-      return json({ sent: 0, error: errText }, 500);
+      console.warn("Expo push HTTP error:", pushRes.status, rawText);
+      return json({ sent: 0, error: rawText || pushRes.statusText }, 500);
     }
+    let parsed: { data?: Array<{ status?: string; message?: string; details?: { error?: string } }> } = {};
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      return json({ sent: tokens.length }, 200);
+    }
+    const items = Array.isArray(parsed?.data) ? parsed.data : [];
+    if (items.length === 0) {
+      return json({ sent: tokens.length }, 200);
+    }
+    let okCount = 0;
+    const ticketErrors: string[] = [];
+    for (const item of items) {
+      if (item?.status === "ok") okCount++;
+      else {
+        const msg =
+          item?.message ??
+          item?.details?.error ??
+          (typeof item === "object" && item !== null ? JSON.stringify(item) : String(item));
+        ticketErrors.push(String(msg));
+        console.warn("Expo push ticket error:", msg);
+      }
+    }
+    if (okCount === 0 && tokens.length > 0) {
+      return json({
+        sent: 0,
+        error: ticketErrors[0] ?? "Expo rejected all notifications",
+        ticket_errors: ticketErrors,
+      }, 502);
+    }
+    return json({ sent: okCount, ticket_errors: ticketErrors.length ? ticketErrors : undefined }, 200);
   } catch (err) {
     console.error("Expo push request failed:", err);
     return json({ sent: 0, error: String(err) }, 500);
   }
-
-  return json({ sent: tokens.length }, 200);
 });
 
 function json(body: object, status: number) {

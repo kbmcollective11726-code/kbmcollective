@@ -9,8 +9,6 @@ import {
   ActivityIndicator,
   TextInput,
   Alert,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
@@ -19,8 +17,9 @@ import { MessageCircle, UserPlus, UserMinus, Search, Users, Mic, Store, Check, X
 import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
-import { supabase, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
+import { supabase, withRetryAndRefresh } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
+import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import { awardPoints } from '../../lib/points';
 import { createNotificationAndPush } from '../../lib/notifications';
 import { colors } from '../../constants/colors';
@@ -62,6 +61,7 @@ export default function CommunityScreen() {
   const lastSentAt = useRef<Record<string, number>>({});
 
   const fetchInProgressRef = useRef(false);
+  const fetchMembersRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const fetchMembers = async () => {
     if (!currentEvent?.id || !user?.id) {
       setMembers([]);
@@ -195,6 +195,7 @@ export default function CommunityScreen() {
       setLoading(false);
     }
   };
+  fetchMembersRef.current = fetchMembers;
 
   const LOAD_TIMEOUT_MS = 45000; // pull-to-refresh only
 
@@ -221,21 +222,19 @@ export default function CommunityScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      fetchInProgressRef.current = false;
       if (currentEvent?.id && user?.id) fetchMembers().catch(() => {});
     }, [currentEvent?.id, user?.id])
   );
 
+  // Refetch when root layout refreshes session after app resume (notifyAfterSessionRefreshed).
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && currentEvent?.id && user?.id) {
-        fetchInProgressRef.current = false;
-        refreshSessionIfNeeded()
-          .catch(() => {})
-          .finally(() => fetchMembers().catch(() => {}));
-      }
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      fetchInProgressRef.current = false;
+      fetchMembersRef.current().catch(() => {});
     });
-    return () => sub.remove();
-  }, [currentEvent?.id, user?.id]);
+    return unregister;
+  }, []);
 
   const loadingStartRef = useRef<number | null>(null);
   useEffect(() => {
@@ -310,10 +309,10 @@ export default function CommunityScreen() {
     };
   }, [currentEvent?.id, user?.id]);
 
-  // Polling fallback: refetch every 5s so recipient sees new requests; sender's "Request sent" is preserved via module-level + optimistic
+  // Polling fallback: refetch every 15s so recipient sees new requests without hammering the API
   useEffect(() => {
     if (!currentEvent?.id || !user?.id) return;
-    const interval = setInterval(() => { fetchMembers().catch(() => {}); }, 5000);
+    const interval = setInterval(() => { fetchMembers().catch(() => {}); }, 15000);
     return () => clearInterval(interval);
   }, [currentEvent?.id, user?.id]);
 
@@ -451,6 +450,14 @@ export default function CommunityScreen() {
       });
       if (ins2) throw ins2;
       await awardPoints(user.id, currentEvent.id, 'connect');
+      await createNotificationAndPush(
+        otherUserId,
+        currentEvent.id,
+        'system',
+        'Connection accepted',
+        `${user.full_name ?? 'Someone'} accepted your connection request`,
+        { chat_user_id: user.id }
+      );
       setMembers((prev) =>
         prev.map((p) =>
           p.user_id === otherUserId

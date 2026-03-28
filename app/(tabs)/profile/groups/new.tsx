@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -36,18 +37,19 @@ export default function NewGroupScreen() {
   const [saving, setSaving] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
 
-  useEffect(() => {
+  const fetchMembers = useCallback(async () => {
     if (!user?.id || !currentEvent?.id) {
       setLoading(false);
       return;
     }
-    (async () => {
-      const { data: roleData } = await supabase
+    try {
+      const { data: roleData, error: roleError } = await supabase
         .from('event_members')
         .select('role, roles')
         .eq('event_id', currentEvent.id)
         .eq('user_id', user.id)
         .single();
+      if (roleError) throw roleError;
       const row = roleData as { role?: string; roles?: string[] } | null;
       const role = row?.role ?? 'attendee';
       const roles = Array.isArray(row?.roles) ? row.roles : [];
@@ -67,10 +69,7 @@ export default function NewGroupScreen() {
         .select('user_id, users!inner(full_name, avatar_url)')
         .eq('event_id', currentEvent.id)
         .neq('role', 'super_admin');
-      if (error) {
-        setLoading(false);
-        return;
-      }
+      if (error) throw error;
       type MemberRow = { user_id: string; users: { full_name: string; avatar_url: string | null } | Array<{ full_name: string; avatar_url: string | null }> };
       const list = (memberData ?? []).map((r: MemberRow) => {
         const u = Array.isArray(r.users) ? r.users[0] : r.users;
@@ -80,10 +79,27 @@ export default function NewGroupScreen() {
           avatar_url: u?.avatar_url ?? null,
         };
       });
-      setMembers(list);
+      setMembers(list ?? []);
+    } catch {
+      setMembers([]);
+    } finally {
       setLoading(false);
-    })();
+    }
   }, [user?.id, user?.is_platform_admin, currentEvent?.id]);
+
+  useEffect(() => {
+    if (!user?.id || !currentEvent?.id) {
+      setLoading(false);
+      return;
+    }
+    fetchMembers().catch(() => {});
+  }, [user?.id, currentEvent?.id, fetchMembers]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id && currentEvent?.id) fetchMembers().catch(() => {});
+    }, [user?.id, currentEvent?.id, fetchMembers])
+  );
 
   const toggleMember = (id: string) => {
     setSelectedIds((prev) => {

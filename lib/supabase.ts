@@ -42,14 +42,48 @@ export async function testSupabaseConnection(): Promise<{ ok: boolean; message: 
   }
 }
 
+// Per-request timeout so connections that hang after app resume abort and can retry (test at 2s often succeeds).
+const FETCH_ABORT_MS = 15000;
+/** GoTrue (`/auth/v1/`) can be slower than REST; 15s cuts off password updates / token refresh on some networks. */
+const AUTH_FETCH_ABORT_MS = 90000;
+
+let globalController = new AbortController();
+
+export function abortAllRequests(): void {
+  globalController.abort();
+  globalController = new AbortController();
+}
+
 // Custom fetch: if server returns non-JSON (e.g. error page), return a JSON error so we don't get "JSON Parse error".
 // PostgREST returns 204 No Content with empty body for UPDATE/DELETE without .select() — treat that as valid.
 // We no longer sign out on 401 in the global fetch — that caused one failing request (e.g. Notifications)
 // to sign the user out and break all other pages. withRetryAndRefresh handles refresh+retry per request.
 
+function requestUrlString(input: RequestInfo | URL): string {
+  if (typeof input === 'string') return input;
+  if (input instanceof Request) return input.url;
+  return String(input);
+}
+
 const safeFetch: typeof fetch = async (input, init) => {
-  const res = await fetch(input, init);
-  const text = await res.text();
+  const controller = new AbortController();
+  const globalSignal = globalController.signal;
+  const onGlobalAbort = () => controller.abort();
+  globalSignal.addEventListener('abort', onGlobalAbort);
+  const urlStr = requestUrlString(input);
+  const isAuth = urlStr.includes('/auth/v1/');
+  const abortMs = isAuth ? AUTH_FETCH_ABORT_MS : FETCH_ABORT_MS;
+  const timeoutId = setTimeout(() => controller.abort(), abortMs);
+  const signal = init?.signal;
+  const onAbort = () => controller.abort();
+  if (signal) {
+    signal.addEventListener('abort', onAbort);
+  }
+  try {
+    const res = await fetch(input, { ...init, signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    const text = await res.text();
 
   if (res.status === 204 || text.trim() === '') {
     return new Response('{}', {
@@ -68,8 +102,20 @@ const safeFetch: typeof fetch = async (input, init) => {
     return new Response(errBody, { status: 502, headers: { 'Content-Type': 'application/json' } });
   }
   return new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers });
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.includes('abort') || msg.toLowerCase().includes('timeout')) {
+      throw new Error('Request timed out');
+    }
+    throw e;
+  } finally {
+    globalSignal.removeEventListener('abort', onGlobalAbort);
+  }
 };
 
+// autoRefreshToken and persistSession ensure session stays valid after app background/foreground.
 export const supabase = createClient(url, key, {
   auth: {
     storage: AsyncStorage,
@@ -81,6 +127,79 @@ export const supabase = createClient(url, key, {
     fetch: safeFetch,
   },
 });
+
+const AUTH_USER_MS = 70_000;
+
+/**
+ * Password + metadata update via GoTrue REST, using global fetch (not safeFetch).
+ * Fixes devices where supabase.auth.updateUser() never completes behind the custom fetch wrapper.
+ * @see https://supabase.com/docs/reference/javascript/auth-updateuser
+ */
+export async function updateAuthUserPasswordWithNativeFetch(
+  accessToken: string,
+  newPassword: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  if (!accessToken || url.includes('placeholder')) {
+    return { ok: false, message: 'Not signed in or Supabase URL missing.' };
+  }
+  const base = url.replace(/\/+$/, '');
+  const endpoint = `${base}/auth/v1/user`;
+  const payload = JSON.stringify({
+    password: newPassword,
+    data: { must_change_password: false },
+  });
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${accessToken}`,
+    apikey: key,
+  };
+
+  const run = async (method: 'PUT' | 'PATCH'): Promise<{ ok: boolean; status: number; body: string }> => {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), AUTH_USER_MS);
+    try {
+      const res = await globalThis.fetch(endpoint, {
+        method,
+        headers,
+        body: payload,
+        signal: controller.signal,
+      });
+      const body = await res.text();
+      clearTimeout(tid);
+      return { ok: res.ok, status: res.status, body };
+    } catch (e) {
+      clearTimeout(tid);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('abort') || msg.toLowerCase().includes('aborted')) {
+        return { ok: false, status: 0, body: 'Request timed out' };
+      }
+      return { ok: false, status: 0, body: msg };
+    }
+  };
+
+  let r = await run('PUT');
+  if (r.status === 405) {
+    r = await run('PATCH');
+  }
+
+  if (!r.ok) {
+    let parsed: { error?: string; error_description?: string; msg?: string } = {};
+    try {
+      parsed = r.body ? JSON.parse(r.body) : {};
+    } catch {
+      /* use raw body */
+    }
+    const msg =
+      parsed.error_description ||
+      parsed.error ||
+      parsed.msg ||
+      (r.body ? r.body.slice(0, 200) : '') ||
+      `Request failed (${r.status || 'network'})`;
+    return { ok: false, message: String(msg) };
+  }
+
+  return { ok: true };
+}
 
 /** Call after a fetch fails to recover from expired token; returns true if session was refreshed. */
 export async function refreshSessionIfNeeded(): Promise<boolean> {
@@ -114,10 +233,13 @@ export function startForegroundRefresh(): void {
   const now = Date.now();
   if (now - foregroundRefreshStartedAt < FOREGROUND_REFRESH_DEBOUNCE_MS) return;
   foregroundRefreshStartedAt = now;
+  isRefreshing = false;
+  refreshQueue = [];
   foregroundRefreshPromise = refreshSessionIfNeeded().then(() => {}, () => {});
 }
 
-const FOREGROUND_REFRESH_TIMEOUT_MS = 5000;
+// Wait up to 8s for root's refresh so tabs don't all run their own refresh when app resumes.
+const FOREGROUND_REFRESH_TIMEOUT_MS = 8000;
 
 /** Wait for the refresh started by startForegroundRefresh(), with a timeout so we never hang. */
 export function awaitForegroundRefresh(): Promise<void> {
@@ -132,9 +254,9 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Keep timeouts short so users see success or error quickly (20s). We retry once on failure.
-const REQUEST_TIMEOUT_MS = 20000;
-const REFRESH_TIMEOUT_MS = 10000;
+// Longer timeouts so requests succeed after app resume (slow network reconnection). We retry once on failure.
+const REQUEST_TIMEOUT_MS = 15000;
+const REFRESH_TIMEOUT_MS = 8000;
 
 function withRequestTimeout<T>(p: Promise<T>, ms: number = REQUEST_TIMEOUT_MS): Promise<T> {
   return Promise.race([
@@ -156,51 +278,48 @@ export function getErrorMessage(err: unknown): string {
   return String(err).slice(0, 150);
 }
 
-/**
- * Run a fetch with retry after session refresh so pages load after app was in background.
- * Preserves the last real error so the UI can show it (no more generic "page not loading" only).
- */
+let isRefreshing = false;
+let refreshQueue: Array<() => void> = [];
+
+function waitForRefresh(): Promise<void> {
+  if (!isRefreshing) return Promise.resolve();
+  return new Promise((resolve) => refreshQueue.push(resolve));
+}
+
+function resolveRefreshQueue(): void {
+  isRefreshing = false;
+  const queue = refreshQueue.splice(0);
+  queue.forEach((resolve) => resolve());
+}
+
 export async function withRetryAndRefresh<T>(fn: () => Promise<T>): Promise<T> {
-  // #region agent log
-  fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'lib/supabase.ts:withRetryAndRefresh',message:'entry',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-  // #endregion
-  let lastError: unknown = null;
-  const run = async (): Promise<T> => {
+  await waitForRefresh();
+  try {
+    return await withRequestTimeout(fn());
+  } catch (firstErr) {
+    if (__DEV__) console.warn('[Supabase] First request failed, refreshing session…', getErrorMessage(firstErr));
+    if (!isRefreshing) {
+      isRefreshing = true;
+      try {
+        await withRequestTimeout(refreshSessionIfNeeded(), REFRESH_TIMEOUT_MS);
+        if (__DEV__) console.log('[Supabase] Session refreshed');
+      } catch (_) {
+        if (__DEV__) console.warn('[Supabase] Session refresh failed');
+      } finally {
+        resolveRefreshQueue();
+      }
+    } else {
+      await waitForRefresh();
+    }
     try {
       return await withRequestTimeout(fn());
-    } catch (e) {
-      lastError = e;
-      throw e;
-    }
-  };
-  try {
-    const result = await run();
-    // #region agent log
-    fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'lib/supabase.ts:withRetryAndRefresh',message:'first run ok',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-    // #endregion
-    return result;
-  } catch (firstErr) {
-    // #region agent log
-    fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'lib/supabase.ts:withRetryAndRefresh',message:'first run threw',data:{msg:String(firstErr).slice(0,120)},timestamp:Date.now(),hypothesisId:'H2,H4'})}).catch(()=>{});
-    // #endregion
-    try {
-      await withRequestTimeout(refreshSessionIfNeeded(), REFRESH_TIMEOUT_MS);
-    } catch (_) {}
-    try {
-      const result = await run();
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'lib/supabase.ts:withRetryAndRefresh',message:'retry run ok',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      // #endregion
-      return result;
-    } catch {
-      await delay(1500);
+    } catch (secondErr) {
+      await delay(1000);
       try {
-        return await run();
-      } catch {
-        const msg = getErrorMessage(lastError);
-        // #region agent log
-        fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'lib/supabase.ts:withRetryAndRefresh',message:'all retries failed',data:{msg:msg.slice(0,120)},timestamp:Date.now(),hypothesisId:'H2,H4'})}).catch(()=>{});
-        // #endregion
+        return await withRequestTimeout(fn());
+      } catch (finalErr) {
+        const msg = getErrorMessage(finalErr);
+        if (__DEV__) console.warn('[Supabase] All retries failed:', msg);
         throw new Error(msg || 'Error - page not loading');
       }
     }

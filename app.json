@@ -25,9 +25,12 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kbmcollective.collectivelive",
-      "buildNumber": "14",
+      "buildNumber": "24",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "When you use Post a photo, KBM Connect uses the camera so you can take a new picture to share on the event activity feed or add to your profile. For example, you can capture a moment at a session and publish it as a post for other attendees.",
+        "NSPhotoLibraryUsageDescription": "When you use Post a photo, KBM Connect accesses your photo library so you can choose an existing picture to share on the event activity feed or add to your profile. For example, you can select a photo you already took and publish it to the feed. This access is also used for the event photo book.",
+        "NSPhotoLibraryAddUsageDescription": "KBM Connect saves images to your photo library when you choose to—for example, saving a picture from the event photo book to your Camera Roll after you tap save or export."
       }
     },
     "android": {
@@ -68,10 +71,18 @@
         }
       ],
       [
+        "expo-image-picker",
+        {
+          "photosPermission": "When you use Post a photo, KBM Connect accesses your photo library so you can choose an existing picture to share on the event activity feed or add to your profile. For example, you can select a photo you already took and publish it to the feed. This access is also used for the event photo book.",
+          "cameraPermission": "When you use Post a photo, KBM Connect uses the camera so you can take a new picture to share on the event activity feed or add to your profile. For example, you can capture a moment at a session and publish it as a post for other attendees.",
+          "microphonePermission": false
+        }
+      ],
+      [
         "expo-media-library",
         {
-          "photosPermission": "Allow $(PRODUCT_NAME) to access your photos.",
-          "savePhotosPermission": "Allow $(PRODUCT_NAME) to save photos."
+          "photosPermission": "When you use Post a photo, KBM Connect accesses your photo library so you can choose an existing picture to share on the event activity feed or add to your profile. For example, you can select a photo you already took and publish it to the feed. This access is also used for the event photo book.",
+          "savePhotosPermission": "KBM Connect saves images to your photo library when you choose to—for example, saving a picture from the event photo book to your Camera Roll after you tap save or export."
         }
       ],
       [

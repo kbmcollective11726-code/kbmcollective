@@ -25,8 +25,8 @@ npm test
 
 App Store Connect rejects uploads if the build number is not greater than the last one.
 
-- **Current in app.json:** `ios.buildNumber`: `"13"`
-- **Action:** If you already submitted build 13, set `"buildNumber": "14"` (or next) in **app.json** under `expo.ios`.
+- **Current in app.json:** check `expo.ios.buildNumber`.
+- **Action:** Each App Store / TestFlight upload must use a **higher** build number than the last one (e.g. if last was `21`, set `"22"`).
 
 ---
 

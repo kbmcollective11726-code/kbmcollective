@@ -9,11 +9,17 @@
   background: var(--color-primary);
   color: var(--color-text);
   padding: 16px 28px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   box-shadow: var(--shadow);
   border-bottom: 1px solid var(--color-border);
+}
+
+.headerTop {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
 }
 
 .logoWrap {
@@ -46,7 +52,13 @@
 .nav {
   display: flex;
   align-items: center;
-  gap: 20px;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+}
+
+.navJoinWrap {
+  display: flex;
+  align-items: center;
 }
 
 .nav a {

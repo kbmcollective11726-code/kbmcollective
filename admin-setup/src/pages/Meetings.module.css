@@ -176,6 +176,9 @@
 }
 
 .modal {
+  display: flex;
+  flex-direction: column;
+  max-height: min(90vh, 520px);
   background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -187,6 +190,7 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-shrink: 0;
   padding: 16px 20px;
   border-bottom: 1px solid var(--color-border);
 }
@@ -196,12 +200,43 @@
   font-size: 1.1rem;
 }
 
+.modalScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .modalClose {
   background: none;
   border: none;
   font-size: 1.25rem;
   cursor: pointer;
   color: var(--color-text-secondary);
+}
+
+.modalPickerHint {
+  margin: 0;
+  padding: 12px 20px 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+}
+
+.modalPickerHint kbd {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.modalPickerHintSecondary {
+  margin: 0;
+  padding: 0 20px 14px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid var(--color-border);
 }
 
 .modalBody {
@@ -225,6 +260,23 @@
   box-sizing: border-box;
 }
 
-.modalBody button[type="submit"] {
-  margin-top: 8px;
+.modalFooter {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex-shrink: 0;
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.btnGhost {
+  background: transparent;
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+
+.btnGhost:hover:not(:disabled) {
+  background: var(--color-surface);
 }

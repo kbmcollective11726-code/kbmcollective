@@ -1,9 +1,14 @@
 'use client';
 
 import { useSearchParams } from 'next/navigation';
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
+import {
+  getNowNextSessions,
+  formatSessionTime,
+  type SessionForNowNext,
+} from '../../../lib/scheduleNowNext';
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -38,6 +43,9 @@ export default function WallPageContent() {
   const windowWidth = useWindowWidth();
   const isMobile = windowWidth < MOBILE_BREAKPOINT;
   const [eventName, setEventName] = useState('');
+  const [eventStartDate, setEventStartDate] = useState<string | null>(null);
+  const [eventEndDate, setEventEndDate] = useState<string | null>(null);
+  const [wallClockTick, setWallClockTick] = useState(0);
   const [stats, setStats] = useState({ photos: 0, likes: 0, comments: 0, participants: 0 });
   const [posts, setPosts] = useState<any[]>([]);
   const [featuredIndex, setFeaturedIndex] = useState(0);
@@ -50,9 +58,23 @@ export default function WallPageContent() {
   const featuredPost = posts[featuredIndex] ?? null;
   featuredPostIdRef.current = featuredPost?.id ?? null;
 
+  useEffect(() => {
+    const id = setInterval(() => setWallClockTick((t) => t + 1), 60_000);
+    return () => clearInterval(id);
+  }, []);
+
   const fetchEventAndStats = useCallback(() => {
     if (!eventId || !supabase) return;
-    supabase.from('events').select('name').eq('id', eventId).single().then(({ data }: any) => setEventName(data?.name ?? ''));
+    supabase
+      .from('events')
+      .select('name, start_date, end_date')
+      .eq('id', eventId)
+      .single()
+      .then(({ data }: any) => {
+        setEventName(data?.name ?? '');
+        setEventStartDate(typeof data?.start_date === 'string' ? data.start_date : null);
+        setEventEndDate(typeof data?.end_date === 'string' ? data.end_date : null);
+      });
 
     Promise.all([
       supabase.from('posts').select('id, likes_count, comments_count').eq('event_id', eventId).eq('is_deleted', false).eq('is_approved', true),
@@ -190,28 +212,18 @@ export default function WallPageContent() {
     return () => clearInterval(t);
   }, [posts.length]);
 
+  const { nowSessions, nextSessions } = useMemo(() => {
+    const list = (sessions ?? []) as SessionForNowNext[];
+    if (!eventStartDate || list.length === 0) return { nowSessions: [] as SessionForNowNext[], nextSessions: [] as SessionForNowNext[] };
+    return getNowNextSessions(list, eventStartDate, eventEndDate);
+  }, [sessions, eventStartDate, eventEndDate, wallClockTick]);
+
   if (!eventId) {
     return (
       <div style={{ padding: 48, textAlign: 'center', color: COLORS.text }}>
         <p>Missing event. <Link href="/" style={{ color: COLORS.accent }}>Choose event</Link></p>
       </div>
     );
-  }
-
-  const now = new Date();
-  const happeningNow = sessions.filter((s) => new Date(s.start_time) <= now && new Date(s.end_time) >= now);
-  const nextUp = sessions.filter((s) => new Date(s.start_time) > now).slice(0, 2);
-
-  function formatUpNextTime(iso: string) {
-    const d = new Date(iso);
-    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    const sessionDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    if (sessionDay.getTime() === today.getTime()) return `Today ${timeStr}`;
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    if (sessionDay.getTime() === tomorrow.getTime()) return `Tomorrow ${timeStr}`;
-    return `${d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' })} · ${timeStr}`;
   }
 
   return (
@@ -334,18 +346,20 @@ export default function WallPageContent() {
             }}
           >
             <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700 }}>• Happening Now & Next</h3>
-            {happeningNow.length > 0 ? (
+            {nowSessions.length > 0 ? (
               <div style={{ fontSize: 14 }}>
-                {happeningNow.map((s) => (
-                  <p key={s.id} style={{ margin: '4px 0', fontWeight: 600 }}>{s.title}</p>
+                {nowSessions.map((s) => (
+                  <p key={s.id} style={{ margin: '4px 0', fontWeight: 600 }}>
+                    {s.title} — {formatSessionTime(s.start_time)}
+                  </p>
                 ))}
               </div>
-            ) : nextUp.length > 0 ? (
+            ) : nextSessions.length > 0 ? (
               <div style={{ fontSize: 14 }}>
                 <p style={{ margin: '0 0 4px', opacity: 0.9 }}>Up next:</p>
-                {nextUp.map((s) => (
+                {nextSessions.map((s) => (
                   <p key={s.id} style={{ margin: '2px 0' }}>
-                    {s.title} — {formatUpNextTime(s.start_time)}
+                    {s.title} — {formatSessionTime(s.start_time)}
                   </p>
                 ))}
               </div>

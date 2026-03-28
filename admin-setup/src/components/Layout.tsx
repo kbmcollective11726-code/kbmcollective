@@ -1,5 +1,6 @@
 import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
+import EventContextBar, { JoinEventButton } from './EventContextBar';
 import styles from './Layout.module.css';
 
 export default function Layout() {
@@ -13,16 +14,22 @@ export default function Layout() {
   return (
     <div className={styles.layout}>
       <header className={styles.header}>
-        <Link to="/" className={styles.logoWrap}>
-          <img src="/logo.png" alt="KBM Connect" className={styles.logoImg} />
-          <span className={styles.logoText}>Admin</span>
-        </Link>
-        <nav className={styles.nav}>
-          <Link to="/">Events</Link>
-          <button type="button" onClick={handleLogout} className={styles.logout}>
-            Sign out
-          </button>
-        </nav>
+        <div className={styles.headerTop}>
+          <Link to="/" className={styles.logoWrap}>
+            <img src="/logo.png" alt="KBM Connect" className={styles.logoImg} />
+            <span className={styles.logoText}>Admin</span>
+          </Link>
+          <EventContextBar />
+          <nav className={styles.nav}>
+            <Link to="/">All events</Link>
+            <span className={styles.navJoinWrap}>
+              <JoinEventButton />
+            </span>
+            <button type="button" onClick={handleLogout} className={styles.logout}>
+              Sign out
+            </button>
+          </nav>
+        </div>
       </header>
       <main className={styles.main}>
         <Outlet />

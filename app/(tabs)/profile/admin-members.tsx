@@ -18,9 +18,12 @@ import { useAuthStore } from '../../../stores/authStore';
 import { supabase } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import Avatar from '../../../components/Avatar';
-import { User, Mic, Store, Shield, ChevronRight } from 'lucide-react-native';
+import { User, Mic, Store, Shield, ChevronRight, UserMinus, UserX } from 'lucide-react-native';
+import Toast from 'react-native-toast-message';
 
-type Row = { user_id: string; full_name: string; avatar_url: string | null; role: string; roles: string[]; points: number };
+const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? '').trim().replace(/\/+$/, '');
+
+type Row = { user_id: string; full_name: string; avatar_url: string | null; email: string | null; role: string; roles: string[]; points: number };
 
 const ROLE_OPTIONS: { key: string; label: string; icon: typeof User }[] = [
   { key: 'attendee', label: 'Attendee', icon: User },
@@ -38,10 +41,14 @@ export default function AdminMembersScreen() {
   const [selectedMember, setSelectedMember] = useState<Row | null>(null);
   const [roleSaving, setRoleSaving] = useState(false);
   const [canChangeRoles, setCanChangeRoles] = useState(false);
+  const [removingUserId, setRemovingUserId] = useState<string | null>(null);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+
+  const isPlatformAdmin = currentUser?.is_platform_admin === true;
 
   const fetchCurrentUserRole = useCallback(async () => {
     if (!currentEvent?.id || !currentUser?.id) {
-      setCanChangeRoles(false);
+      setCanChangeRoles(!!currentUser?.is_platform_admin);
       return;
     }
     const { data } = await supabase
@@ -53,9 +60,9 @@ export default function AdminMembersScreen() {
     const row = data as { role?: string; roles?: string[] } | null;
     const role = row?.role ?? 'attendee';
     const roles = Array.isArray(row?.roles) ? row.roles : [];
-    const isAdmin = role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin');
-    setCanChangeRoles(!!isAdmin);
-  }, [currentEvent?.id, currentUser?.id]);
+    const isEventAdmin = role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin');
+    setCanChangeRoles(!!isEventAdmin || !!currentUser?.is_platform_admin);
+  }, [currentEvent?.id, currentUser?.id, currentUser?.is_platform_admin]);
 
   useEffect(() => {
     fetchCurrentUserRole();
@@ -70,7 +77,7 @@ export default function AdminMembersScreen() {
     try {
       const { data, error } = await supabase
         .from('event_members')
-        .select('user_id, role, roles, points, users!inner(full_name, avatar_url)')
+        .select('user_id, role, roles, points, users!inner(full_name, avatar_url, email)')
         .eq('event_id', currentEvent.id)
         .order('points', { ascending: false });
       if (error) throw error;
@@ -80,6 +87,7 @@ export default function AdminMembersScreen() {
           user_id: r.user_id,
           full_name: r.users?.full_name ?? 'Unknown',
           avatar_url: r.users?.avatar_url ?? null,
+          email: r.users?.email ?? null,
           role: r.role ?? roles[0] ?? 'attendee',
           roles,
           points: r.points ?? 0,
@@ -167,6 +175,94 @@ export default function AdminMembersScreen() {
     }
   };
 
+  const handleRemoveFromEvent = (member: Row) => {
+    if (member.user_id === currentUser?.id) {
+      Alert.alert('Not allowed', 'You cannot remove yourself from the event.');
+      return;
+    }
+    Alert.alert(
+      'Remove from event',
+      `Remove "${member.full_name}" from this event? They will need to re-enter the event code to rejoin.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            if (!currentEvent?.id) return;
+            setRemovingUserId(member.user_id);
+            try {
+              const { error } = await supabase
+                .from('event_members')
+                .delete()
+                .eq('event_id', currentEvent.id)
+                .eq('user_id', member.user_id);
+              if (error) throw error;
+              setRows((prev) => prev.filter((r) => r.user_id !== member.user_id));
+              setSelectedMember(null);
+              Toast.show({ type: 'success', text1: 'Removed from event' });
+            } catch (err) {
+              Alert.alert('Error', err instanceof Error ? err.message : 'Could not remove member.');
+            } finally {
+              setRemovingUserId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteFromSystem = (member: Row) => {
+    if (member.user_id === currentUser?.id) {
+      Alert.alert('Not allowed', 'You cannot delete your own account.');
+      return;
+    }
+    if (!isPlatformAdmin) return;
+    Alert.alert(
+      'Delete account',
+      `Permanently delete "${member.full_name || member.email || member.user_id}"? All their data (posts, memberships, messages, etc.) will be removed. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingUserId(member.user_id);
+            try {
+              const { data: { session } } = await supabase.auth.getSession();
+              const token = session?.access_token;
+              if (!token || !SUPABASE_URL) {
+                throw new Error('Not signed in or missing Supabase URL.');
+              }
+              const res = await fetch(`${SUPABASE_URL}/functions/v1/delete-user`, {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ user_id: member.user_id }),
+              });
+              const body = await res.json().catch(() => ({}));
+              if (!res.ok) {
+                throw new Error((body as { error?: string }).error || `Request failed (${res.status}).`);
+              }
+              Toast.show({ type: 'success', text1: 'Account deleted' });
+              setRows((prev) => prev.filter((r) => r.user_id !== member.user_id));
+              setSelectedMember(null);
+            } catch (err) {
+              Toast.show({
+                type: 'error',
+                text1: err instanceof Error ? err.message : 'Failed to delete account.',
+              });
+            } finally {
+              setDeletingUserId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   if (!currentEvent) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -235,6 +331,9 @@ export default function AdminMembersScreen() {
                     size={48}
                   />
                   <Text style={styles.modalName}>{selectedMember.full_name}</Text>
+                  {selectedMember.email ? (
+                    <Text style={styles.modalEmail}>{selectedMember.email}</Text>
+                  ) : null}
                   <Text style={styles.modalCurrentRole}>
                     Current: {rolesLabel(selectedMember.roles)}
                   </Text>
@@ -272,6 +371,34 @@ export default function AdminMembersScreen() {
                     )}
                   </TouchableOpacity>
                 ))}
+                {canChangeRoles && selectedMember.user_id !== currentUser?.id ? (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.removeFromEventBtn]}
+                    onPress={() => handleRemoveFromEvent(selectedMember)}
+                    disabled={roleSaving || removingUserId !== null}
+                  >
+                    {removingUserId === selectedMember.user_id ? (
+                      <ActivityIndicator size="small" color={colors.danger} />
+                    ) : (
+                      <UserMinus size={20} color={colors.danger} />
+                    )}
+                    <Text style={styles.removeFromEventText}>Remove from event</Text>
+                  </TouchableOpacity>
+                ) : null}
+                {isPlatformAdmin && selectedMember.user_id !== currentUser?.id ? (
+                  <TouchableOpacity
+                    style={[styles.actionBtn, styles.deleteFromSystemBtn]}
+                    onPress={() => handleDeleteFromSystem(selectedMember)}
+                    disabled={roleSaving || deletingUserId !== null}
+                  >
+                    {deletingUserId === selectedMember.user_id ? (
+                      <ActivityIndicator size="small" color={colors.danger} />
+                    ) : (
+                      <UserX size={20} color={colors.danger} />
+                    )}
+                    <Text style={styles.deleteFromSystemText}>Delete from system</Text>
+                  </TouchableOpacity>
+                ) : null}
                 <TouchableOpacity
                   style={styles.modalClose}
                   onPress={() => setSelectedMember(null)}
@@ -320,7 +447,22 @@ const styles = StyleSheet.create({
   },
   modalHeader: { alignItems: 'center', marginBottom: 20 },
   modalName: { fontSize: 18, fontWeight: '700', color: colors.text, marginTop: 8 },
+  modalEmail: { fontSize: 13, color: colors.textMuted, marginTop: 2 },
   modalCurrentRole: { fontSize: 13, color: colors.textMuted, marginTop: 4 },
+  actionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    borderRadius: 12,
+    marginTop: 12,
+    borderWidth: 1,
+  },
+  removeFromEventBtn: { backgroundColor: colors.surface, borderColor: colors.danger },
+  removeFromEventText: { fontSize: 16, fontWeight: '600', color: colors.danger },
+  deleteFromSystemBtn: { backgroundColor: colors.surface, borderColor: colors.danger },
+  deleteFromSystemText: { fontSize: 16, fontWeight: '600', color: colors.danger },
   modalTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 4 },
   modalSubtitle: { fontSize: 13, color: colors.textMuted, marginBottom: 12 },
   roleOption: {

@@ -112,6 +112,110 @@
   margin-bottom: 12px;
 }
 
+.success {
+  color: var(--color-success, #15803d);
+  font-size: 13px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: rgba(21, 128, 61, 0.08);
+  border-radius: var(--radius);
+}
+
+.chipRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.chip {
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+
+.chip:hover {
+  border-color: var(--color-accent);
+}
+
+.chipSm {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.chipActive {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+.chipActive:hover {
+  border-color: var(--color-accent-hover);
+  color: #fff;
+}
+
+.userList {
+  max-height: 220px;
+  overflow-y: auto;
+  margin-bottom: 14px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 4px;
+}
+
+.userRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  margin-bottom: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+
+.userRow:last-child {
+  margin-bottom: 0;
+}
+
+.userRow:hover {
+  border-color: var(--color-accent);
+}
+
+.userRowSelected {
+  background: var(--color-accent-muted);
+  border-color: var(--color-accent);
+}
+
+.userName {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.userRole {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-transform: capitalize;
+}
+
+.listHint {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  margin: 8px 8px 4px;
+}
+
 .listTitle {
   margin: 24px 0 12px;
   font-size: 1.1rem;

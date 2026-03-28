@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import {
   View,
   Text,
@@ -12,26 +12,30 @@ import {
   Linking,
   Pressable,
   Modal,
+  Dimensions,
   AppState,
   AppStateStatus,
-  Dimensions,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
-import { User, Mic, Store, ExternalLink, LogOut, Calendar, Building2, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle } from 'lucide-react-native';
+import { User, Mic, Store, ExternalLink, LogOut, Calendar, Building2, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle, Trash2, Lock } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
-import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, startForegroundRefresh, getErrorMessage } from '../../../lib/supabase';
+import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
 import { addDebugLog } from '../../../lib/debugLog';
 import { colors } from '../../../constants/colors';
 import Avatar from '../../../components/Avatar';
 
+const RESUME_REFETCH_DEBOUNCE_MS = 12000;
+
 export default function ProfileScreen() {
   const router = useRouter();
   const pathname = usePathname();
+  const isFocused = useIsFocused();
   const { user, refreshUser, logout } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const lastResumeRefetchAt = useRef<number>(0);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -53,7 +57,7 @@ export default function ProfileScreen() {
       let postsOk = false;
       let roleOk = false;
       try {
-        const memberRes = await supabase.from('event_members').select('points').eq('event_id', currentEvent.id).eq('user_id', user.id).single();
+        const memberRes = await supabase.from('event_members').select('points').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle();
         if (!memberRes.error) {
           setPoints(memberRes.data?.points ?? 0);
           pointsOk = true;
@@ -75,19 +79,28 @@ export default function ProfileScreen() {
         if (__DEV__) console.warn('Profile posts count error:', e);
       }
       try {
-        const roleRes = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single();
+        const roleRes = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle();
         if (!roleRes.error) {
           const data = roleRes.data as { role?: string; roles?: string[] } | null;
-          const role = data?.role ?? 'attendee';
-          const roles = Array.isArray(data?.roles) ? data.roles : [];
-          setIsEventAdmin(role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin'));
-          setMyRoles(['attendee', 'speaker', 'vendor'].includes(role) ? [role] : ['attendee']);
+          if (data) {
+            const role = data.role ?? 'attendee';
+            const roles = Array.isArray(data.roles) ? data.roles : [];
+            setIsEventAdmin(role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin'));
+            setMyRoles(['attendee', 'speaker', 'vendor'].includes(role) ? [role] : ['attendee']);
+          } else {
+            // Platform admin viewing an event they're not a member of: still give admin access
+            setIsEventAdmin(!!user?.is_platform_admin);
+            setMyRoles(['attendee']);
+          }
           roleOk = true;
         }
       } catch (_) {}
       if (!pointsOk) setPoints(0);
       if (!postsOk) setPostsCount(0);
-      if (!roleOk) setMyRoles(['attendee']);
+      if (!roleOk) {
+        setMyRoles(['attendee']);
+        setIsEventAdmin(!!user?.is_platform_admin);
+      }
       return pointsOk || postsOk || roleOk;
     }
     setPoints(null);
@@ -99,24 +112,19 @@ export default function ProfileScreen() {
 
   const loadInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
+  const mountedRef = useRef(false);
   const loadStats = useCallback(async () => {
-    // #region agent log
-    fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'entry',data:{inFlight:loadInProgressRef.current,hasUser:!!user?.id},timestamp:Date.now(),hypothesisId:'H1,H3,H5'})}).catch(()=>{});
-    // #endregion
     if (!user?.id) {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'early return no user',data:{},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
-      // #endregion
+      if (__DEV__) console.log('[Profile] loadStats skipped — no user');
       setLoading(false);
       setFetchError(null);
       return;
     }
     if (loadInProgressRef.current) {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'skip in-flight',data:{},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-      // #endregion
+      if (__DEV__) console.log('[Profile] loadStats skipped — load already in progress');
       return;
     }
+    if (__DEV__) console.log('[Profile] loadStats starting');
     loadInProgressRef.current = true;
     setFetchError(null);
     setFetchErrorDetail(null);
@@ -128,22 +136,17 @@ export default function ProfileScreen() {
         setFetchError(null);
         setFetchErrorDetail(null);
       } else {
+        if (__DEV__) console.warn('[Profile] loadStats returned false (one or more requests failed)');
         setFetchError('Error - page not loading');
         setFetchErrorDetail('One or more requests failed');
       }
     } catch (err: unknown) {
       const msg = getErrorMessage(err);
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'loadStats catch',data:{msg:msg.slice(0,120)},timestamp:Date.now(),hypothesisId:'H2,H4'})}).catch(()=>{});
-      // #endregion
       addDebugLog('Profile', 'Load failed', msg);
-      if (__DEV__) console.warn('Profile stats error:', err);
+      if (__DEV__) console.warn('[Profile] loadStats error:', msg, err);
       setFetchError('Error - page not loading');
       setFetchErrorDetail(msg);
     } finally {
-      // #region agent log
-      fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:loadStats',message:'loadStats finally',data:{},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-      // #endregion
       loadInProgressRef.current = false;
       setLoading(false);
     }
@@ -155,6 +158,8 @@ export default function ProfileScreen() {
       setLoading(false);
       return;
     }
+    if (mountedRef.current) return;
+    mountedRef.current = true;
     setFetchError(null);
     setLoading(true);
     loadStats().finally(() => setLoading(false));
@@ -162,30 +167,24 @@ export default function ProfileScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      if (user?.id) loadStats().catch(() => {});
+      if (user?.id) {
+        loadInProgressRef.current = false;
+        loadStats().catch(() => {});
+      }
     }, [user?.id, loadStats])
   );
 
   // When app comes back from background: wait for root’s refresh, then load (so token is valid and data loads).
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && user?.id) {
-        // #region agent log
-        fetch('http://127.0.0.1:7672/ingest/15c61a4e-0b7b-4210-b934-e9b8b6c55b92',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'b4bafa'},body:JSON.stringify({sessionId:'b4bafa',location:'profile/index.tsx:AppState',message:'app became active',data:{screen:'Profile'},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-        // #endregion
-        loadInProgressRef.current = false;
-        setLoading(true);
-        (async () => {
-          const refreshTimeoutMs = 8000;
-          try {
-            await Promise.race([
-              refreshSessionIfNeeded(),
-              new Promise<void>((_, reject) => setTimeout(() => reject(new Error('Refresh timeout')), refreshTimeoutMs)),
-            ]);
-          } catch (_) {}
-          loadStats().catch(() => {}).finally(() => setLoading(false));
-        })();
-      }
+      if (state !== 'active' || !user?.id) return;
+      const now = Date.now();
+      if (now - lastResumeRefetchAt.current < RESUME_REFETCH_DEBOUNCE_MS) return;
+      lastResumeRefetchAt.current = now;
+      loadInProgressRef.current = false;
+      refreshSessionIfNeeded()
+        .catch(() => {})
+        .finally(() => loadStats().catch(() => {}));
     });
     return () => sub.remove();
   }, [user?.id, loadStats]);
@@ -267,8 +266,12 @@ export default function ProfileScreen() {
       return;
     }
     // Users cannot remove their own admin role via Profile; only an event admin can do that
-    const data = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single();
-    const currentRoles = Array.isArray(data.data?.roles) ? data.data.roles : (data.data?.role ? [data.data.role] : []);
+    const { data: roleData } = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle();
+    if (!roleData) {
+      Alert.alert('Not a member', 'You are viewing this event as a platform admin. Use Event admin → Manage members to manage this event.');
+      return;
+    }
+    const currentRoles = Array.isArray(roleData.roles) ? roleData.roles : (roleData.role ? [roleData.role] : []);
     const hasAdmin = currentRoles.includes('admin') || currentRoles.includes('super_admin');
     const savingAdmin = myRoles.includes('admin') || myRoles.includes('super_admin');
     if (hasAdmin && !savingAdmin) {
@@ -363,7 +366,7 @@ export default function ProfileScreen() {
                   <Text style={[styles.statLabel, { fontSize: 11, color: colors.textMuted, marginBottom: 8 }]}>Pull down to refresh or tap Try again.</Text>
                   {fetchErrorDetail?.toLowerCase().includes('timed out') ? (
                     <Text style={[styles.statLabel, { fontSize: 11, color: colors.textMuted, marginBottom: 8, fontStyle: 'italic' }]}>
-                      Open Debug (bottom-right) → Test connection to see if this device can reach Supabase.
+                      Check Metro console or try: npx expo start --tunnel
                     </Text>
                   ) : null}
                   <TouchableOpacity
@@ -467,6 +470,15 @@ export default function ProfileScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.menuRow}
+            onPress={() => router.push('/profile/change-password' as any)}
+            activeOpacity={0.7}
+          >
+            <Lock size={22} color={colors.textSecondary} />
+            <Text style={styles.menuText}>Change password</Text>
+            <ChevronRight size={20} color={colors.textMuted} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.menuRow}
             onPress={() => router.push(pathname ? `/profile/notifications?from=${encodeURIComponent(pathname)}` : '/profile/notifications' as any)}
             activeOpacity={0.7}
           >
@@ -495,6 +507,15 @@ export default function ProfileScreen() {
           >
             <MessageCircle size={22} color={colors.textSecondary} />
             <Text style={styles.menuText}>Groups</Text>
+            <ChevronRight size={20} color={colors.textMuted} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.menuRow}
+            onPress={() => router.push('/profile/delete-account' as any)}
+            activeOpacity={0.7}
+          >
+            <Trash2 size={22} color={colors.danger} />
+            <Text style={[styles.menuText, { color: colors.danger }]}>Delete account</Text>
             <ChevronRight size={20} color={colors.textMuted} />
           </TouchableOpacity>
           {(isEventAdmin || user?.is_platform_admin) && (

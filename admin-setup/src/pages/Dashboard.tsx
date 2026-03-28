@@ -63,6 +63,8 @@ export default function Dashboard() {
   const [vendorPerf, setVendorPerf] = useState<VendorPerf[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  type TabType = 'sessions' | 'b2b';
+  const [activeTab, setActiveTab] = useState<TabType>('sessions');
 
   useEffect(() => {
     if (!eventId) return;
@@ -141,10 +143,11 @@ export default function Dashboard() {
     .sort((a, b) => new Date((b.created_at ?? '')).getTime() - new Date((a.created_at ?? '')).getTime())
     .slice(0, 4)
     .map(r => ({ type: 'b2b' as const, vendor_name: r.vendor_name ?? 'Vendor', rating: r.rating, comment: (r.comment ?? '').trim(), user_name: r.attendee_name ?? r.attendee_email ?? 'Attendee' }));
-  const allQuotes = [...sessionCommentsWithContext.map(c => ({ ...c, sortAt: c.session_title })), ...b2bCommentsWithContext.map(c => ({ ...c, sortAt: c.vendor_name }))].slice(0, 8);
 
   const recentSession = [...sessionList].sort((a, b) => new Date((b.created_at ?? '')).getTime() - new Date((a.created_at ?? '')).getTime()).slice(0, 6);
   const recentB2b = [...b2bList].sort((a, b) => new Date((b.created_at ?? '')).getTime() - new Date((a.created_at ?? '')).getTime()).slice(0, 6);
+  const sessionQuotes = sessionCommentsWithContext;
+  const b2bQuotes = b2bCommentsWithContext;
 
   return (
     <div className={styles.page}>
@@ -153,7 +156,7 @@ export default function Dashboard() {
       </div>
       <h1 className={styles.title}>Dashboard — {event?.name ?? 'Event'}</h1>
       <p className={styles.hint}>
-        See what attendees think about sessions and speakers, which vendors they want to see again, and how people feel overall.
+        See what attendees think about sessions and speakers, and which vendors they want to see again.
       </p>
 
       {error && <p className={styles.error}>{error}</p>}
@@ -206,219 +209,246 @@ export default function Dashboard() {
         </Link>
       </section>
 
-      {/* What attendees are saying */}
-      {allQuotes.length > 0 && (
-        <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>What attendees are saying</h2>
-          <p className={styles.sectionDesc}>Recent comments from session and vendor feedback — use these to see what people want more of.</p>
-          <div className={styles.quoteGrid}>
-            {allQuotes.map((q, i) => (
-              <div key={i} className={styles.quoteCard}>
-                <p className={styles.quoteText}>"{q.type === 'session' ? q.comment : q.comment}"</p>
-                <div className={styles.quoteMeta}>
-                  <span className={styles.quoteSource}>
-                    {q.type === 'session' ? (q as { session_title: string }).session_title : (q as { vendor_name: string }).vendor_name}
-                  </span>
-                  <Stars value={q.rating} />
-                  <span className={styles.quoteBy}>{q.user_name}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      {/* Tabs: Sessions | B2B */}
+      <div className={styles.tabs}>
+        <button
+          type="button"
+          className={activeTab === 'sessions' ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+          onClick={() => setActiveTab('sessions')}
+        >
+          Sessions & speakers
+        </button>
+        <button
+          type="button"
+          className={activeTab === 'b2b' ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+          onClick={() => setActiveTab('b2b')}
+        >
+          B2B / Vendors
+        </button>
+      </div>
 
-      <div className={styles.twoCol}>
-        {/* Sessions / speakers (what people want to see) */}
-        <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>Sessions & speakers</h2>
-          <p className={styles.sectionDesc}>Which sessions attendees rate highest and which may need attention.</p>
-
-          {sessionList.length > 0 && (
-            <div className={styles.distBar}>
-              <span className={styles.distLabel}>Rating spread</span>
-              <div className={styles.distRow}>
-                {[5, 4, 3, 2, 1].map((star) => (
-                  <div key={star} className={styles.distSegment}>
-                    <span className={styles.distStar}>{star}★</span>
-                    <span className={styles.distCount}>{ratingDist[star - 1]}</span>
+      {activeTab === 'sessions' && (
+        <>
+          {sessionQuotes.length > 0 && (
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>What attendees are saying</h2>
+              <p className={styles.sectionDesc}>Recent comments from session feedback.</p>
+              <div className={styles.quoteGrid}>
+                {sessionQuotes.map((q, i) => (
+                  <div key={i} className={styles.quoteCard}>
+                    <p className={styles.quoteText}>"{q.comment}"</p>
+                    <div className={styles.quoteMeta}>
+                      <span className={styles.quoteSource}>{q.session_title}</span>
+                      <Stars value={q.rating} />
+                      <span className={styles.quoteBy}>{q.user_name}</span>
+                    </div>
                   </div>
                 ))}
               </div>
-            </div>
+            </section>
           )}
-
-          {topSessions.length === 0 ? (
-            <p className={styles.empty}>No session ratings yet.</p>
-          ) : (
-            <>
-              <h3 className={styles.subTitle}>Top rated — sessions people want to see</h3>
-              <ul className={styles.list}>
-                {topSessions.map((s, i) => (
-                  <li key={i} className={styles.listItem}>
-                    <span className={styles.listItemName}>{s.session_title}</span>
-                    <div className={styles.listItemMetaRow}>
-                      <Stars value={s.avg} />
-                      <span>{s.count} rating{s.count !== 1 ? 's' : ''} · avg {s.avg.toFixed(1)}/5</span>
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Sessions & speakers</h2>
+            <p className={styles.sectionDesc}>Which sessions attendees rate highest and which may need attention.</p>
+            {sessionList.length > 0 && (
+              <div className={styles.distBar}>
+                <span className={styles.distLabel}>Rating spread</span>
+                <div className={styles.distRow}>
+                  {[5, 4, 3, 2, 1].map((star) => (
+                    <div key={star} className={styles.distSegment}>
+                      <span className={styles.distStar}>{star}★</span>
+                      <span className={styles.distCount}>{ratingDist[star - 1]}</span>
                     </div>
-                  </li>
-                ))}
-              </ul>
-              {lowestSessions.length > 0 && (
-                <>
-                  <h3 className={styles.subTitleDanger}>Needs attention</h3>
-                  <ul className={styles.list}>
-                    {lowestSessions.map((s, i) => (
-                      <li key={`low-${i}`} className={styles.listItemDanger}>
-                        <span className={styles.listItemName}>{s.session_title}</span>
-                        <div className={styles.listItemMetaRow}>
-                          <Stars value={s.avg} />
-                          <span>{s.count} rating{s.count !== 1 ? 's' : ''} · avg {s.avg.toFixed(1)}/5</span>
-                        </div>
-                      </li>
+                  ))}
+                </div>
+              </div>
+            )}
+            {topSessions.length === 0 ? (
+              <p className={styles.empty}>No session ratings yet.</p>
+            ) : (
+              <>
+                <h3 className={styles.subTitle}>Top rated — sessions people want to see</h3>
+                <ul className={styles.list}>
+                  {topSessions.map((s, i) => (
+                    <li key={i} className={styles.listItem}>
+                      <span className={styles.listItemName}>{s.session_title}</span>
+                      <div className={styles.listItemMetaRow}>
+                        <Stars value={s.avg} />
+                        <span>{s.count} rating{s.count !== 1 ? 's' : ''} · avg {s.avg.toFixed(1)}/5</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                {lowestSessions.length > 0 && (
+                  <>
+                    <h3 className={styles.subTitleDanger}>Needs attention</h3>
+                    <ul className={styles.list}>
+                      {lowestSessions.map((s, i) => (
+                        <li key={`low-${i}`} className={styles.listItemDanger}>
+                          <span className={styles.listItemName}>{s.session_title}</span>
+                          <div className={styles.listItemMetaRow}>
+                            <Stars value={s.avg} />
+                            <span>{s.count} rating{s.count !== 1 ? 's' : ''} · avg {s.avg.toFixed(1)}/5</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                <Link to={`/events/${eventId}/session-feedback`} className={styles.sectionLink}>View all session feedback →</Link>
+              </>
+            )}
+          </section>
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Recent session feedback</h2>
+            {recentSession.length === 0 ? (
+              <p className={styles.empty}>No session feedback yet.</p>
+            ) : (
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Session</th>
+                      <th>User</th>
+                      <th>Rating</th>
+                      <th>Comment</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentSession.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.session_title ?? '—'}</td>
+                        <td>{row.user_name ?? row.user_email ?? '—'}</td>
+                        <td><Stars value={row.rating} /></td>
+                        <td>{row.comment ? (row.comment.length > 50 ? row.comment.slice(0, 50) + '…' : row.comment) : '—'}</td>
+                        <td>{row.created_at ? new Date(row.created_at).toLocaleString() : '—'}</td>
+                      </tr>
                     ))}
-                  </ul>
-                </>
-              )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {sessionList.length > 0 && (
               <Link to={`/events/${eventId}/session-feedback`} className={styles.sectionLink}>View all session feedback →</Link>
-            </>
-          )}
-        </section>
+            )}
+          </section>
+        </>
+      )}
 
-        {/* Vendors (who people want to see) */}
-        <section className={styles.section}>
-          <h2 className={styles.sectionTitle}>Vendors</h2>
-          <p className={styles.sectionDesc}>Which vendors attendees want to meet again and would recommend.</p>
-
-          {topVendorsByRating.length === 0 ? (
-            <p className={styles.empty}>No B2B feedback yet.</p>
-          ) : (
-            <>
-              <h3 className={styles.subTitle}>Top rated</h3>
-              <ul className={styles.list}>
-                {topVendorsByRating.map((v) => (
-                  <li key={v.booth_id} className={styles.listItem}>
-                    <span className={styles.listItemName}>{v.vendor_name}</span>
-                    <div className={styles.listItemMetaRow}>
-                      <Stars value={v.avg_rating ?? 0} />
-                      <span>{v.feedback_count} feedback</span>
+      {activeTab === 'b2b' && (
+        <>
+          {b2bQuotes.length > 0 && (
+            <section className={styles.section}>
+              <h2 className={styles.sectionTitle}>What attendees are saying</h2>
+              <p className={styles.sectionDesc}>Recent comments from B2B / vendor feedback.</p>
+              <div className={styles.quoteGrid}>
+                {b2bQuotes.map((q, i) => (
+                  <div key={i} className={styles.quoteCard}>
+                    <p className={styles.quoteText}>"{q.comment}"</p>
+                    <div className={styles.quoteMeta}>
+                      <span className={styles.quoteSource}>{q.vendor_name}</span>
+                      <Stars value={q.rating} />
+                      <span className={styles.quoteBy}>{q.user_name}</span>
                     </div>
-                  </li>
+                  </div>
                 ))}
-              </ul>
-
-              {vendorsWantToMeetAgain.length > 0 && (
-                <>
-                  <h3 className={styles.subTitle}>Would meet again</h3>
-                  <ul className={styles.list}>
-                    {vendorsWantToMeetAgain.map((v) => (
-                      <li key={`meet-${v.booth_id}`} className={styles.listItem}>
-                        <span className={styles.listItemName}>{v.vendor_name}</span>
-                        <div className={styles.progressWrap}>
-                          <div className={styles.progressBar} style={{ width: `${v.pct_meet_again ?? 0}%` }} />
-                          <span className={styles.progressLabel}>{v.pct_meet_again != null ? v.pct_meet_again.toFixed(0) : 0}%</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-
-              {vendorsWouldRecommend.length > 0 && (
-                <>
-                  <h3 className={styles.subTitle}>Would recommend</h3>
-                  <ul className={styles.list}>
-                    {vendorsWouldRecommend.map((v) => (
-                      <li key={`rec-${v.booth_id}`} className={styles.listItem}>
-                        <span className={styles.listItemName}>{v.vendor_name}</span>
-                        <div className={styles.progressWrap}>
-                          <div className={styles.progressBar} style={{ width: `${v.pct_recommend ?? 0}%` }} />
-                          <span className={styles.progressLabel}>{v.pct_recommend != null ? v.pct_recommend.toFixed(0) : 0}%</span>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-
-              <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>All B2B feedback →</Link>
-            </>
+              </div>
+            </section>
           )}
-        </section>
-      </div>
-
-      {/* Recent feedback tables */}
-      <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>Recent session feedback</h2>
-        {recentSession.length === 0 ? (
-          <p className={styles.empty}>No session feedback yet.</p>
-        ) : (
-          <div className={styles.tableWrap}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Session</th>
-                  <th>User</th>
-                  <th>Rating</th>
-                  <th>Comment</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentSession.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.session_title ?? '—'}</td>
-                    <td>{row.user_name ?? row.user_email ?? '—'}</td>
-                    <td><Stars value={row.rating} /></td>
-                    <td>{row.comment ? (row.comment.length > 50 ? row.comment.slice(0, 50) + '…' : row.comment) : '—'}</td>
-                    <td>{row.created_at ? new Date(row.created_at).toLocaleString() : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {sessionList.length > 0 && (
-          <Link to={`/events/${eventId}/session-feedback`} className={styles.sectionLink}>View all session feedback →</Link>
-        )}
-      </section>
-
-      <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>Recent B2B feedback</h2>
-        {recentB2b.length === 0 ? (
-          <p className={styles.empty}>No B2B meeting feedback yet.</p>
-        ) : (
-          <div className={styles.tableWrap}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th>Vendor</th>
-                  <th>Attendee</th>
-                  <th>Rating</th>
-                  <th>Meet again</th>
-                  <th>Recommend</th>
-                  <th>Date</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentB2b.map((row) => (
-                  <tr key={row.id}>
-                    <td>{row.vendor_name ?? '—'}</td>
-                    <td>{row.attendee_name ?? row.attendee_email ?? '—'}</td>
-                    <td><Stars value={row.rating} /></td>
-                    <td>{row.meet_again ? 'Yes' : 'No'}</td>
-                    <td>{row.recommend_vendor ? 'Yes' : 'No'}</td>
-                    <td>{row.created_at ? new Date(row.created_at).toLocaleString() : '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-        {b2bList.length > 0 && (
-          <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>View all B2B feedback →</Link>
-        )}
-      </section>
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Vendors</h2>
+            <p className={styles.sectionDesc}>Which vendors attendees want to meet again and would recommend.</p>
+            {topVendorsByRating.length === 0 ? (
+              <p className={styles.empty}>No B2B feedback yet.</p>
+            ) : (
+              <>
+                <h3 className={styles.subTitle}>Top rated</h3>
+                <ul className={styles.list}>
+                  {topVendorsByRating.map((v) => (
+                    <li key={v.booth_id} className={styles.listItem}>
+                      <span className={styles.listItemName}>{v.vendor_name}</span>
+                      <div className={styles.listItemMetaRow}>
+                        <Stars value={v.avg_rating ?? 0} />
+                        <span>{v.feedback_count} feedback</span>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+                {vendorsWantToMeetAgain.length > 0 && (
+                  <>
+                    <h3 className={styles.subTitle}>Would meet again</h3>
+                    <ul className={styles.list}>
+                      {vendorsWantToMeetAgain.map((v) => (
+                        <li key={`meet-${v.booth_id}`} className={styles.listItem}>
+                          <span className={styles.listItemName}>{v.vendor_name}</span>
+                          <div className={styles.progressWrap}>
+                            <div className={styles.progressBar} style={{ width: `${v.pct_meet_again ?? 0}%` }} />
+                            <span className={styles.progressLabel}>{v.pct_meet_again != null ? v.pct_meet_again.toFixed(0) : 0}%</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                {vendorsWouldRecommend.length > 0 && (
+                  <>
+                    <h3 className={styles.subTitle}>Would recommend</h3>
+                    <ul className={styles.list}>
+                      {vendorsWouldRecommend.map((v) => (
+                        <li key={`rec-${v.booth_id}`} className={styles.listItem}>
+                          <span className={styles.listItemName}>{v.vendor_name}</span>
+                          <div className={styles.progressWrap}>
+                            <div className={styles.progressBar} style={{ width: `${v.pct_recommend ?? 0}%` }} />
+                            <span className={styles.progressLabel}>{v.pct_recommend != null ? v.pct_recommend.toFixed(0) : 0}%</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+                <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>All B2B feedback →</Link>
+              </>
+            )}
+          </section>
+          <section className={styles.section}>
+            <h2 className={styles.sectionTitle}>Recent B2B feedback</h2>
+            {recentB2b.length === 0 ? (
+              <p className={styles.empty}>No B2B meeting feedback yet.</p>
+            ) : (
+              <div className={styles.tableWrap}>
+                <table className={styles.table}>
+                  <thead>
+                    <tr>
+                      <th>Vendor</th>
+                      <th>Attendee</th>
+                      <th>Rating</th>
+                      <th>Meet again</th>
+                      <th>Recommend</th>
+                      <th>Date</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {recentB2b.map((row) => (
+                      <tr key={row.id}>
+                        <td>{row.vendor_name ?? '—'}</td>
+                        <td>{row.attendee_name ?? row.attendee_email ?? '—'}</td>
+                        <td><Stars value={row.rating} /></td>
+                        <td>{row.meet_again ? 'Yes' : 'No'}</td>
+                        <td>{row.recommend_vendor ? 'Yes' : 'No'}</td>
+                        <td>{row.created_at ? new Date(row.created_at).toLocaleString() : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {b2bList.length > 0 && (
+              <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>View all B2B feedback →</Link>
+            )}
+          </section>
+        </>
+      )}
     </div>
   );
 }

@@ -66,6 +66,10 @@ export default function EventDetail() {
           <span className={styles.cardTitle}>Session feedback</span>
           <span className={styles.cardDesc}>View all session ratings and comments</span>
         </Link>
+        <Link to={`/events/${eventId}/vendor-booths`} className={styles.card}>
+          <span className={styles.cardTitle}>Vendor booths (B2B)</span>
+          <span className={styles.cardDesc}>Add and edit vendor booths — same as the mobile app</span>
+        </Link>
         <Link to={`/events/${eventId}/meetings`} className={styles.card}>
           <span className={styles.cardTitle}>Meetings</span>
           <span className={styles.cardDesc}>Manage B2B slots and assign attendees</span>

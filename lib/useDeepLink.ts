@@ -3,9 +3,9 @@ import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 import type { NotificationResponse } from 'expo-notifications';
 import { useRouter } from 'expo-router';
-
+import { setPendingPasswordRecoveryUrl } from './pendingRecoveryUrl';
 function navigateToPost(router: ReturnType<typeof useRouter>, postId: string) {
-  router.replace({ pathname: '/feed', params: { postId } } as any);
+  router.replace(`/(tabs)/feed/comment/${encodeURIComponent(postId)}` as any);
 }
 
 function navigateToChat(router: ReturnType<typeof useRouter>, userId: string) {
@@ -27,6 +27,11 @@ export function useDeepLink() {
   useEffect(() => {
     const handleUrl = (url: string) => {
       try {
+        if (url.includes('reset-password') && (url.includes('access_token') || url.includes('refresh_token') || url.includes('type=recovery'))) {
+          setPendingPasswordRecoveryUrl(url);
+          router.replace('/(auth)/reset-password' as any);
+          return;
+        }
         const parsed = Linking.parse(url);
         const path = parsed.path ?? '';
         const segment = path.startsWith('/') ? path.slice(1).split('/') : path.split('/');
@@ -38,6 +43,9 @@ export function useDeepLink() {
           navigateToGroup(router, segment[1]);
         } else if (segment[0] === 'expo' && segment[1]) {
           router.replace(`/(tabs)/expo/${segment[1]}` as any);
+        } else if (segment[0] === 'reset-password') {
+          setPendingPasswordRecoveryUrl(url);
+          router.replace('/(auth)/reset-password' as any);
         }
       } catch (_) {
         // ignore parse errors

@@ -10,11 +10,18 @@
     "ios": "expo run:ios",
     "web": "expo start --web",
     "test": "node scripts/run-all-tests.mjs",
+    "check:health": "node scripts/health-check.mjs",
     "supabase:run-sql": "node scripts/run-supabase-sql.mjs",
     "supabase:migrate": "node scripts/run-supabase-sql.mjs supabase/APPLY-ALL-MIGRATIONS.sql",
+    "supabase:deploy-reminders": "npx supabase functions deploy notify-event-starting-soon notify-b2b-meeting-soon",
+    "supabase:deploy-functions": "npx supabase functions deploy send-announcement-push process-scheduled-announcements notify-event-starting-soon notify-b2b-meeting-soon nudge-b2b-meeting-feedback auto-deactivate-events get-r2-upload-url upload-image-to-r2 delete-user set-event-creator-admin bulk-create-users",
+    "supabase:sql-notification-crons": "node scripts/run-supabase-sql.mjs scripts/setup-all-notification-crons.sql",
     "supabase:fix-recursion": "node scripts/run-supabase-sql.mjs supabase/FIX-GROUP-RECURSION.sql",
     "supabase:check-tables": "node scripts/check-supabase-tables.mjs",
-    "build:ios:testflight": "eas build --platform ios --profile production --auto-submit --non-interactive"
+    "supabase:verify": "node scripts/verify-supabase-remote.mjs",
+    "ios:build-number": "node scripts/ios-build-preflight.mjs",
+    "build:ios:testflight": "node scripts/ios-build-preflight.mjs && eas build --platform ios --profile production --auto-submit --non-interactive",
+    "submit:ios": "eas submit --platform ios --latest --profile production"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",

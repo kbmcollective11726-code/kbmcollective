@@ -139,6 +139,15 @@ ALTER TABLE public.session_reminder_sent ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "Service role can manage session_reminder_sent" ON public.session_reminder_sent;
 CREATE POLICY "Service role can manage session_reminder_sent" ON public.session_reminder_sent FOR ALL USING (true) WITH CHECK (true);
 
+-- ---------- 8b) B2B meeting reminder sent (notify-b2b-meeting-soon) ----------
+-- Requires public.meeting_bookings (B2B schema). If missing, run APPLY-ALL-MIGRATIONS or your base schema first.
+CREATE TABLE IF NOT EXISTS public.b2b_meeting_reminder_sent (
+  booking_id UUID PRIMARY KEY REFERENCES public.meeting_bookings(id) ON DELETE CASCADE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+COMMENT ON TABLE public.b2b_meeting_reminder_sent IS 'One row per booking when we sent the "meeting in 5 min" push. Used by notify-b2b-meeting-soon.';
+ALTER TABLE public.b2b_meeting_reminder_sent ENABLE ROW LEVEL SECURITY;
+
 -- ---------- 9) Admin helpers (for RLS) ----------
 CREATE OR REPLACE FUNCTION public.is_event_admin(p_event_id UUID)
 RETURNS BOOLEAN LANGUAGE sql SECURITY DEFINER SET search_path = public STABLE AS $$

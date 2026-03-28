@@ -5,3 +5,25 @@ verify_jwt = false
 
 [functions.upload-image-to-r2]
 verify_jwt = false
+
+# Cron invokes these with x-cron-secret only (no user JWT). Same pattern as other scheduled jobs.
+[functions.notify-event-starting-soon]
+verify_jwt = false
+
+[functions.notify-b2b-meeting-soon]
+verify_jwt = false
+
+# Cron calls with x-cron-secret only (unless cron SQL adds Bearer anon_key).
+[functions.auto-deactivate-events]
+verify_jwt = false
+
+[functions.nudge-b2b-meeting-feedback]
+verify_jwt = false
+
+# Cron sends Bearer anon + x-cron-secret (see scripts/setup-scheduled-announcements-cron.sql).
+[functions.process-scheduled-announcements]
+verify_jwt = false
+
+# Admin JWT required (admin-setup / platform admin).
+[functions.bulk-create-users]
+verify_jwt = true

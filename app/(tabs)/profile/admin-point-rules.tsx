@@ -31,6 +31,8 @@ const ALL_ACTIONS = [
   'vendor_meeting',
   'checkin',
   'share_linkedin',
+  'session_feedback',
+  'b2b_feedback',
 ] as const;
 
 const ACTION_LABELS: Record<string, string> = {
@@ -46,6 +48,8 @@ const ACTION_LABELS: Record<string, string> = {
   vendor_meeting: 'Visit a vendor booth',
   checkin: 'Check in at event',
   share_linkedin: 'Share on LinkedIn',
+  session_feedback: 'Leave feedback for a session',
+  b2b_feedback: 'Leave feedback for a B2B / vendor meeting',
 };
 
 type PointRuleRow = { id: string; action: string; points_value: number; max_per_day: number | null; description: string | null };
@@ -54,6 +58,18 @@ type MaxLimitMode = 'none' | 'limit';
 
 function getMaxLimitMode(maxPerDay: string): MaxLimitMode {
   return maxPerDay.trim() === '' ? 'none' : 'limit';
+}
+
+/** PostgREST errors are plain objects, not `instanceof Error` — show real message in alerts. */
+function formatSupabaseError(err: unknown, fallback: string): string {
+  if (err == null) return fallback;
+  if (typeof err === 'object' && err !== null) {
+    const o = err as { message?: string; details?: string; hint?: string; code?: string };
+    const parts = [o.message, o.details, o.hint].filter((x): x is string => Boolean(x && String(x).trim()));
+    if (parts.length) return parts.join('\n');
+  }
+  if (err instanceof Error) return err.message;
+  return fallback;
 }
 
 export default function AdminPointRulesScreen() {
@@ -157,7 +173,7 @@ export default function AdminPointRulesScreen() {
       });
       setValues(newV);
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to save.');
+      Alert.alert('Error', formatSupabaseError(err, 'Failed to save.'));
     } finally {
       setSaving(false);
     }
@@ -189,7 +205,7 @@ export default function AdminPointRulesScreen() {
       Alert.alert('Done', 'Default point rules (5) added. You can edit, add more, or delete.');
       await loadRules();
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to add defaults.');
+      Alert.alert('Error', formatSupabaseError(err, 'Failed to add defaults.'));
     } finally {
       setSaving(false);
     }
@@ -213,7 +229,7 @@ export default function AdminPointRulesScreen() {
               Alert.alert('Done', 'Reset to 5 default point rules.');
               await loadRules();
             } catch (err) {
-              Alert.alert('Error', err instanceof Error ? err.message : 'Failed to reset.');
+              Alert.alert('Error', formatSupabaseError(err, 'Failed to reset.'));
             } finally {
               setSaving(false);
             }
@@ -240,7 +256,7 @@ export default function AdminPointRulesScreen() {
               Alert.alert('Deleted', 'Rule removed. The "How to earn points" popup will no longer show it.');
               await loadRules();
             } catch (err) {
-              Alert.alert('Error', err instanceof Error ? err.message : 'Failed to delete.');
+              Alert.alert('Error', formatSupabaseError(err, 'Failed to delete.'));
             } finally {
               setSaving(false);
             }
@@ -262,11 +278,14 @@ export default function AdminPointRulesScreen() {
         max_per_day: null,
         description: ACTION_LABELS[action] ?? action.replace(/_/g, ' '),
       });
-      if (error) throw error;
+      if (error) {
+        Alert.alert('Error', formatSupabaseError(error, 'Failed to add rule.'));
+        return;
+      }
       Alert.alert('Added', 'Rule added. Edit points and label below, then Save.');
       await loadRules();
     } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Failed to add rule.');
+      Alert.alert('Error', formatSupabaseError(err, 'Failed to add rule.'));
     } finally {
       setSaving(false);
     }

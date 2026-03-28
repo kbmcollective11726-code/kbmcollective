@@ -94,23 +94,26 @@ Generated from database queries (Supabase MCP), codebase scan, and config review
 
 ---
 
-## 2. Edge Functions (9 in repo)
+## 2. Edge Functions (11 in repo)
 
 | Function | Purpose | Cron |
 |----------|---------|------|
 | send-announcement-push | Send push to users (likes, comments, announcements) | No |
 | notify-event-starting-soon | “Session in 5 min” push | Every 2 min (script) |
 | notify-b2b-meeting-soon | “B2B meeting in 5 min” push | Every 2 min (script) |
+| nudge-b2b-meeting-feedback | Nudge to rate B2B meeting | Every ~15 min (script) |
 | process-scheduled-announcements | Send due scheduled announcements | Every 1 min (script) |
 | auto-deactivate-events | Deactivate old events | Daily (script) |
 | get-r2-upload-url | R2 upload URL (verify_jwt = false) | No |
 | upload-image-to-r2 | Upload image to R2 (verify_jwt = false) | No |
 | delete-user | Delete user account (platform admin) | No |
 | set-event-creator-admin | Set event creator as admin | No |
+| bulk-create-users | Admin bulk invite (`admin-setup` / Members) | No |
 
-**Deploy:** All can be deployed with  
-`npx supabase functions deploy <name>`.  
-**Cron:** Run the `scripts/setup-*-cron.sql` scripts in SQL Editor (pg_cron + pg_net + Vault secrets).
+**Deploy:** `npm run supabase:deploy-functions` (all of the above).  
+**Cron:** Run each `scripts/setup-*-cron.sql` in SQL Editor, then **`scripts/verify-cron-jobs.sql`** — many projects only have `auto-deactivate-events` until the other scripts are applied. See **docs/SUPABASE-LIVE-AUDIT.md**.
+
+**Note:** Dashboard may list extra functions (e.g. `create-event-request`) not present in this repo.
 
 ---
 

@@ -4,6 +4,7 @@ import { useRouter, usePathname } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Bell } from 'lucide-react-native';
 import { useAuthStore } from '../stores/authStore';
+import { useEventStore } from '../stores/eventStore';
 import { supabase } from '../lib/supabase';
 import { setAppBadgeCount } from '../lib/pushNotifications';
 import { colors } from '../constants/colors';
@@ -17,22 +18,29 @@ export default function HeaderNotificationBell({ compact }: HeaderNotificationBe
   const router = useRouter();
   const pathname = usePathname();
   const { user } = useAuthStore();
+  const currentEvent = useEventStore((s) => s.currentEvent);
   const [unreadCount, setUnreadCount] = useState(0);
   const appStateRef = useRef(AppState.currentState);
 
   const fetchUnreadCount = useCallback(async () => {
     if (!user?.id) return;
+    if (!currentEvent?.id) {
+      setUnreadCount(0);
+      setAppBadgeCount(0);
+      return;
+    }
     const { data, error } = await supabase
       .from('notifications')
       .select('id')
       .eq('user_id', user.id)
+      .eq('event_id', currentEvent.id)
       .eq('is_read', false)
       .limit(500);
     if (error) return;
     const count = Array.isArray(data) ? data.length : 0;
     setUnreadCount(count);
     setAppBadgeCount(count);
-  }, [user?.id]);
+  }, [user?.id, currentEvent?.id]);
 
   useEffect(() => {
     fetchUnreadCount();

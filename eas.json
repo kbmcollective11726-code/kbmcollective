@@ -13,7 +13,8 @@
       "ios": { "simulator": false },
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s"
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
+        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://admin-setup-omega.vercel.app/auth-recovery.html"
       }
     },
     "production": {
@@ -21,9 +22,16 @@
       "android": { "buildType": "app-bundle" },
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s"
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
+        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://admin-setup-omega.vercel.app/auth-recovery.html"
       }
     }
   },
-  "submit": { "production": { "ios": {} } }
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6759017580"
+      }
+    }
+  }
 }

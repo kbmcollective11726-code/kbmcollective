@@ -209,7 +209,7 @@ ALTER TABLE public.notifications REPLICA IDENTITY FULL;
 CREATE TABLE IF NOT EXISTS public.point_rules (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     event_id UUID NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
-    action TEXT NOT NULL CHECK (action IN ('post_photo', 'receive_like', 'give_like', 'comment', 'receive_comment', 'connect', 'attend_session', 'complete_profile', 'daily_streak', 'vendor_meeting', 'checkin', 'share_linkedin')),
+    action TEXT NOT NULL CHECK (action IN ('post_photo', 'receive_like', 'give_like', 'comment', 'receive_comment', 'connect', 'attend_session', 'complete_profile', 'daily_streak', 'vendor_meeting', 'checkin', 'share_linkedin', 'session_feedback', 'b2b_feedback')),
     points_value INTEGER NOT NULL DEFAULT 10,
     max_per_day INTEGER,
     description TEXT,
@@ -503,7 +503,7 @@ CREATE POLICY "Users can delete own notifications" ON public.notifications FOR D
 -- POINT RULES
 CREATE POLICY "Point rules viewable" ON public.point_rules FOR SELECT USING (true);
 CREATE POLICY "Admins can manage point rules" ON public.point_rules FOR ALL USING (
-    EXISTS (SELECT 1 FROM public.event_members WHERE user_id = auth.uid() AND event_id = point_rules.event_id AND role IN ('admin', 'super_admin'))
+    public.is_event_admin(event_id) OR public.is_platform_admin(auth.uid())
 );
 
 -- POINT LOG
@@ -709,6 +709,45 @@ CREATE TRIGGER on_like_deleted_remove_points
   AFTER DELETE ON public.likes
   FOR EACH ROW
   EXECUTE FUNCTION public.remove_points_on_unlike();
+
+-- When a post is soft-deleted, remove the poster's post_photo points and recalc their total
+CREATE OR REPLACE FUNCTION public.remove_points_on_post_soft_delete()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND NEW.is_deleted IS TRUE
+     AND COALESCE(OLD.is_deleted, FALSE) IS NOT TRUE
+  THEN
+    DELETE FROM public.point_log
+    WHERE event_id = NEW.event_id
+      AND user_id = NEW.user_id
+      AND action = 'post_photo'
+      AND reference_id = NEW.id;
+
+    UPDATE public.event_members em
+    SET points = (
+      SELECT COALESCE(SUM(pl.points), 0)::integer
+      FROM public.point_log pl
+      WHERE pl.user_id = em.user_id AND pl.event_id = em.event_id
+    )
+    WHERE em.event_id = NEW.event_id
+      AND em.user_id = NEW.user_id;
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS on_post_soft_delete_remove_post_photo_points ON public.posts;
+CREATE TRIGGER on_post_soft_delete_remove_post_photo_points
+  AFTER UPDATE OF is_deleted ON public.posts
+  FOR EACH ROW
+  WHEN (NEW.is_deleted IS TRUE AND COALESCE(OLD.is_deleted, FALSE) IS NOT TRUE)
+  EXECUTE FUNCTION public.remove_points_on_post_soft_delete();
 
 -- Auto-update timestamp
 CREATE OR REPLACE FUNCTION public.update_updated_at()

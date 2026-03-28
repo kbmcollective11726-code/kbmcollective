@@ -120,7 +120,8 @@ END; $$;
 -- -----------------------------------------------------------------------------
 CREATE POLICY "Admins can assign meeting bookings" ON public.meeting_bookings
   FOR INSERT WITH CHECK (
-    EXISTS (
+    public.is_platform_admin(auth.uid())
+    OR EXISTS (
       SELECT 1 FROM public.meeting_slots ms
       JOIN public.vendor_booths vb ON vb.id = ms.booth_id
       JOIN public.event_members em ON em.event_id = vb.event_id AND em.user_id = auth.uid() AND em.role IN ('admin', 'super_admin')

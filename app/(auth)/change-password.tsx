@@ -13,7 +13,7 @@ import {
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
-import { supabase } from '../../lib/supabase';
+import { updateSignedInUserPassword } from '../../lib/signedInPasswordUpdate';
 import { colors } from '../../constants/colors';
 
 export default function ChangePasswordScreen() {
@@ -34,28 +34,22 @@ export default function ChangePasswordScreen() {
       Alert.alert('Mismatch', 'New password and confirmation do not match.');
       return;
     }
+
     setLoading(true);
     try {
-      const { error } = await supabase.auth.updateUser({
-        password: p,
-        data: { must_change_password: false },
-      });
-      if (error) {
-        Alert.alert('Update failed', error.message);
-        setLoading(false);
+      const result = await updateSignedInUserPassword(p, refreshUser);
+      if (!result.ok) {
+        Alert.alert(result.title, result.message);
         return;
       }
-      const { data: { session } } = await supabase.auth.getSession();
-      if (session) useAuthStore.setState({ session });
-      await refreshUser();
-      const user = useAuthStore.getState().user;
-      if (user?.is_platform_admin) {
-        router.replace('/profile/admin-all-events');
-      } else {
-        router.replace('/(tabs)/home');
-      }
-    } catch (e) {
-      Alert.alert('Error', e instanceof Error ? e.message : 'Something went wrong. Try again.');
+      const { user } = useAuthStore.getState();
+      requestAnimationFrame(() => {
+        if (user?.is_platform_admin) {
+          router.replace('/profile/admin-all-events');
+        } else {
+          router.replace('/(tabs)/home');
+        }
+      });
     } finally {
       setLoading(false);
     }

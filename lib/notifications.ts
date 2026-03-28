@@ -56,12 +56,15 @@ export async function createNotificationAndPush(
   const result = await createNotification(userId, eventId, type, title, body, data);
   if (result.error) return result;
   // Send push so the user gets a device notification (in-app record already created above)
-  await sendPushToUser(userId, title, body ?? '', {
+  const pushResult = await sendPushToUser(userId, title, body ?? '', {
     eventId: eventId ?? undefined,
     postId: data?.post_id as string | undefined,
     chatUserId: data?.chat_user_id as string | undefined,
     groupId: data?.group_id as string | undefined,
     boothId: data?.booth_id as string | undefined,
   });
+  if (pushResult.error) {
+    console.warn('[notifications] Push failed (in-app notification was saved):', pushResult.error);
+  }
   return { error: null };
 }

@@ -84,33 +84,47 @@ Deno.serve(async (req: Request) => {
       .not("push_token", "is", null);
 
     const tokens = (users ?? []).map((u: { push_token: string }) => u.push_token).filter(Boolean);
-    if (tokens.length > 0) {
-      const title = "Event starting in 5 minutes";
-      const body = `${session.title ?? "A session"} is starting soon. Check the Agenda.`;
-      const messages = tokens.map((to: string) => ({
-        to,
-        title,
-        body,
-        data: { event_id: session.event_id, session_id: session.id, url: "collectivelive://schedule" },
-        sound: "default",
-        priority: "high",
-        channelId: ANDROID_CHANNEL_ID,
-        badge: 1,
-      }));
-      try {
-        const pushRes = await fetch(EXPO_PUSH_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(messages),
-        });
-        if (pushRes.ok) totalSent += tokens.length;
-        else console.warn("Expo push error:", await pushRes.text());
-      } catch (e) {
-        console.error("Push request failed:", e);
-      }
+    if (tokens.length === 0) {
+      // Do not mark sent — users may register a push_token before session starts; cron will retry.
+      console.warn("Session reminder skipped (no push tokens):", session.id);
+      continue;
     }
 
-    await supabase.from("session_reminder_sent").insert({ session_id: session.id });
+    const title = "Event starting in 5 minutes";
+    const body = `${session.title ?? "A session"} is starting soon. Check the Agenda.`;
+    const messages = tokens.map((to: string) => ({
+      to,
+      title,
+      body,
+      data: { event_id: session.event_id, session_id: session.id, url: "collectivelive://schedule" },
+      sound: "default",
+      priority: "high",
+      channelId: ANDROID_CHANNEL_ID,
+      badge: 1,
+    }));
+
+    let pushOk = false;
+    try {
+      const pushRes = await fetch(EXPO_PUSH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(messages),
+      });
+      const pushText = await pushRes.text();
+      if (pushRes.ok) {
+        pushOk = true;
+        totalSent += tokens.length;
+      } else {
+        console.warn("Expo push error:", pushText);
+      }
+    } catch (e) {
+      console.error("Push request failed:", e);
+    }
+
+    // Only mark sent after a successful Expo response so failed sends can retry on next cron tick.
+    if (pushOk) {
+      await supabase.from("session_reminder_sent").insert({ session_id: session.id });
+    }
   }
 
   return json({ sent: totalSent, sessions: toProcess.length }, 200);

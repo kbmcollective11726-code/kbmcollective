@@ -14,8 +14,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { Store, MapPin, ChevronRight, Calendar, Users } from 'lucide-react-native';
-import { format, parseISO } from 'date-fns';
+import { Store, MapPin, ChevronRight, Calendar, Users, Star } from 'lucide-react-native';
+import { format, parseISO, isPast } from 'date-fns';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, supabaseStorage } from '../../../lib/supabase';
@@ -33,7 +33,7 @@ export type RepMeetingAttendee = {
   meetingTimes: { start: string; end: string }[];
 };
 
-export type BoothWithMeeting = VendorBooth & { meetingStart?: string; meetingEnd?: string };
+export type BoothWithMeeting = VendorBooth & { meetingStart?: string; meetingEnd?: string; meetingSlotId?: string };
 
 function formatMeetingTime(start: string, end: string): string {
   try {
@@ -57,6 +57,26 @@ export default function ExpoScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
 
+  const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
+    const repsRes = await client
+      .from('vendor_booth_reps')
+      .select('booth_id, vendor_booths!inner(event_id, is_active)')
+      .eq('user_id', uid)
+      .eq('vendor_booths.event_id', eventId)
+      .eq('vendor_booths.is_active', true);
+    if (!repsRes.error) {
+      return (repsRes.data ?? []).map((r: { booth_id: string }) => r.booth_id);
+    }
+    // Backward-compat fallback for projects before migration
+    const legacy = await client
+      .from('vendor_booths')
+      .select('id')
+      .eq('event_id', eventId)
+      .eq('is_active', true)
+      .eq('contact_user_id', uid);
+    return (legacy.data ?? []).map((b: { id: string }) => b.id);
+  }, []);
+
   const fetchBooths = useCallback(async () => {
     if (!currentEvent?.id) {
       setBooths([]);
@@ -70,14 +90,14 @@ export default function ExpoScreen() {
       let list: BoothWithMeeting[] = [];
 
       if (user?.id) {
-        const [roleDataRes, repBoothsRes, myBookingsRes] = await Promise.all([
+        const [roleDataRes, myBookingsRes, repBoothIds] = await Promise.all([
           client.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single(),
-          client.from('vendor_booths').select('id').eq('event_id', currentEvent.id).eq('is_active', true).eq('contact_user_id', user.id),
           client
             .from('meeting_bookings')
             .select('slot_id, meeting_slots(booth_id, start_time, end_time)')
             .eq('attendee_id', user.id)
             .neq('status', 'cancelled'),
+          fetchRepBoothIds(currentEvent.id, user.id, client),
         ]);
         const row = roleDataRes.data as { role?: string; roles?: string[] } | null;
         const roles = Array.isArray(row?.roles) ? row.roles : [];
@@ -90,7 +110,6 @@ export default function ExpoScreen() {
           roles.includes('admin') ||
           roles.includes('super_admin') ||
           roles.includes('vendor');
-        const repBoothIds = (repBoothsRes.data ?? []).map((b: { id: string }) => b.id);
         const isVendorRep = repBoothIds.length > 0;
 
         if (isVendorRep) {
@@ -139,7 +158,12 @@ export default function ExpoScreen() {
                 avatar_url: u.avatar_url ?? null,
                 meetingTimes: attendeeToTimes.get(u.id) ?? [],
               }));
-              attendees.sort((a, b) => (a.full_name ?? '').localeCompare(b.full_name ?? ''));
+              // Sort by most recent meeting time first (descending)
+              attendees.sort((a, b) => {
+                const aLatest = a.meetingTimes.length ? a.meetingTimes.reduce((max, t) => (t.start > max ? t.start : max), a.meetingTimes[0].start) : '';
+                const bLatest = b.meetingTimes.length ? b.meetingTimes.reduce((max, t) => (t.start > max ? t.start : max), b.meetingTimes[0].start) : '';
+                return bLatest.localeCompare(aLatest);
+              });
               setBooths([]);
               setRepAttendees(attendees);
             }
@@ -153,11 +177,11 @@ export default function ExpoScreen() {
         if (!isAdminOrVendor) {
           type BookingRow = { slot_id: string; meeting_slots: { booth_id: string; start_time: string; end_time: string } | null };
           const rows = (myBookingsRes.data ?? []) as unknown as BookingRow[];
-          const boothIdToSlot = new Map<string, { start_time: string; end_time: string }>();
+          const boothIdToSlot = new Map<string, { start_time: string; end_time: string; slot_id: string }>();
           for (const r of rows) {
             const slot = r.meeting_slots;
             if (slot?.booth_id && slot.start_time && slot.end_time && !boothIdToSlot.has(slot.booth_id)) {
-              boothIdToSlot.set(slot.booth_id, { start_time: slot.start_time, end_time: slot.end_time });
+              boothIdToSlot.set(slot.booth_id, { start_time: slot.start_time, end_time: slot.end_time, slot_id: r.slot_id });
             }
           }
           const meetingBoothIds = [...boothIdToSlot.keys()];
@@ -177,7 +201,12 @@ export default function ExpoScreen() {
           if (e) throw e;
           list = ((boothData ?? []) as VendorBooth[]).map((b) => {
             const slot = boothIdToSlot.get(b.id);
-            return { ...b, meetingStart: slot?.start_time, meetingEnd: slot?.end_time };
+            return {
+              ...b,
+              meetingStart: slot?.start_time,
+              meetingEnd: slot?.end_time,
+              meetingSlotId: slot?.slot_id,
+            };
           });
         } else {
           const { data: boothData, error: e } = await client
@@ -214,7 +243,7 @@ export default function ExpoScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentEvent?.id, user?.id]);
+  }, [currentEvent?.id, user?.id, fetchRepBoothIds]);
 
   // Like Info: load on mount and on focus. No timeout so first try can complete.
   useEffect(() => {
@@ -399,11 +428,6 @@ export default function ExpoScreen() {
               activeOpacity={0.7}
               onPress={() => router.push(`/expo/${item.id}` as any)}
             >
-              {(item as VendorBooth & { banner_url?: string }).banner_url ? (
-                <Image source={{ uri: (item as VendorBooth & { banner_url?: string }).banner_url! }} style={s.banner} resizeMode="cover" />
-              ) : (
-                <View style={s.bannerPlaceholder} />
-              )}
               <View style={s.cardInner}>
                 <View style={s.cardRow}>
                   {item.logo_url ? (
@@ -433,6 +457,27 @@ export default function ExpoScreen() {
                         <Text style={s.meetingLocation}>{item.booth_location}</Text>
                       </View>
                     ) : null}
+                    {(() => {
+                      try {
+                        const endDate = parseISO((item.meetingEnd ?? '').replace(' ', 'T'));
+                        if (!Number.isNaN(endDate.getTime()) && isPast(endDate) && item.meetingSlotId) {
+                          return (
+                            <TouchableOpacity
+                              style={s.rateMeetingBtn}
+                              onPress={() => {
+                                const fromEnc = encodeURIComponent('/(tabs)/expo');
+                                router.push(`/expo/${item.id}?from=${fromEnc}&rate_slot_id=${encodeURIComponent(item.meetingSlotId!)}` as any);
+                              }}
+                              activeOpacity={0.7}
+                            >
+                              <Star size={18} color={colors.primary} />
+                              <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
+                            </TouchableOpacity>
+                          );
+                        }
+                      } catch {}
+                      return null;
+                    })()}
                   </View>
                 ) : item.booth_location ? (
                   <View style={s.metaRow}>
@@ -484,8 +529,6 @@ const s = StyleSheet.create({
     overflow: 'hidden',
     ...(Platform.OS === 'android' ? { elevation: 2 } : { shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.06, shadowRadius: 8 }),
   },
-  banner: { width: '100%', height: 100 },
-  bannerPlaceholder: { width: '100%', height: 100, backgroundColor: colors.surface },
   cardInner: { padding: 16 },
   cardRow: { flexDirection: 'row', alignItems: 'center' },
   logo: { width: 52, height: 52, borderRadius: 12 },
@@ -510,6 +553,18 @@ const s = StyleSheet.create({
   meetingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   meetingTime: { fontSize: 15, fontWeight: '600', color: colors.text },
   meetingLocation: { fontSize: 14, color: colors.textSecondary },
+  rateMeetingBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: colors.primaryFaded,
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
+  rateMeetingBtnText: { fontSize: 15, fontWeight: '600', color: colors.primary },
   metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10, gap: 6 },
   metaText: { fontSize: 13, color: colors.textMuted },
   websiteBtn: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 4 },

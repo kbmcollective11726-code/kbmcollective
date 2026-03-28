@@ -20,23 +20,11 @@ import { supabase } from '../../../lib/supabase';
 import { createNotificationAndPush } from '../../../lib/notifications';
 import { sendAnnouncementPush } from '../../../lib/pushNotifications';
 import { colors, sessionTypeColors } from '../../../constants/colors';
+import {
+  formatSessionTime,
+  groupSessionsByAgendaDay,
+} from '../../../lib/scheduleNowNext';
 import type { ScheduleSession } from '../../../lib/types';
-import { format, parseISO } from 'date-fns';
-
-/** Day number (1-based) from session start_time relative to event start_date. */
-function getDisplayDayNumber(startTime: string, eventStartDate: string | null | undefined): number {
-  if (!eventStartDate) return 1;
-  const sessionDate = new Date(startTime);
-  const sessionKey = format(sessionDate, 'yyyy-MM-dd');
-  const startKey = eventStartDate.slice(0, 10);
-  if (!startKey || startKey.length < 10) return 1;
-  const start = parseISO(startKey);
-  const session = parseISO(sessionKey);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(session.getTime())) return 1;
-  const diffMs = session.getTime() - start.getTime();
-  const diffDays = Math.round(diffMs / (24 * 60 * 60 * 1000));
-  return Math.max(1, diffDays + 1);
-}
 
 export default function AdminScheduleScreen() {
   const router = useRouter();
@@ -87,9 +75,20 @@ export default function AdminScheduleScreen() {
         s.room?.toLowerCase().includes(q) ||
         s.description?.toLowerCase().includes(q) ||
         (s.session_type && s.session_type.toLowerCase().includes(q)) ||
-        String(getDisplayDayNumber(s.start_time, currentEvent?.start_date)).includes(q)
+        String(s.day_number ?? '').includes(q)
     );
   }, [sessions, searchQuery]);
+
+  const sessionsByDay = useMemo(
+    () =>
+      groupSessionsByAgendaDay(
+        filteredSessions,
+        currentEvent?.start_date,
+        currentEvent?.end_date,
+        true
+      ),
+    [filteredSessions, currentEvent?.start_date, currentEvent?.end_date]
+  );
 
   const fetchSessions = async () => {
     if (!currentEvent?.id) {
@@ -117,12 +116,23 @@ export default function AdminScheduleScreen() {
   };
 
   useEffect(() => {
-    fetchSessions();
+    if (!currentEvent?.id) {
+      setSessions([]);
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    fetchSessions().catch(() => {
+      if (!cancelled) setSessions([]);
+    }).finally(() => {
+      if (!cancelled) setLoading(false);
+    });
+    return () => { cancelled = true; };
   }, [currentEvent?.id]);
 
   useFocusEffect(
     useCallback(() => {
-      if (currentEvent?.id) fetchSessions();
+      if (currentEvent?.id) fetchSessions().catch(() => {});
     }, [currentEvent?.id])
   );
 
@@ -196,8 +206,6 @@ export default function AdminScheduleScreen() {
     );
   };
 
-  const formatTime = (iso: string) => format(new Date(iso), 'EEE M/d · h:mm a');
-
   if (!currentEvent) {
     return (
       <SafeAreaView style={styles.container} edges={['bottom']}>
@@ -262,43 +270,64 @@ export default function AdminScheduleScreen() {
               <Text style={styles.subtitle}>Try a different search.</Text>
             </View>
           ) : (
-            filteredSessions.map((session) => {
-              const firstType = session.session_type?.split(',')[0]?.trim() ?? '';
-              const typeColor = sessionTypeColors[firstType] ?? colors.primary;
-              return (
-                <View key={session.id} style={[styles.card, { borderLeftColor: typeColor }]}>
-                  <View style={styles.cardBody}>
-                    <Text style={styles.cardTitle}>{session.title}</Text>
-                    <View style={styles.meta}>
-                      <Clock size={14} color={colors.textMuted} />
-                      <Text style={styles.metaText}>
-                        Day {getDisplayDayNumber(session.start_time, currentEvent?.start_date)} · {formatTime(session.start_time)} – {format(new Date(session.end_time), 'h:mm a')}
-                      </Text>
-                    </View>
-                    {(Array.isArray(session.speakers) && session.speakers.length > 0
-                      ? (session.speakers as { name?: string }[]).map((s) => s?.name).filter(Boolean).join(', ')
-                      : session.speaker_name) && (
-                      <Text style={styles.speaker}>
-                        {Array.isArray(session.speakers) && session.speakers.length > 0
-                          ? (session.speakers as { name?: string }[]).map((s) => s?.name).filter(Boolean).join(', ')
-                          : session.speaker_name}
-                      </Text>
-                    )}
-                  </View>
-                  <View style={styles.actions}>
-                    <TouchableOpacity
-                      onPress={() => router.push({ pathname: '/profile/admin-schedule-edit', params: { id: session.id } } as any)}
-                      style={styles.iconBtn}
-                    >
-                      <Pencil size={20} color={colors.primary} />
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => deleteSession(session)} style={styles.iconBtn}>
-                      <Trash2 size={20} color={colors.danger} />
-                    </TouchableOpacity>
-                  </View>
+            sessionsByDay.map((group) => (
+              <View key={group.dateKey} style={styles.daySection}>
+                <View style={styles.daySectionHead}>
+                  {group.dayNum != null ? (
+                    <Text style={styles.dayHeading}>
+                      Day {group.dayNum}
+                      {group.dateLabel ? (
+                        <Text style={styles.dayHeadingMuted}> — {group.dateLabel}</Text>
+                      ) : null}
+                    </Text>
+                  ) : (
+                    <Text style={styles.dayHeading}>{group.dateLabel}</Text>
+                  )}
+                  <Text style={styles.dayBadge}>
+                    {group.items.length} session{group.items.length === 1 ? '' : 's'}
+                  </Text>
                 </View>
-              );
-            })
+                {group.items.map((session) => {
+                  const firstType = session.session_type?.split(',')[0]?.trim() ?? '';
+                  const typeColor = sessionTypeColors[firstType] ?? colors.primary;
+                  return (
+                    <View key={session.id} style={[styles.card, { borderLeftColor: typeColor }]}>
+                      <View style={styles.cardBody}>
+                        <Text style={styles.cardTitle}>{session.title}</Text>
+                        <View style={styles.meta}>
+                          <Clock size={14} color={colors.textMuted} />
+                          <Text style={styles.metaText}>
+                            {formatSessionTime(session.start_time)} – {formatSessionTime(session.end_time)}
+                          </Text>
+                        </View>
+                        {(Array.isArray(session.speakers) && session.speakers.length > 0
+                          ? (session.speakers as { name?: string }[]).map((s) => s?.name).filter(Boolean).join(', ')
+                          : session.speaker_name) && (
+                          <Text style={styles.speaker}>
+                            {Array.isArray(session.speakers) && session.speakers.length > 0
+                              ? (session.speakers as { name?: string }[]).map((s) => s?.name).filter(Boolean).join(', ')
+                              : session.speaker_name}
+                          </Text>
+                        )}
+                      </View>
+                      <View style={styles.actions}>
+                        <TouchableOpacity
+                          onPress={() =>
+                            router.push({ pathname: '/profile/admin-schedule-edit', params: { id: session.id } } as any)
+                          }
+                          style={styles.iconBtn}
+                        >
+                          <Pencil size={20} color={colors.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity onPress={() => deleteSession(session)} style={styles.iconBtn}>
+                          <Trash2 size={20} color={colors.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            ))
           )}
         </ScrollView>
       )}
@@ -341,6 +370,17 @@ const styles = StyleSheet.create({
     paddingVertical: 0,
   },
   scrollContent: { padding: 16, paddingBottom: 32 },
+  daySection: { marginBottom: 20 },
+  daySectionHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingHorizontal: 2,
+  },
+  dayHeading: { fontSize: 15, fontWeight: '700', color: colors.text },
+  dayHeadingMuted: { fontWeight: '600', color: colors.textSecondary },
+  dayBadge: { fontSize: 12, fontWeight: '600', color: colors.textMuted },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   title: { fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8 },
   subtitle: { fontSize: 14, color: colors.textSecondary, textAlign: 'center' },

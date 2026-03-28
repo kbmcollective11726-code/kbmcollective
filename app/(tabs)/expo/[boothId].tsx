@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -18,8 +18,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { Store, MapPin, ExternalLink, ChevronLeft, Calendar, UserPlus, ChevronDown, Clock, Star } from 'lucide-react-native';
+import { Store, MapPin, ExternalLink, ChevronLeft, Calendar, UserPlus, ChevronDown, Clock, Star, CheckCircle } from 'lucide-react-native';
 import { format, parseISO, isPast } from 'date-fns';
+import { isSessionLiveInstant } from '../../../lib/scheduleNowNext';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
@@ -35,10 +36,12 @@ type SlotWithBooking = MeetingSlot & {
 };
 
 export default function BoothDetailScreen() {
-  const params = useLocalSearchParams<{ boothId: string; from?: string }>();
+  const params = useLocalSearchParams<{ boothId: string; from?: string; rate_slot_id?: string }>();
   const boothId = typeof params.boothId === 'string' ? params.boothId : Array.isArray(params.boothId) ? params.boothId[0] : undefined;
   const from = typeof params.from === 'string' ? params.from : Array.isArray(params.from) ? params.from[0] : undefined;
+  const rateSlotId = typeof params.rate_slot_id === 'string' ? params.rate_slot_id : Array.isArray(params.rate_slot_id) ? params.rate_slot_id[0] : undefined;
   const router = useRouter();
+  const rateModalOpenedFromParamRef = useRef(false);
 
   const goBack = useCallback(() => {
     const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
@@ -81,21 +84,43 @@ export default function BoothDetailScreen() {
   const [editSlot, setEditSlot] = useState<SlotWithBooking | null>(null);
   const [editBooking, setEditBooking] = useState<(MeetingBooking & { attendee_name?: string }) | null>(null);
   const [editDateTime, setEditDateTime] = useState<Date>(() => new Date());
+  const [editEndDateTime, setEditEndDateTime] = useState<Date>(() => new Date());
   const [editAttendeeId, setEditAttendeeId] = useState<string | null>(null);
   const [editAttendeeDropdownOpen, setEditAttendeeDropdownOpen] = useState(false);
   const [editShowDatePicker, setEditShowDatePicker] = useState(false);
   const [editShowTimePicker, setEditShowTimePicker] = useState(false);
+  const [editShowEndDatePicker, setEditShowEndDatePicker] = useState(false);
+  const [editShowEndTimePicker, setEditShowEndTimePicker] = useState(false);
   const [editing, setEditing] = useState(false);
   const [cancelAlling, setCancelAlling] = useState(false);
   const [feedbackBookingIds, setFeedbackBookingIds] = useState<Set<string>>(new Set());
   const [rateModalBooking, setRateModalBooking] = useState<MeetingBooking | null>(null);
   const [rateModalSlot, setRateModalSlot] = useState<SlotWithBooking | null>(null);
-  const [feedbackRating, setFeedbackRating] = useState<number>(5);
+  const [feedbackRating, setFeedbackRating] = useState<number>(0);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [feedbackMeetAgain, setFeedbackMeetAgain] = useState<boolean | null>(null);
   const [feedbackRecommend, setFeedbackRecommend] = useState<boolean | null>(null);
-  const [feedbackWorkWith, setFeedbackWorkWith] = useState<number>(5);
+  const [feedbackWorkWith, setFeedbackWorkWith] = useState<number>(0);
   const [savingFeedback, setSavingFeedback] = useState(false);
+
+  const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
+    const repsRes = await client
+      .from('vendor_booth_reps')
+      .select('booth_id, vendor_booths!inner(event_id, is_active)')
+      .eq('user_id', uid)
+      .eq('vendor_booths.event_id', eventId)
+      .eq('vendor_booths.is_active', true);
+    if (!repsRes.error) {
+      return (repsRes.data ?? []).map((r: { booth_id: string }) => r.booth_id);
+    }
+    const legacy = await client
+      .from('vendor_booths')
+      .select('id')
+      .eq('event_id', eventId)
+      .eq('is_active', true)
+      .eq('contact_user_id', uid);
+    return (legacy.data ?? []).map((b: { id: string }) => b.id);
+  }, []);
 
   const fetchBoothAndSlots = useCallback(async () => {
     if (!boothId || !currentEvent?.id) {
@@ -106,12 +131,12 @@ export default function BoothDetailScreen() {
     }
     const client = Platform.OS === 'android' ? supabaseStorage : supabase;
     try {
-      const [boothRes, slotsRes, roleRes, bookingsRes, myRepBoothsRes] = await Promise.all([
+      const [boothRes, slotsRes, roleRes, bookingsRes, myRepBoothIds] = await Promise.all([
         client.from('vendor_booths').select('*').eq('id', boothId).eq('is_active', true).maybeSingle(),
         client.from('meeting_slots').select('id, booth_id, start_time, end_time, is_available, created_at').eq('booth_id', boothId).order('start_time', { ascending: true }),
         user?.id ? client.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single() : Promise.resolve({ data: null }),
         user?.id ? client.from('meeting_bookings').select('id, slot_id, attendee_id, status, notes, created_at').eq('attendee_id', user.id) : Promise.resolve({ data: [] }),
-        user?.id ? client.from('vendor_booths').select('id').eq('event_id', currentEvent.id).eq('is_active', true).eq('contact_user_id', user.id) : Promise.resolve({ data: [] }),
+        user?.id ? fetchRepBoothIds(currentEvent.id, user.id, client) : Promise.resolve([] as string[]),
       ]);
 
       if (boothRes.error || !boothRes.data) {
@@ -121,9 +146,8 @@ export default function BoothDetailScreen() {
         return;
       }
       const boothData = boothRes.data as VendorBooth & { contact_user_id?: string | null };
-      const myRepBoothIds = (myRepBoothsRes.data ?? []).map((b: { id: string }) => b.id);
       const isVendorRepOfSomeBooth = myRepBoothIds.length > 0;
-      const isVendorRepOfThisBooth = boothData?.contact_user_id === user?.id;
+      const isVendorRepOfThisBooth = myRepBoothIds.includes(boothData.id);
       if (isVendorRepOfSomeBooth && !isVendorRepOfThisBooth) {
         setBooth(null);
         setSlots([]);
@@ -144,7 +168,7 @@ export default function BoothDetailScreen() {
         roles.includes('admin') ||
         roles.includes('super_admin') ||
         roles.includes('vendor');
-      const isVendorRep = boothData?.contact_user_id === user?.id;
+      const isVendorRep = myRepBoothIds.includes(boothData.id);
       const isVendor = isVendorByRole || isVendorRep;
       const isEventAdmin =
         user?.is_platform_admin === true ||
@@ -209,13 +233,21 @@ export default function BoothDetailScreen() {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [boothId, currentEvent?.id, user?.id]);
+  }, [boothId, currentEvent?.id, user?.id, fetchRepBoothIds]);
 
   useEffect(() => {
     if (boothId === undefined || boothId === '' || (typeof boothId === 'string' && boothId.startsWith('['))) {
       router.replace('/(tabs)/expo' as any);
     }
   }, [boothId, router]);
+
+  const hasMyMeeting = booth ? slots.some((s) => s.myBooking && s.myBooking.status !== 'cancelled') : false;
+  useEffect(() => {
+    if (loading || !booth) return;
+    if (!isVendorOrAdmin && !hasMyMeeting) {
+      router.replace('/(tabs)/expo' as any);
+    }
+  }, [loading, booth, isVendorOrAdmin, hasMyMeeting, router]);
 
   useFocusEffect(
     useCallback(() => {
@@ -317,7 +349,12 @@ export default function BoothDetailScreen() {
     } catch (e: unknown) {
       console.error('Assign meeting error:', e);
       const msg = e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : 'Could not assign meeting.';
-      Alert.alert('Error', msg.includes('row-level security') || msg.includes('policy') ? 'Permission denied. Run the "Admins can assign meeting bookings" migration in Supabase (see RUN-THESE-MIGRATIONS.sql).' : msg);
+      Alert.alert(
+        'Error',
+        msg.includes('row-level security') || msg.includes('policy')
+          ? 'Permission denied. Make sure the Supabase policy allows platform admins to insert meeting bookings (run `supabase/migrations/20260316000000_meeting_bookings_platform_admin.sql` or update RUN-THESE-MIGRATIONS.sql).'
+          : msg
+      );
     } finally {
       setAssigning(false);
     }
@@ -335,13 +372,66 @@ export default function BoothDetailScreen() {
 
   const slotsToShow = isVendorOrAdmin ? slots : slots.filter((s) => s.myBooking && s.myBooking.status !== 'cancelled');
 
-  const slotInPast = (startTime: string) => {
+  // When opened from schedule "Tap to rate", open the rate modal for that slot if it's past and not yet rated.
+  useEffect(() => {
+    if (!rateSlotId || loading || isVendorOrAdmin || rateModalOpenedFromParamRef.current) return;
+    const slot = slots.find((s) => s.id === rateSlotId);
+    if (!slot?.myBooking || slot.myBooking.status === 'cancelled') return;
     try {
-      const d = parseISO(startTime.replace(' ', 'T'));
+      const endDate = parseISO(slot.end_time.replace(' ', 'T'));
+      if (!isPast(endDate)) return;
+    } catch {
+      return;
+    }
+    if (feedbackBookingIds.has(slot.myBooking.id)) return;
+    rateModalOpenedFromParamRef.current = true;
+    setRateModalBooking(slot.myBooking);
+    setRateModalSlot(slot);
+    setFeedbackRating(0);
+    setFeedbackComment('');
+    setFeedbackMeetAgain(null);
+    setFeedbackRecommend(null);
+    setFeedbackWorkWith(0);
+  }, [rateSlotId, loading, slots, isVendorOrAdmin, feedbackBookingIds]);
+
+  // "Past" should mean the meeting already ended (now > end_time), not just that the start_time is earlier than now.
+  // This fixes the "Live now" label being shown as "Past" once the clock passes the start.
+  const slotInPast = (startTime: string, endTime?: string) => {
+    try {
+      const iso = (endTime ?? startTime).replace(' ', 'T');
+      const d = parseISO(iso);
       return isPast(d);
     } catch {
       return false;
     }
+  };
+
+  const slotIsLive = (startTime: string, endTime: string) => {
+    try {
+      const start = parseISO(startTime.replace(' ', 'T'));
+      const end = parseISO(endTime.replace(' ', 'T'));
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+      return isSessionLiveInstant(new Date(), start, end);
+    } catch {
+      return false;
+    }
+  };
+
+  const clampToValidRange = (start: Date, end: Date) => {
+    if (end.getTime() <= start.getTime()) return null;
+    return { start, end };
+  };
+
+  const closeRateModal = () => {
+    if (savingFeedback) return;
+    rateModalOpenedFromParamRef.current = false;
+    setRateModalBooking(null);
+    setRateModalSlot(null);
+    setFeedbackRating(0);
+    setFeedbackComment('');
+    setFeedbackMeetAgain(null);
+    setFeedbackRecommend(null);
+    setFeedbackWorkWith(0);
   };
 
   const cancelMeeting = async (bookingId: string) => {
@@ -358,7 +448,7 @@ export default function BoothDetailScreen() {
           const client = Platform.OS === 'android' ? supabaseStorage : supabase;
           try {
             const { error } = await withAssignTimeout(
-              Promise.resolve(client.from('meeting_bookings').update({ status: 'cancelled' }).eq('id', bookingId)),
+        Promise.resolve(client.from('meeting_bookings').update({ status: 'cancelled' }).eq('id', bookingId)),
               'Cancel meeting'
             );
             if (error) throw error;
@@ -458,13 +548,17 @@ export default function BoothDetailScreen() {
   const openEditMeeting = (slot: SlotWithBooking, booking: MeetingBooking & { attendee_name?: string }) => {
     try {
       const start = parseISO(slot.start_time.replace(' ', 'T'));
+      const end = parseISO(slot.end_time.replace(' ', 'T'));
       setEditSlot(slot);
       setEditBooking(booking);
       setEditDateTime(start);
+      setEditEndDateTime(end);
       setEditAttendeeId(booking.attendee_id);
       setEditAttendeeDropdownOpen(false);
       setEditShowDatePicker(false);
       setEditShowTimePicker(false);
+      setEditShowEndDatePicker(false);
+      setEditShowEndTimePicker(false);
       setEditModalVisible(true);
     } catch {
       Alert.alert('Error', 'Could not open edit.');
@@ -474,12 +568,17 @@ export default function BoothDetailScreen() {
   const saveEditMeeting = async () => {
     if (!editSlot || !editBooking || !editAttendeeId) return;
     const start = new Date(editDateTime);
-    const end = new Date(start.getTime() + 30 * 60 * 1000);
+    const end = new Date(editEndDateTime);
+    const valid = clampToValidRange(start, end);
+    if (!valid) {
+      Alert.alert('Error', 'End time must be after start time.');
+      return;
+    }
     setEditing(true);
     const client = Platform.OS === 'android' ? supabaseStorage : supabase;
     try {
       const { error: slotErr } = await withAssignTimeout(
-        Promise.resolve(client.from('meeting_slots').update({ start_time: start.toISOString(), end_time: end.toISOString() }).eq('id', editSlot.id)),
+        Promise.resolve(client.from('meeting_slots').update({ start_time: valid.start.toISOString(), end_time: valid.end.toISOString() }).eq('id', editSlot.id)),
         'Update meeting time'
       );
       if (slotErr) throw slotErr;
@@ -556,9 +655,7 @@ export default function BoothDetailScreen() {
     );
   }
 
-  const hasMyMeeting = slots.some((s) => s.myBooking && s.myBooking.status !== 'cancelled');
   if (!isVendorOrAdmin && !hasMyMeeting) {
-    router.replace('/(tabs)/expo' as any);
     return null;
   }
 
@@ -581,24 +678,14 @@ export default function BoothDetailScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={s.heroSection}>
-          {(booth as { banner_url?: string | null }).banner_url ? (
-            <Image source={{ uri: (booth as { banner_url: string }).banner_url }} style={s.boothBanner} resizeMode="cover" />
+          {booth.logo_url ? (
+            <Image source={{ uri: booth.logo_url }} style={s.boothHeroLogo} resizeMode="contain" />
           ) : (
-            <View style={s.boothBannerPlaceholder}>
+            <View style={s.boothHeroLogoPlaceholder}>
               <Store size={48} color={colors.textMuted} />
             </View>
           )}
-          <View style={s.heroOverlay} />
-          <View style={s.heroContent}>
-            {booth.logo_url ? (
-              <Image source={{ uri: booth.logo_url }} style={s.boothDetailLogo} />
-            ) : (
-              <View style={s.boothDetailLogoPlaceholder}>
-                <Store size={36} color={colors.textMuted} />
-              </View>
-            )}
-            <Text style={s.boothDetailVendorName}>{booth.vendor_name}</Text>
-          </View>
+          <Text style={s.boothDetailVendorNameHero}>{booth.vendor_name}</Text>
         </View>
 
         <View style={s.detailCard}>
@@ -639,6 +726,30 @@ export default function BoothDetailScreen() {
               <Text style={s.yourMeetingStatus}>
                 {myMeetingSlot.myBooking.status === 'confirmed' ? 'Confirmed' : myMeetingSlot.myBooking.status === 'requested' ? 'Requested' : myMeetingSlot.myBooking.status === 'declined' ? 'Declined' : myMeetingSlot.myBooking.status}
               </Text>
+            ) : null}
+            {slotInPast(myMeetingSlot.start_time, myMeetingSlot.end_time) && myMeetingSlot.myBooking ? (
+              feedbackBookingIds.has(myMeetingSlot.myBooking.id) ? (
+                <View style={s.ratedMeetingRow}>
+                  <CheckCircle size={20} color={colors.primary} />
+                  <Text style={s.ratedMeetingText}>You've rated this meeting</Text>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={s.rateMeetingBtn}
+                  onPress={() => {
+                    setRateModalBooking(myMeetingSlot.myBooking!);
+                    setRateModalSlot(myMeetingSlot);
+                    setFeedbackRating(0);
+                    setFeedbackComment('');
+                    setFeedbackMeetAgain(null);
+                    setFeedbackRecommend(null);
+                    setFeedbackWorkWith(0);
+                  }}
+                >
+                  <Star size={18} color={colors.primary} />
+                  <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
+                </TouchableOpacity>
+              )
             ) : null}
           </View>
         ) : null}
@@ -686,8 +797,8 @@ export default function BoothDetailScreen() {
         ) : (
           <>
             {(() => {
-              const upcoming = slotsToShow.filter((s) => !slotInPast(s.start_time));
-              const past = slotsToShow.filter((s) => slotInPast(s.start_time));
+              const upcoming = slotsToShow.filter((s) => !slotInPast(s.start_time, s.end_time));
+              const past = slotsToShow.filter((s) => slotInPast(s.start_time, s.end_time));
               const statusLabel: Record<MeetingBookingStatus, string> = {
                 requested: 'Requested',
                 confirmed: 'Confirmed',
@@ -695,14 +806,21 @@ export default function BoothDetailScreen() {
                 cancelled: 'Cancelled',
               };
               const renderSlot = (slot: typeof slotsToShow[0]) => {
-                const isPast = slotInPast(slot.start_time);
+                const isPast = slotInPast(slot.start_time, slot.end_time);
+                const liveNow = isAdmin && slotIsLive(slot.start_time, slot.end_time);
                 const myBooking = slot.myBooking;
                 return (
                   <View key={slot.id} style={[s.slotCard, isPast && s.slotCardPast]}>
                     <View style={s.slotRow}>
                       <Calendar size={18} color={isPast ? colors.textMuted : colors.primary} />
                       <Text style={s.slotTime}>{formatSlotTime(slot.start_time, slot.end_time)}</Text>
-                      {isPast ? <Text style={s.pastBadge}>Past</Text> : <Text style={s.upcomingBadge}>Upcoming</Text>}
+                      {isPast ? (
+                        <Text style={s.pastBadge}>Past</Text>
+                      ) : liveNow ? (
+                        <Text style={s.liveBadge}>Live now</Text>
+                      ) : (
+                        <Text style={s.upcomingBadge}>Upcoming</Text>
+                      )}
                     </View>
                     {booth.booth_location ? (
                       <View style={s.slotLocationRow}>
@@ -719,11 +837,11 @@ export default function BoothDetailScreen() {
                             onPress={() => {
                               setRateModalBooking(myBooking);
                               setRateModalSlot(slot);
-                              setFeedbackRating(5);
+                              setFeedbackRating(0);
                               setFeedbackComment('');
                               setFeedbackMeetAgain(null);
                               setFeedbackRecommend(null);
-                              setFeedbackWorkWith(5);
+                              setFeedbackWorkWith(0);
                             }}
                           >
                             <Star size={18} color={colors.primary} />
@@ -844,7 +962,8 @@ export default function BoothDetailScreen() {
                     <DateTimePicker
                       value={assignDateTime}
                       mode="date"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      // iOS: use the native default picker (calendar-style on iOS) without breaking modal.
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
                       minimumDate={new Date()}
                       onChange={(_, date) => {
                         if (Platform.OS === 'android') setShowDatePicker(false);
@@ -889,7 +1008,7 @@ export default function BoothDetailScreen() {
                     <DateTimePicker
                       value={assignDateTime}
                       mode="time"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
                       onChange={(_, date) => {
                         if (Platform.OS === 'android') setShowTimePicker(false);
                         if (date) {
@@ -914,7 +1033,7 @@ export default function BoothDetailScreen() {
                     <DateTimePicker
                       value={assignEndDateTime}
                       mode="time"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
                       onChange={(_, date) => {
                         if (Platform.OS === 'android') setShowEndTimePicker(false);
                         if (date) setAssignEndDateTime((prev) => { const d = new Date(prev); d.setHours(date.getHours(), date.getMinutes(), 0, 0); return d; });
@@ -984,7 +1103,7 @@ export default function BoothDetailScreen() {
                     ))}
                   </ScrollView>
                 )}
-                <Text style={s.modalLabel}>Date & time</Text>
+                <Text style={s.modalLabel}>Start</Text>
                 <TouchableOpacity style={s.dateTimeTrigger} onPress={() => setEditShowDatePicker(true)}>
                   <Calendar size={20} color={colors.primary} />
                   <Text style={s.dateTimeText}>{format(editDateTime, 'MMM d, yyyy')}</Text>
@@ -999,8 +1118,8 @@ export default function BoothDetailScreen() {
                     <DateTimePicker
                       value={editDateTime}
                       mode="date"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                      minimumDate={new Date()}
+                      // iOS: use the native default picker (calendar-style on iOS) without breaking modal.
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
                       onChange={(_, date) => {
                         if (Platform.OS === 'android') setEditShowDatePicker(false);
                         if (date) setEditDateTime((prev) => { const d = new Date(prev); d.setFullYear(date.getFullYear(), date.getMonth(), date.getDate()); return d; });
@@ -1023,10 +1142,58 @@ export default function BoothDetailScreen() {
                     <DateTimePicker
                       value={editDateTime}
                       mode="time"
-                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
                       onChange={(_, date) => {
                         if (Platform.OS === 'android') setEditShowTimePicker(false);
                         if (date) setEditDateTime((prev) => { const d = new Date(prev); d.setHours(date.getHours(), date.getMinutes(), 0, 0); return d; });
+                      }}
+                      {...(Platform.OS === 'ios' && { themeVariant: 'light' as const, accentColor: colors.primary })}
+                    />
+                  </>
+                )}
+
+                <Text style={s.modalLabel}>End</Text>
+                <TouchableOpacity style={s.dateTimeTrigger} onPress={() => setEditShowEndDatePicker(true)}>
+                  <Calendar size={20} color={colors.primary} />
+                  <Text style={s.dateTimeText}>{format(editEndDateTime, 'MMM d, yyyy')}</Text>
+                </TouchableOpacity>
+                {editShowEndDatePicker && (
+                  <>
+                    {Platform.OS === 'ios' && (
+                      <TouchableOpacity onPress={() => setEditShowEndDatePicker(false)} style={s.pickerDone}>
+                        <Text style={s.pickerDoneText}>Done</Text>
+                      </TouchableOpacity>
+                    )}
+                    <DateTimePicker
+                      value={editEndDateTime}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
+                      onChange={(_, date) => {
+                        if (Platform.OS === 'android') setEditShowEndDatePicker(false);
+                        if (date) setEditEndDateTime((prev) => { const d = new Date(prev); d.setFullYear(date.getFullYear(), date.getMonth(), date.getDate()); return d; });
+                      }}
+                      {...(Platform.OS === 'ios' && { themeVariant: 'light' as const, accentColor: colors.primary })}
+                    />
+                  </>
+                )}
+                <TouchableOpacity style={s.dateTimeTrigger} onPress={() => setEditShowEndTimePicker(true)}>
+                  <Clock size={20} color={colors.primary} />
+                  <Text style={s.dateTimeText}>{format(editEndDateTime, 'h:mm a')}</Text>
+                </TouchableOpacity>
+                {editShowEndTimePicker && (
+                  <>
+                    {Platform.OS === 'ios' && (
+                      <TouchableOpacity onPress={() => setEditShowEndTimePicker(false)} style={s.pickerDone}>
+                        <Text style={s.pickerDoneText}>Done</Text>
+                      </TouchableOpacity>
+                    )}
+                    <DateTimePicker
+                      value={editEndDateTime}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'default' : 'default'}
+                      onChange={(_, date) => {
+                        if (Platform.OS === 'android') setEditShowEndTimePicker(false);
+                        if (date) setEditEndDateTime((prev) => { const d = new Date(prev); d.setHours(date.getHours(), date.getMinutes(), 0, 0); return d; });
                       }}
                       {...(Platform.OS === 'ios' && { themeVariant: 'light' as const, accentColor: colors.primary })}
                     />
@@ -1040,7 +1207,7 @@ export default function BoothDetailScreen() {
                 <TouchableOpacity
                   style={[s.modalAssignBtn, (!editAttendeeId || editing) && s.modalAssignBtnDisabled]}
                   onPress={saveEditMeeting}
-                  disabled={!editAttendeeId || editing}
+                  disabled={!editAttendeeId || editing || editEndDateTime.getTime() <= editDateTime.getTime()}
                 >
                   {editing ? <ActivityIndicator size="small" color="#fff" /> : <Text style={s.modalAssignBtnText}>Save</Text>}
                 </TouchableOpacity>
@@ -1050,9 +1217,9 @@ export default function BoothDetailScreen() {
         </Modal>
       )}
 
-      {/* Rate B2B meeting modal (attendee only) */}
-      <Modal visible={!!rateModalBooking} animationType="slide" transparent onRequestClose={() => setRateModalBooking(null)}>
-        <Pressable style={s.modalOverlay} onPress={() => !savingFeedback && setRateModalBooking(null)}>
+      {/* Rate B2B meeting modal (attendee only; vendors cannot rate) */}
+      <Modal visible={!!rateModalBooking && !isVendorOrAdmin} animationType="slide" transparent onRequestClose={closeRateModal}>
+        <Pressable style={s.modalOverlay} onPress={closeRateModal}>
           <Pressable style={s.modalContent} onPress={(e) => e.stopPropagation()}>
             <ScrollView style={s.modalScroll} contentContainerStyle={s.modalScrollContent} keyboardShouldPersistTaps="handled">
               <Text style={s.modalTitle}>Rate your meeting</Text>
@@ -1134,14 +1301,14 @@ export default function BoothDetailScreen() {
               </View>
 
               <View style={s.modalActions}>
-                <TouchableOpacity style={s.modalCancelBtn} onPress={() => setRateModalBooking(null)} disabled={savingFeedback}>
+                <TouchableOpacity style={s.modalCancelBtn} onPress={closeRateModal} disabled={savingFeedback}>
                   <Text style={s.modalCancelBtnText}>Cancel</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[s.modalAssignBtn, (feedbackMeetAgain === null || feedbackRecommend === null || savingFeedback) && s.modalAssignBtnDisabled]}
-                  disabled={feedbackMeetAgain === null || feedbackRecommend === null || savingFeedback}
+                  style={[s.modalAssignBtn, (feedbackMeetAgain === null || feedbackRecommend === null || feedbackRating < 1 || feedbackWorkWith < 1 || savingFeedback) && s.modalAssignBtnDisabled]}
+                  disabled={feedbackMeetAgain === null || feedbackRecommend === null || feedbackRating < 1 || feedbackWorkWith < 1 || savingFeedback}
                   onPress={async () => {
-                    if (!rateModalBooking || !user?.id || feedbackMeetAgain === null || feedbackRecommend === null) return;
+                    if (!rateModalBooking || !user?.id || feedbackMeetAgain === null || feedbackRecommend === null || feedbackRating < 1 || feedbackWorkWith < 1) return;
                     setSavingFeedback(true);
                     const client = Platform.OS === 'android' ? supabaseStorage : supabase;
                     try {
@@ -1158,8 +1325,10 @@ export default function BoothDetailScreen() {
                         { onConflict: 'booking_id,user_id' }
                       );
                       if (error) throw error;
-                      setRateModalBooking(null);
-                      setRateModalSlot(null);
+                      if (currentEvent?.id) {
+                        awardPoints(user.id, currentEvent.id, 'b2b_feedback', rateModalBooking.id).catch(() => {});
+                      }
+                      closeRateModal();
                       setFeedbackBookingIds((prev) => new Set(prev).add(rateModalBooking.id));
                       fetchBoothAndSlots();
                     } catch (e) {
@@ -1192,14 +1361,24 @@ const s = StyleSheet.create({
   emptyText: { fontSize: 16, color: colors.textSecondary },
   backBtn: { marginTop: 16, paddingVertical: 10, paddingHorizontal: 20, backgroundColor: colors.primary, borderRadius: 10 },
   backBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
-  heroSection: { marginBottom: 0, position: 'relative' },
-  boothBanner: { width: '100%', height: 160 },
-  boothBannerPlaceholder: { width: '100%', height: 160, backgroundColor: colors.surface, justifyContent: 'center', alignItems: 'center' },
-  heroOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 80, backgroundColor: 'transparent' },
-  heroContent: { position: 'absolute', bottom: 16, left: 16, right: 16, flexDirection: 'row', alignItems: 'flex-end', gap: 14 },
-  boothDetailLogo: { width: 64, height: 64, borderRadius: 14, backgroundColor: colors.card },
-  boothDetailLogoPlaceholder: { width: 64, height: 64, borderRadius: 14, backgroundColor: colors.card, justifyContent: 'center', alignItems: 'center' },
-  boothDetailVendorName: { flex: 1, fontSize: 22, fontWeight: '800', color: colors.text, letterSpacing: 0.3 },
+  heroSection: {
+    alignItems: 'center',
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    backgroundColor: colors.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  boothHeroLogo: { width: 112, height: 112, borderRadius: 20, backgroundColor: colors.card },
+  boothHeroLogoPlaceholder: {
+    width: 112,
+    height: 112,
+    borderRadius: 20,
+    backgroundColor: colors.card,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  boothDetailVendorNameHero: { marginTop: 16, fontSize: 22, fontWeight: '800', color: colors.text, letterSpacing: 0.3, textAlign: 'center' },
   detailCard: {
     backgroundColor: colors.card,
     marginHorizontal: 16,
@@ -1226,6 +1405,8 @@ const s = StyleSheet.create({
   yourMeetingTime: { fontSize: 16, fontWeight: '600', color: colors.text },
   yourMeetingLocation: { fontSize: 15, color: colors.textSecondary },
   yourMeetingStatus: { fontSize: 13, fontWeight: '600', color: colors.primary, marginTop: 4 },
+  ratedMeetingRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 12 },
+  ratedMeetingText: { fontSize: 15, fontWeight: '600', color: colors.primary },
   sectionContent: { paddingHorizontal: 16 },
   logo: { width: 80, height: 80, borderRadius: 12, marginTop: 12, marginBottom: 12 },
   logoPlaceholder: { width: 80, height: 80, borderRadius: 12, backgroundColor: colors.surface, justifyContent: 'center', alignItems: 'center', marginBottom: 12 },
@@ -1253,6 +1434,7 @@ const s = StyleSheet.create({
   slotLocationText: { fontSize: 13, color: colors.textMuted },
   pastBadge: { fontSize: 11, fontWeight: '600', color: colors.textMuted, backgroundColor: colors.surface, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   upcomingBadge: { fontSize: 11, fontWeight: '600', color: colors.primary, backgroundColor: colors.primaryFaded, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
+  liveBadge: { fontSize: 11, fontWeight: '600', color: '#fff', backgroundColor: colors.primary, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6 },
   statusText: { fontSize: 14, color: colors.textSecondary, marginTop: 8 },
   adminActionsRow: { gap: 10, marginBottom: 16 },
   assignBtn: {

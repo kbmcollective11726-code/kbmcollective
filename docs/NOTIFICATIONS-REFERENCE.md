@@ -2,6 +2,8 @@
 
 Reference for in-app notification types, push triggers, and Edge Functions.
 
+**5-minute session + B2B reminder deploy (tables, cron, secrets, CLI):** see **[REMINDERS-5MIN-DEPLOY.md](../REMINDERS-5MIN-DEPLOY.md)** in the repo root.
+
 ---
 
 ## Setup status (quick check)

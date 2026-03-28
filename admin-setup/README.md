@@ -21,6 +21,10 @@ Open http://localhost:5174 (port 5174 to avoid clashing with the main app).
 - Output directory: `dist`
 - Add env vars: `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`
 
+### Mobile app: password reset bridge
+
+`public/auth-recovery.html` is copied into `dist` and served at **`/auth-recovery.html`**. The Expo app should set `EXPO_PUBLIC_PASSWORD_RESET_WEB_URL` to that full HTTPS URL, and you must add the same URL under **Supabase → Auth → Redirect URLs**. That way reset emails open a real page first, then deep-link into the app (avoids localhost on the phone). See **`../docs/PASSWORD-RESET-SUPABASE.md`**.
+
 ## Features
 
 - **Sign in** with the same admin account as the mobile app.

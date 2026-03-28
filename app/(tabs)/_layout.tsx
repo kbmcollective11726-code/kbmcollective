@@ -1,17 +1,18 @@
-import { useEffect, useState } from 'react';
-import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Text } from 'react-native';
+import { useEffect, useState, useRef } from 'react';
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Text, AppState, AppStateStatus } from 'react-native';
 import { Tabs, useRouter, usePathname } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Home, Calendar, User, ImageIcon, Trophy, Users, Store } from 'lucide-react-native';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
+import { supabase } from '../../lib/supabase';
+import { notifyAfterSessionRefreshed } from '../../lib/onSessionRefreshed';
 import JoinEventGate from '../../components/JoinEventGate';
 import { colors } from '../../constants/colors';
 import PostFAB from '../../components/PostFAB';
 import HamburgerMenu from '../../components/HamburgerMenu';
 import AnnouncementBanner from '../../components/AnnouncementBanner';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
-import DebugPanel from '../../components/DebugPanel';
 
 function HeaderProfileButton() {
   const router = useRouter();
@@ -82,6 +83,23 @@ export default function TabsLayout() {
   const { user } = useAuthStore();
   const { currentEvent, memberships, fetchMyMemberships } = useEventStore();
   const [eventCheckDone, setEventCheckDone] = useState(false);
+  const lastMembershipRefreshAt = useRef(0);
+  const MEMBERSHIP_REFRESH_DEBOUNCE_MS = 5000;
+
+  // When app comes back from background: refresh session, then re-fetch memberships and notify screens to refetch.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
+      if (state !== 'active' || !user?.id) return;
+      const now = Date.now();
+      if (now - lastMembershipRefreshAt.current < MEMBERSHIP_REFRESH_DEBOUNCE_MS) return;
+      lastMembershipRefreshAt.current = now;
+      supabase.auth.refreshSession().finally(() => {
+        fetchMyMemberships(user.id, user?.is_platform_admin).then(() => setEventCheckDone(true));
+        notifyAfterSessionRefreshed();
+      });
+    });
+    return () => sub.remove();
+  }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
 
   // If user logs out while on tabs, go to login (backup for logout links that might not navigate)
   useEffect(() => {
@@ -102,7 +120,7 @@ export default function TabsLayout() {
     });
     const safetyTimer = setTimeout(() => {
       if (!cancelled) setEventCheckDone(true);
-    }, 15000);
+    }, 8000);
     return () => {
       cancelled = true;
       clearTimeout(safetyTimer);
@@ -111,8 +129,8 @@ export default function TabsLayout() {
 
   const tabBarPaddingBottom = Math.max(insets.bottom, 8);
   const topPadding = 0;
-  // Only show event-code gate after we've tried loading their event (stops brief flash of event code screen after login).
-  const needsEventCode = eventCheckDone && user && !currentEvent && !user.is_platform_admin;
+  // No exception: anyone with no current event must enter an event code (including new signups and platform admins).
+  const needsEventCode = eventCheckDone && user && !currentEvent;
   const showPostFAB = !pathname?.includes('/chat/') && !pathname?.includes('/feed/user/');
 
   if (user && !eventCheckDone) {
@@ -141,8 +159,9 @@ export default function TabsLayout() {
           // Bottom tab label: always "Info" for Info tab (KBM menu under house)
           const tabLabel = isInfoTab ? 'Info' : (tabBarLabels[name] ?? title);
           const isHidden = HIDDEN_FROM_TABS.includes(route.name);
-          // Hide Tabs header when viewing user profile (feed/user/xxx) so only "Profile" header shows
-          const headerShown = !pathname?.includes('/feed/user/');
+          // Hide tab header on feed sub-routes that have their own stack header (profile, comment thread)
+          const headerShown =
+            !pathname?.includes('/feed/user/') && !pathname?.includes('/feed/comment/');
           return {
             href: isHidden ? null : undefined,
             headerShown: route.name === 'feed' ? headerShown : true,
@@ -194,7 +213,6 @@ export default function TabsLayout() {
         <Tabs.Screen name="expo" options={{ href: null }} />
       </Tabs>
       {showPostFAB ? <PostFAB /> : null}
-      {__DEV__ ? <DebugPanel /> : null}
     </View>
   );
 }

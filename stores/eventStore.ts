@@ -35,6 +35,8 @@ interface EventStore {
   joinEvent: (eventId: string, userId: string) => Promise<{ error: string | null }>;
   refresh: (userId: string, isPlatformAdmin?: boolean) => Promise<void>;
   bumpAdminCheck: () => void;
+  /** Call on logout so the next user never sees the previous user's event. */
+  clearForLogout: () => void;
 }
 
 export const useEventStore = create<EventStore>((set, get) => ({
@@ -145,8 +147,21 @@ export const useEventStore = create<EventStore>((set, get) => ({
       const memberships = (data ?? []) as Row[];
       set({ memberships });
 
+      // New user or user with no event memberships must not see a previous user's event
+      if (memberships.length === 0) {
+        set({ currentEvent: null });
+        await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
+        return;
+      }
+
       const accessible = (e: Event | null | undefined) => isEventAccessible(e, isPlatformAdmin);
       const skipRestore = get().joiningByCode;
+      const current = get().currentEvent;
+
+      // Don't overwrite a platform admin's explicit selection of an event they're not a member of
+      if (isPlatformAdmin && current && !memberships.some((m) => m.event_id === current.id)) {
+        return;
+      }
 
       if (!skipRestore) {
         const storedId = await AsyncStorage.getItem(CURRENT_EVENT_KEY);
@@ -154,11 +169,20 @@ export const useEventStore = create<EventStore>((set, get) => ({
           const row = memberships.find((m) => m.event_id === storedId);
           if (row?.events && accessible(row.events)) {
             set({ currentEvent: row.events });
-          } else if (row?.events && !accessible(row.events)) {
+          } else if (isPlatformAdmin) {
+            // Platform admin may have selected an event they're not a member of (e.g. from All events) — restore it from DB
+            const { data: ev } = await supabase.from('events').select('*').eq('id', storedId).maybeSingle();
+            const event = ev as Event | null;
+            if (event && isEventAccessible(event, true)) {
+              set({ currentEvent: event });
+            }
+            // else leave currentEvent as is (don't clear)
+          } else {
             set({ currentEvent: null });
             await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
           }
         }
+        // Only auto-pick first membership when no event is set
         if (!get().currentEvent && memberships.length > 0) {
           const firstAccessible = memberships.find((m) => m.events && accessible(m.events));
           const event = firstAccessible?.events ?? memberships[0].events;
@@ -245,4 +269,9 @@ export const useEventStore = create<EventStore>((set, get) => ({
   },
 
   bumpAdminCheck: () => set((s) => ({ adminCheckTick: (s.adminCheckTick ?? 0) + 1 })),
+
+  clearForLogout: () => {
+    set({ currentEvent: null, memberships: [], searchedEvent: null, joiningByCode: false, joinByCodeFromRoute: null });
+    AsyncStorage.removeItem(CURRENT_EVENT_KEY).catch(() => {});
+  },
 }));
