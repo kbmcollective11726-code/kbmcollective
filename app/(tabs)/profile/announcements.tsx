@@ -10,22 +10,46 @@ import {
   TouchableOpacity,
   AppState,
   AppStateStatus,
+  BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import { format } from 'date-fns';
 import { Megaphone } from 'lucide-react-native';
+import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 
 type AnnouncementRow = { id: string; title: string; content: string; created_at: string };
 
 export default function AnnouncementsScreen() {
+  const router = useRouter();
+  const params = useLocalSearchParams<{ from?: string }>();
   const { currentEvent } = useEventStore();
   const [items, setItems] = useState<AnnouncementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
+
+  const goBack = useCallback(() => {
+    const raw = params.from;
+    const from = typeof raw === 'string' ? raw : Array.isArray(raw) ? raw[0] : '';
+    const fallback = '/(tabs)/home';
+    if (from) {
+      try {
+        const decoded = decodeURIComponent(from).trim();
+        if (decoded.startsWith('/')) {
+          router.replace(decoded as any);
+          return;
+        }
+      } catch {
+        // ignore and use navigation fallback
+      }
+    }
+    if (router.canGoBack()) router.back();
+    else router.replace(fallback as any);
+  }, [params.from, router]);
 
   const fetchAnnouncements = async () => {
     if (!currentEvent?.id) {
@@ -82,6 +106,16 @@ export default function AnnouncementsScreen() {
     return () => sub.remove();
   }, [currentEvent?.id]);
 
+  useFocusEffect(
+    useCallback(() => {
+      const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+        goBack();
+        return true;
+      });
+      return () => sub.remove();
+    }, [goBack])
+  );
+
   const loadingStartRef = useRef<number | null>(null);
   useEffect(() => {
     if (!loading) {
@@ -106,7 +140,7 @@ export default function AnnouncementsScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Megaphone size={48} color={colors.textMuted} />
           <Text style={styles.placeholderTitle}>Select an event</Text>
@@ -118,7 +152,7 @@ export default function AnnouncementsScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.placeholderTitle}>Loading announcements…</Text>
@@ -129,7 +163,7 @@ export default function AnnouncementsScreen() {
 
   if (fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Megaphone size={48} color={colors.textMuted} />
           <Text style={styles.placeholderTitle}>Couldn't load announcements</Text>
@@ -151,7 +185,8 @@ export default function AnnouncementsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
+      <ProfileStackScreenHeader variant="back" title="Announcements" onBack={goBack} />
       <FlatList
         data={items}
         keyExtractor={(item) => item.id}

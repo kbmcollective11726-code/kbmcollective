@@ -17,6 +17,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { supabase } from '../../../lib/supabase';
 import { updateSignedInUserPassword } from '../../../lib/signedInPasswordUpdate';
 import { colors } from '../../../constants/colors';
+import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 
 const VERIFY_TIMEOUT_MS = 30000;
 
@@ -117,7 +118,8 @@ export default function ProfileChangePasswordScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader variant="back" title="Change password" onBack={() => router.back()} />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboard}
@@ -126,7 +128,6 @@ export default function ProfileChangePasswordScreen() {
           contentContainerStyle={styles.scroll}
           keyboardShouldPersistTaps="handled"
         >
-          <Text style={styles.title}>Change password</Text>
           <Text style={styles.subtitle}>
             Enter your current password, then choose a new one. Everything stays in the app — no email needed.
           </Text>
@@ -198,14 +199,8 @@ const styles = StyleSheet.create({
   },
   scroll: {
     paddingHorizontal: 24,
-    paddingTop: 16,
+    paddingTop: 8,
     paddingBottom: 32,
-  },
-  title: {
-    fontSize: 22,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: 8,
   },
   subtitle: {
     fontSize: 15,

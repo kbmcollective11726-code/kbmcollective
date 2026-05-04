@@ -47,7 +47,6 @@ export default function AdminEventEditScreen() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [themeColor, setThemeColor] = useState('');
-  const [welcomeMessage, setWelcomeMessage] = useState('');
   const [eventCode, setEventCode] = useState('');
   const [saving, setSaving] = useState(false);
   const [showStartPicker, setShowStartPicker] = useState(false);
@@ -65,7 +64,6 @@ export default function AdminEventEditScreen() {
       setStartDate(currentEvent.start_date ?? '');
       setEndDate(currentEvent.end_date ?? '');
       setThemeColor(currentEvent.theme_color ?? '#2563eb');
-      setWelcomeMessage(currentEvent.welcome_message ?? '');
       setEventCode(currentEvent.event_code ?? '');
     }
   }, [currentEvent?.id]);
@@ -102,7 +100,6 @@ export default function AdminEventEditScreen() {
           start_date: startDate.trim(),
           end_date: endDate.trim(),
           theme_color: themeColor.trim() || '#2563eb',
-          welcome_message: welcomeMessage.trim() || null,
           event_code: customCode ?? currentEvent.event_code,
           updated_at: new Date().toISOString(),
         })
@@ -126,7 +123,7 @@ export default function AdminEventEditScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Select an event first.</Text>
         </View>
@@ -135,7 +132,7 @@ export default function AdminEventEditScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -209,8 +206,6 @@ export default function AdminEventEditScreen() {
         )}
         <Text style={styles.label}>Theme color (hex)</Text>
         <TextInput style={styles.input} value={themeColor} onChangeText={setThemeColor} placeholder="#2563eb" placeholderTextColor={colors.textMuted} />
-        <Text style={styles.label}>Welcome message</Text>
-        <TextInput style={[styles.input, styles.area]} value={welcomeMessage} onChangeText={setWelcomeMessage} placeholder="Shown on Info tab" placeholderTextColor={colors.textMuted} multiline />
         <TouchableOpacity style={[styles.button, saving && styles.buttonDisabled]} onPress={handleSave} disabled={saving}>
           {saving ? <ActivityIndicator color={colors.textOnPrimary} size="small" /> : <Text style={styles.buttonText}>Save</Text>}
         </TouchableOpacity>

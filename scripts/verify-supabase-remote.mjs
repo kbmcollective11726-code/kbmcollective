@@ -53,7 +53,7 @@ ORDER BY "Status" DESC, "Table";
 
 const Q_COLUMNS = `
 WITH required AS (
-  SELECT 'users' AS tname, unnest(ARRAY['id','email','full_name','push_token','is_platform_admin']) AS cname
+  SELECT 'users' AS tname, unnest(ARRAY['id','email','full_name','push_token','is_platform_admin','session_reminder_skip_same_room']) AS cname
   UNION ALL SELECT 'events', unnest(ARRAY['id','name','event_code','is_active'])
   UNION ALL SELECT 'event_members', unnest(ARRAY['event_id','user_id','role','roles','points'])
   UNION ALL SELECT 'posts', unnest(ARRAY['id','event_id','user_id','image_url','is_approved','is_deleted'])
@@ -68,7 +68,7 @@ WITH required AS (
   UNION ALL SELECT 'chat_group_members', unnest(ARRAY['id','group_id','user_id'])
   UNION ALL SELECT 'group_messages', unnest(ARRAY['id','group_id','sender_id','content','attachment_url','attachment_type'])
   UNION ALL SELECT 'announcements', unnest(ARRAY['id','event_id','title','content','scheduled_at','sent_at','send_push','sent_by'])
-  UNION ALL SELECT 'schedule_sessions', unnest(ARRAY['id','event_id','title','start_time','end_time','day_number','is_active'])
+  UNION ALL SELECT 'schedule_sessions', unnest(ARRAY['id','event_id','title','start_time','end_time','day_number','is_active','location','room'])
   UNION ALL SELECT 'vendor_booths', unnest(ARRAY['id','event_id','vendor_name','contact_user_id','is_active'])
   UNION ALL SELECT 'meeting_slots', unnest(ARRAY['id','booth_id','start_time','end_time'])
   UNION ALL SELECT 'meeting_bookings', unnest(ARRAY['id','slot_id','attendee_id','status'])

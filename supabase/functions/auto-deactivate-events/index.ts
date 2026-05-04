@@ -1,6 +1,6 @@
 // Auto-deactivate events whose end_date was more than DAYS_AFTER_END_UNTIL_DEACTIVATE days ago.
-// Matches app: lib/eventAccess.ts EVENT_ACCESS_DAYS_AFTER_END = 5. Invoke via cron daily. Use x-cron-secret if set.
-const DAYS_AFTER_END_UNTIL_DEACTIVATE = 5;
+// Matches app: lib/eventAccess.ts EVENT_ACCESS_DAYS_AFTER_END = 90. Invoke via cron daily. Use x-cron-secret if set.
+const DAYS_AFTER_END_UNTIL_DEACTIVATE = 90;
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 

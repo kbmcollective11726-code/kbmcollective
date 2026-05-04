@@ -2,13 +2,63 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
-import type { ScheduleSession } from '../lib/types';
-import type { Event } from '../lib/types';
+import type { Event, ScheduleSession, SpeakerEntry } from '../lib/types';
 import styles from './Schedule.module.css';
 
-const CSV_HEADERS = ['title', 'description', 'speaker_name', 'speaker_title', 'speaker_company', 'location', 'room', 'start_date', 'start_time', 'end_date', 'end_time', 'session_type'] as const;
+/** Up to 5 speakers per session (matches mobile `speakers` JSON + denormalized first speaker). */
+const CSV_HEADERS = [
+  'title',
+  'description',
+  'speaker_name',
+  'speaker_title',
+  'speaker_company',
+  'speaker_2_name',
+  'speaker_2_title',
+  'speaker_2_company',
+  'speaker_3_name',
+  'speaker_3_title',
+  'speaker_3_company',
+  'speaker_4_name',
+  'speaker_4_title',
+  'speaker_4_company',
+  'speaker_5_name',
+  'speaker_5_title',
+  'speaker_5_company',
+  'location',
+  'room',
+  'start_date',
+  'start_time',
+  'end_date',
+  'end_time',
+  'session_type',
+] as const;
 type CsvHeader = (typeof CSV_HEADERS)[number];
 const SESSION_TYPES = ['keynote', 'breakout', 'workshop', 'social', 'meal', 'networking', 'vendor'] as const;
+
+function normalizeSessionTypeToken(raw: string): string {
+  return raw.trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function normalizeSessionTypesList(raw: string | null | undefined): string[] {
+  const tokens = String(raw ?? '')
+    .split(',')
+    .map((t) => normalizeSessionTypeToken(t))
+    .filter(Boolean);
+  return Array.from(new Set(tokens));
+}
+
+function serializeSessionTypes(list: string[]): string {
+  const normalized = Array.from(new Set(list.map((t) => normalizeSessionTypeToken(t)).filter(Boolean)));
+  return normalized.length > 0 ? normalized.join(',') : 'breakout';
+}
+
+function normalizeSessionDescription(raw: string): string {
+  const text = String(raw ?? '').replace(/\r\n?/g, '\n').trim();
+  if (!text) return '';
+  const normalizedBullets = text.replace(/[•●▪◦‣⁃]/g, ' - ');
+  const withLineBullets = normalizedBullets.replace(/\s-\s+/g, '\n- ');
+  return withLineBullets.replace(/\n{3,}/g, '\n\n').trim();
+}
 
 /** Map a CSV header cell to our canonical column (handles Excel export names). */
 function mapHeaderToCanonical(raw: string): CsvHeader | null {
@@ -52,9 +102,133 @@ function mapHeaderToCanonical(raw: string): CsvHeader | null {
     sessiontype: 'session_type',
     category: 'session_type',
     track: 'session_type',
+    speaker2: 'speaker_2_name',
+    speaker_2: 'speaker_2_name',
+    cospeaker: 'speaker_2_name',
+    co_speaker: 'speaker_2_name',
+    speaker2name: 'speaker_2_name',
+    speaker2title: 'speaker_2_title',
+    speaker2company: 'speaker_2_company',
+    speaker3: 'speaker_3_name',
+    speaker3_name: 'speaker_3_name',
+    speaker3name: 'speaker_3_name',
+    speaker3_title: 'speaker_3_title',
+    speaker3title: 'speaker_3_title',
+    speaker3_company: 'speaker_3_company',
+    speaker3company: 'speaker_3_company',
+    speaker4: 'speaker_4_name',
+    speaker4_name: 'speaker_4_name',
+    speaker4name: 'speaker_4_name',
+    speaker4_title: 'speaker_4_title',
+    speaker4title: 'speaker_4_title',
+    speaker4_company: 'speaker_4_company',
+    speaker4company: 'speaker_4_company',
+    speaker5: 'speaker_5_name',
+    speaker5_name: 'speaker_5_name',
+    speaker5name: 'speaker_5_name',
+    speaker5_title: 'speaker_5_title',
+    speaker5title: 'speaker_5_title',
+    speaker5_company: 'speaker_5_company',
+    speaker5company: 'speaker_5_company',
   };
   return aliases[n] ?? null;
 }
+
+type SpeakerFormRow = { key: string; name: string; title: string; company: string };
+
+function newSpeakerRow(): SpeakerFormRow {
+  return {
+    key: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sp-${Date.now()}-${Math.random()}`,
+    name: '',
+    title: '',
+    company: '',
+  };
+}
+
+function sessionToSpeakerRows(s: ScheduleSession): SpeakerFormRow[] {
+  const arr = Array.isArray(s.speakers) ? s.speakers : [];
+  const out: SpeakerFormRow[] = [];
+  for (const x of arr) {
+    if (!x || typeof x !== 'object') continue;
+    const name = String((x as SpeakerEntry).name ?? '').trim();
+    if (!name) continue;
+    out.push({
+      key: typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `sp-${out.length}`,
+      name,
+      title: String((x as SpeakerEntry).title ?? '').trim(),
+      company: String((x as SpeakerEntry).company ?? '').trim(),
+    });
+  }
+  if (out.length === 0 && s.speaker_name?.trim()) {
+    out.push({
+      key: 'legacy',
+      name: s.speaker_name.trim(),
+      title: (s.speaker_title ?? '').trim(),
+      company: '',
+    });
+  }
+  if (out.length === 0) out.push(newSpeakerRow());
+  return out;
+}
+
+function speakersToDbPayload(rows: SpeakerFormRow[]) {
+  const filtered = rows
+    .filter((r) => r.name.trim())
+    .map((r) => ({ name: r.name.trim(), title: r.title.trim() || '', company: r.company.trim() || null }));
+  const first = filtered[0];
+  return {
+    speakers: filtered.length > 0 ? filtered : null,
+    speaker_name: first?.name ?? null,
+    speaker_title: first?.title ?? null,
+  };
+}
+
+function formatSessionSpeakersLine(s: ScheduleSession): string {
+  const arr = Array.isArray(s.speakers) ? s.speakers : [];
+  const names = arr
+    .map((x) => (x && typeof x === 'object' ? String((x as SpeakerEntry).name ?? '').trim() : ''))
+    .filter(Boolean);
+  if (names.length > 0) return names.join(', ');
+  return s.speaker_name?.trim() ? s.speaker_name.trim() : '';
+}
+
+function speakersPayloadFromCsvRow(row: Record<string, string>) {
+  const slots = [
+    { name: row.speaker_name ?? '', title: row.speaker_title ?? '', company: row.speaker_company ?? '' },
+    ...[2, 3, 4, 5].map((i) => ({
+      name: row[`speaker_${i}_name`] ?? '',
+      title: row[`speaker_${i}_title`] ?? '',
+      company: row[`speaker_${i}_company`] ?? '',
+    })),
+  ];
+  const filtered = slots
+    .map((s) => ({
+      name: String(s.name).trim(),
+      title: String(s.title).trim(),
+      company: String(s.company).trim(),
+    }))
+    .filter((s) => s.name);
+  const mapped = filtered.map((s) => ({ name: s.name, title: s.title, company: s.company || null }));
+  const first = mapped[0];
+  return {
+    speakers: mapped.length > 0 ? mapped : null,
+    speaker_name: first?.name ?? null,
+    speaker_title: first?.title ?? null,
+  };
+}
+
+type SessionFormState = {
+  title: string;
+  description: string;
+  speakers: SpeakerFormRow[];
+  location: string;
+  room: string;
+  start_time: string;
+  end_time: string;
+  session_types: string[];
+  /** Star rating + feedback in the app (per session) */
+  ratings_enabled: boolean;
+};
 
 /**
  * If the first row looks like real headers, return canonical column → index.
@@ -70,6 +244,91 @@ function buildColumnMapFromHeaderRow(headerCells: string[]): Map<CsvHeader, numb
   const hasStartWhen = map.has('start_time') || map.has('start_date');
   if (hasTitle && hasStartWhen && map.size >= 3) return map;
   return null;
+}
+
+/**
+ * Pre–speaker_3 CSV layout (15 columns): two speakers only, then location → session_type.
+ * If this file is parsed as 24-wide positional, dates land under speaker_3_* and break import.
+ */
+const LEGACY_15_ORDER: CsvHeader[] = [
+  'title',
+  'description',
+  'speaker_name',
+  'speaker_title',
+  'speaker_company',
+  'speaker_2_name',
+  'speaker_2_title',
+  'speaker_2_company',
+  'location',
+  'room',
+  'start_date',
+  'start_time',
+  'end_date',
+  'end_time',
+  'session_type',
+];
+
+function valuesToRowLegacy15(values: string[]): Record<string, string> {
+  const row: Record<string, string> = {};
+  CSV_HEADERS.forEach((h) => {
+    row[h] = '';
+  });
+  LEGACY_15_ORDER.forEach((h, i) => {
+    row[h] = (values[i] ?? '').trim();
+  });
+  return row;
+}
+
+/** When start_date looks like a time and start_time like a date, swap (common Excel export mix-ups). */
+function normalizeDateTimePair(
+  dateStr: string,
+  timeStr: string
+): { dateStr: string; timeStr: string } {
+  const dOk = parseDateToYMD(dateStr);
+  const tOk = parseTimeToHHMMLoose(timeStr);
+  if (dOk && tOk) return { dateStr, timeStr };
+  const dSwap = parseDateToYMD(timeStr);
+  const rawDate = (dateStr ?? '').trim();
+  // Bare 1–4 digit "times" are usually room numbers (e.g. 202), not HH:mm — do not swap.
+  const tSwap =
+    parseTimeToHHMMLoose(dateStr) != null && !/^\d{1,4}$/.test(rawDate);
+  if (dSwap && tSwap) return { dateStr: timeStr, timeStr: dateStr };
+  return { dateStr, timeStr };
+}
+
+/**
+ * Fix Excel quirks: "202 2026-03-28" in start_date, or room in start_date + ISO date in start_time (column shift).
+ * Mutates row for room if we steal a leading room token.
+ */
+function sanitizeScheduleRowDateCells(row: Record<string, string>): void {
+  let sd = (row.start_date || '').trim();
+  let st = (row.start_time || '').trim();
+
+  const isoThenTime = st.match(/^(\d{4}-\d{1,2}-\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)/);
+  if (isoThenTime) {
+    const dPart = isoThenTime[1] ?? '';
+    const tPart = isoThenTime[2] ?? '';
+    row.start_date = dPart;
+    row.start_time = tPart;
+    sd = dPart;
+    st = tPart;
+  }
+
+  const roomThenDate = sd.match(/^(\d{1,4})\s+(\d{4}-\d{1,2}-\d{1,2})$/);
+  if (roomThenDate) {
+    const roomPart = roomThenDate[1] ?? '';
+    const datePart = roomThenDate[2] ?? '';
+    if (!(row.room || '').trim()) row.room = roomPart;
+    sd = datePart;
+    row.start_date = sd;
+  }
+
+  // Room-only in date cell + ISO date in time cell (e.g. start_date "301", start_time "2026-03-28")
+  if (/^\d{1,4}$/.test(sd) && parseDateToYMD(st)) {
+    if (!(row.room || '').trim()) row.room = sd;
+    row.start_date = st;
+    row.start_time = '';
+  }
 }
 
 function parseDateToYMD(dateStr: string): { y: number; m: number; d: number } | null {
@@ -358,10 +617,32 @@ export default function Schedule() {
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ added: number; failed: number; errors: string[] } | null>(null);
   const [editingSession, setEditingSession] = useState<ScheduleSession | null>(null);
-  const [editForm, setEditForm] = useState({ title: '', description: '', speaker_name: '', location: '', room: '', start_time: '', end_time: '', session_type: 'breakout' });
+  const [editForm, setEditForm] = useState<SessionFormState>({
+    title: '',
+    description: '',
+    speakers: [newSpeakerRow()],
+    location: '',
+    room: '',
+    start_time: '',
+    end_time: '',
+    session_types: ['breakout'],
+    ratings_enabled: true,
+  });
+  const [editCustomTypeInput, setEditCustomTypeInput] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
   const [addingSession, setAddingSession] = useState(false);
-  const [addForm, setAddForm] = useState({ title: '', description: '', speaker_name: '', location: '', room: '', start_time: '', end_time: '', session_type: 'breakout' });
+  const [addForm, setAddForm] = useState<SessionFormState>({
+    title: '',
+    description: '',
+    speakers: [newSpeakerRow()],
+    location: '',
+    room: '',
+    start_time: '',
+    end_time: '',
+    session_types: ['breakout'],
+    ratings_enabled: true,
+  });
+  const [addCustomTypeInput, setAddCustomTypeInput] = useState('');
   const [savingAdd, setSavingAdd] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
 
@@ -374,7 +655,8 @@ export default function Schedule() {
         if (eventData && !cancelled) setEvent(eventData as Event);
         const { data: sessionsData, error } = await supabase
           .from('schedule_sessions')
-          .select('id, title, description, speaker_name, location, room, start_time, end_time, day_number, session_type')
+          // * keeps load working if ratings_enabled (or other new cols) is missing before migration; mobile uses same pattern.
+          .select('*')
           .eq('event_id', eventId)
           .order('day_number')
           .order('start_time');
@@ -429,7 +711,7 @@ export default function Schedule() {
       const headerCells = table[0] ?? [];
       const colMap = buildColumnMapFromHeaderRow(headerCells);
 
-      const valuesToRow = (values: string[]): Record<string, string> => {
+      const valuesToRowFromMap = (values: string[]): Record<string, string> => {
         const row: Record<string, string> = {};
         if (colMap) {
           CSV_HEADERS.forEach((h) => {
@@ -444,21 +726,64 @@ export default function Schedule() {
         return row;
       };
 
+      /** Map one data row to canonical fields; auto-detect legacy 15-col layout when 24-col positional would break dates. */
+      const buildImportRow = (rowCells: string[]): Record<string, string> => {
+        const values = rowCells.map((c) => String(c ?? '').trim());
+        if (colMap) {
+          const maxIdx = Math.max(0, ...Array.from(colMap.values()));
+          const padded = [...values];
+          while (padded.length <= maxIdx) padded.push('');
+          return valuesToRowFromMap(padded);
+        }
+        const wideValues = [...values];
+        while (wideValues.length < CSV_HEADERS.length) wideValues.push('');
+        const wide = valuesToRowFromMap(wideValues);
+        // Require date+time in the *canonical* wide columns — do not use event defaults here.
+        // Otherwise a 15-column row padded to 24 leaves cols 19–20 empty and we'd accept wide with shifted location/speakers.
+        const wideDateRaw = (wide.start_date || '').trim();
+        const wideTimeRaw = (wide.start_time || '').trim();
+        const wideStrictOk =
+          parseDateToYMD(wideDateRaw) != null && parseTimeToHHMMLoose(wideTimeRaw) != null;
+        if (wideStrictOk) return wide;
+
+        const leg = valuesToRowLegacy15(values);
+        const legD = (leg.start_date || '').trim() || eventStart;
+        const legT = (leg.start_time || '').trim() || '09:00';
+        const legParses =
+          parseDateToYMD(legD) != null && parseTimeToHHMMLoose(legT) != null;
+
+        // 24-column files that are still misaligned often put room in start_date and YYYY-MM-DD in start_time.
+        const wideLooksShifted =
+          /^\d{1,4}$/.test(wideDateRaw) ||
+          /^\d{1,4}\s+\d{4}-\d{1,2}-\d{1,2}$/.test(wideDateRaw) ||
+          (parseDateToYMD(wideTimeRaw) != null && parseTimeToHHMMLoose(wideTimeRaw) == null);
+
+        if (legParses && (values.length < CSV_HEADERS.length || wideLooksShifted)) {
+          return leg;
+        }
+        return wide;
+      };
+
       for (let i = 1; i < table.length; i++) {
         const rowCells = table[i] ?? [];
-        const values = [...rowCells];
-        while (values.length < headerCells.length) values.push('');
-        if (values.length > headerCells.length) values.length = headerCells.length;
-        const row = valuesToRow(values);
+        const row = buildImportRow(rowCells);
         if (!row.title) {
           failed++;
           errors.push(`Row ${i + 1}: title is required`);
           continue;
         }
-        const startDateStr = row.start_date || eventStart;
-        const startTimeStr = row.start_time || '09:00';
-        const endDateStr = row.end_date || startDateStr;
-        const endTimeStr = row.end_time || '10:00';
+        sanitizeScheduleRowDateCells(row);
+        let startDateStr = row.start_date || eventStart;
+        let startTimeStr = row.start_time || '09:00';
+        let endDateStr = row.end_date || startDateStr;
+        let endTimeStr = row.end_time || '10:00';
+
+        const ns = normalizeDateTimePair(startDateStr, startTimeStr);
+        startDateStr = ns.dateStr;
+        startTimeStr = ns.timeStr;
+        const ne = normalizeDateTimePair(endDateStr, endTimeStr);
+        endDateStr = ne.dateStr;
+        endTimeStr = ne.timeStr;
 
         const startYMD = parseDateToYMD(startDateStr);
         const endYMD = parseDateToYMD(endDateStr);
@@ -480,23 +805,23 @@ export default function Schedule() {
         // Store in UTC so the admin UI shows the same HH:MM regardless of browser timezone.
         const startDate = new Date(Date.UTC(startYMD.y, startYMD.m - 1, startYMD.d, startHM.h, startHM.m, 0, 0));
         const endDate = new Date(Date.UTC(endYMD.y, endYMD.m - 1, endYMD.d, endHM.h, endHM.m, 0, 0));
-        const sessionType = (row.session_type || 'breakout').toLowerCase();
-        const validType = SESSION_TYPES.includes(sessionType as (typeof SESSION_TYPES)[number]) ? sessionType : 'breakout';
-        const speakerName = row.speaker_name || null;
-        const speakerTitle = row.speaker_title || null;
+        const sessionType = serializeSessionTypes(normalizeSessionTypesList(row.session_type));
+        const sp = speakersPayloadFromCsvRow(row);
         const payload = {
           event_id: eventId,
           title: row.title,
           description: row.description || null,
-          speaker_name: speakerName,
-          speaker_title: speakerTitle,
+          speaker_name: sp.speaker_name,
+          speaker_title: sp.speaker_title,
+          speakers: sp.speakers,
           location: row.location || null,
           room: row.room || null,
           start_time: startDate.toISOString(),
           end_time: endDate.toISOString(),
           day_number: getAgendaDayNumberFromStartIso(startDate.toISOString(), eventStart, event.end_date),
-          session_type: validType,
+          session_type: sessionType,
           is_active: true,
+          ratings_enabled: true,
         };
         const { error } = await supabase.from('schedule_sessions').insert(payload);
         if (error) {
@@ -510,7 +835,7 @@ export default function Schedule() {
       if (added > 0) {
         const { data } = await supabase
           .from('schedule_sessions')
-          .select('id, title, description, speaker_name, location, room, start_time, end_time, day_number, session_type')
+          .select('*')
           .eq('event_id', eventId)
           .order('day_number')
           .order('start_time');
@@ -564,14 +889,16 @@ export default function Schedule() {
     setEditForm({
       title: s.title,
       description: s.description ?? '',
-      speaker_name: s.speaker_name ?? '',
+      speakers: sessionToSpeakerRows(s),
       location: s.location ?? '',
       room: s.room ?? '',
       // Derive day from actual timestamps so edit matches the day section we show (DB day_number can be wrong).
       start_time: toDateTimeLocalFromEventDayAndISO(s.start_time, startDay, eventStart) || toDateTimeLocalUTC(s.start_time),
       end_time: toDateTimeLocalFromEventDayAndISO(s.end_time, endDay, eventStart) || toDateTimeLocalUTC(s.end_time),
-      session_type: s.session_type ?? 'breakout',
+      session_types: normalizeSessionTypesList(s.session_type ?? 'breakout'),
+      ratings_enabled: s.ratings_enabled !== false,
     });
+    setEditCustomTypeInput('');
   };
 
   const handleSaveEdit = async (e: React.FormEvent) => {
@@ -582,18 +909,22 @@ export default function Schedule() {
       const startDate = parseDateTimeLocalAsUTC(editForm.start_time);
       const endDate = parseDateTimeLocalAsUTC(editForm.end_time);
       const dayNumber = getAgendaDayNumberFromStartIso(startDate.toISOString(), event.start_date ?? '', event.end_date);
+      const sp = speakersToDbPayload(editForm.speakers);
       const { error } = await supabase
         .from('schedule_sessions')
         .update({
           title: editForm.title.trim(),
-          description: editForm.description.trim() || null,
-          speaker_name: editForm.speaker_name.trim() || null,
+          description: normalizeSessionDescription(editForm.description) || null,
+          speaker_name: sp.speaker_name,
+          speaker_title: sp.speaker_title,
+          speakers: sp.speakers,
           location: editForm.location.trim() || null,
           room: editForm.room.trim() || null,
           start_time: startDate.toISOString(),
           end_time: endDate.toISOString(),
           day_number: dayNumber,
-          session_type: SESSION_TYPES.includes(editForm.session_type as (typeof SESSION_TYPES)[number]) ? editForm.session_type : 'breakout',
+          session_type: serializeSessionTypes(editForm.session_types),
+          ratings_enabled: editForm.ratings_enabled,
         })
         .eq('id', editingSession.id);
       if (error) throw error;
@@ -603,14 +934,17 @@ export default function Schedule() {
             ? {
                 ...s,
                 title: editForm.title.trim(),
-                description: editForm.description.trim() || null,
-                speaker_name: editForm.speaker_name.trim() || null,
+                description: normalizeSessionDescription(editForm.description) || null,
+                speaker_name: sp.speaker_name,
+                speaker_title: sp.speaker_title,
+                speakers: sp.speakers ?? null,
                 location: editForm.location.trim() || null,
                 room: editForm.room.trim() || null,
                 start_time: startDate.toISOString(),
                 end_time: endDate.toISOString(),
                 day_number: dayNumber,
-                session_type: editForm.session_type,
+                session_type: serializeSessionTypes(editForm.session_types),
+                ratings_enabled: editForm.ratings_enabled,
               }
             : s
         )
@@ -631,13 +965,15 @@ export default function Schedule() {
     setAddForm({
       title: '',
       description: '',
-      speaker_name: '',
+      speakers: [newSpeakerRow()],
       location: '',
       room: '',
       start_time: defaultStart,
       end_time: defaultEnd,
-      session_type: 'breakout',
+      session_types: ['breakout'],
+      ratings_enabled: true,
     });
+    setAddCustomTypeInput('');
     setAddingSession(true);
   };
 
@@ -652,24 +988,28 @@ export default function Schedule() {
 
     setSavingAdd(true);
     try {
+      const sp = speakersToDbPayload(addForm.speakers);
       const payload = {
         event_id: eventId,
         title: addForm.title.trim(),
-        description: addForm.description.trim() || null,
-        speaker_name: addForm.speaker_name.trim() || null,
+        description: normalizeSessionDescription(addForm.description) || null,
+        speaker_name: sp.speaker_name,
+        speaker_title: sp.speaker_title,
+        speakers: sp.speakers,
         location: addForm.location.trim() || null,
         room: addForm.room.trim() || null,
         start_time: startDate.toISOString(),
         end_time: endDate.toISOString(),
         day_number: dayNumber,
-        session_type: SESSION_TYPES.includes(addForm.session_type as (typeof SESSION_TYPES)[number]) ? addForm.session_type : 'breakout',
+        session_type: serializeSessionTypes(addForm.session_types),
         is_active: true,
+        ratings_enabled: addForm.ratings_enabled,
       };
 
       const { data: inserted, error } = await supabase
         .from('schedule_sessions')
         .insert(payload)
-        .select('id, title, description, speaker_name, location, room, start_time, end_time, day_number, session_type')
+        .select('*')
         .single();
 
       if (error) throw error;
@@ -800,6 +1140,9 @@ export default function Schedule() {
       <p className={styles.hint}>
         First row should be <strong>headers</strong> (any sensible names—Date, Start time, Room, etc.—or use Download template). Columns can be in any order.
         Dates <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code> (Excel), times <code>HH:MM</code> (24h). From Excel use <strong>Save As → CSV UTF-8</strong>; commas inside title/description are handled when the file is valid CSV.
+        Up to <strong>five speakers</strong> per row: <code>speaker_name</code> / <code>speaker_title</code> / <code>speaker_company</code>, then{' '}
+        <code>speaker_2_name</code>…<code>speaker_5_company</code> (optional—see template).
+        <strong>Older spreadsheets</strong> with only two speakers (15 columns before <code>location</code>) still import: we detect that layout when a 24-column positional parse would put dates in the wrong place.
         Day groupings match the mobile app: set the event&apos;s <strong>start</strong> and <strong>end</strong> dates so each agenda day lines up.
       </p>
       <div className={styles.toolbar}>
@@ -833,12 +1176,16 @@ export default function Schedule() {
           className={styles.templateBtn}
           onClick={() => {
             const eventStart = event?.start_date ?? new Date().toISOString().slice(0, 10);
-            const row = [
+            const rowValues = [
               'Opening Keynote',
               'Welcome session',
               'Speaker Name',
               'CEO',
               'Company Inc',
+              'Jane Doe',
+              'VP of Strategy',
+              'Second Company',
+              ...Array(9).fill(''),
               'Main Hall',
               '101',
               eventStart,
@@ -846,7 +1193,8 @@ export default function Schedule() {
               eventStart,
               '10:00',
               'keynote',
-            ].join(',');
+            ];
+            const row = rowValues.map((c) => (/[",\n]/.test(c) ? `"${String(c).replace(/"/g, '""')}"` : c)).join(',');
             const csv = [CSV_HEADERS.join(','), row].join('\n');
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -916,8 +1264,9 @@ export default function Schedule() {
                     <span className={styles.itemTitle}>{s.title}</span>
                     <span className={styles.itemMeta}>
                       {formatTime12FromISO(s.start_time)} – {formatTime12FromISO(s.end_time)}
-                      {s.speaker_name ? ` · ${s.speaker_name}` : ''}
+                      {formatSessionSpeakersLine(s) ? ` · ${formatSessionSpeakersLine(s)}` : ''}
                       {s.location ? ` · ${s.location}` : ''}
+                      {s.ratings_enabled === false ? <span className={styles.ratingsOffBadge}> · Ratings off</span> : null}
                     </span>
                     <div className={styles.itemActions}>
                       <button type="button" className={`${styles.itemBtn} ${styles.itemBtnEdit}`} onClick={() => openEdit(s)}>
@@ -937,7 +1286,7 @@ export default function Schedule() {
 
       {editingSession && (
         <div className={styles.modalOverlay} onClick={() => setEditingSession(null)} role="dialog" aria-modal="true">
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.modal} ${styles.modalWide}`} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHead}>
               <h2>Edit session</h2>
               <button type="button" className={styles.modalClose} onClick={() => setEditingSession(null)} aria-label="Close">
@@ -948,9 +1297,72 @@ export default function Schedule() {
               <label>Title</label>
               <input value={editForm.title} onChange={(e) => setEditForm((f) => ({ ...f, title: e.target.value }))} required />
               <label>Description</label>
-              <input value={editForm.description} onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))} />
-              <label>Speaker name</label>
-              <input value={editForm.speaker_name} onChange={(e) => setEditForm((f) => ({ ...f, speaker_name: e.target.value }))} />
+              <textarea
+                rows={5}
+                value={editForm.description}
+                onChange={(e) => setEditForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder="Use one bullet per line, e.g. - Point 1"
+              />
+              <div className={styles.speakersBlock}>
+                <div className={styles.speakersBlockHead}>
+                  <span className={styles.speakersBlockTitle}>Speakers</span>
+                  <button
+                    type="button"
+                    className={styles.addSpeakerBtn}
+                    onClick={() => setEditForm((f) => ({ ...f, speakers: [...f.speakers, newSpeakerRow()] }))}
+                  >
+                    + Add speaker
+                  </button>
+                </div>
+                {editForm.speakers.map((sp, spIdx) => (
+                  <div key={sp.key} className={styles.speakerCard}>
+                    <div className={styles.speakerCardHead}>
+                      <span className={styles.speakerCardLabel}>Speaker {spIdx + 1}</span>
+                      {editForm.speakers.length > 1 ? (
+                        <button
+                          type="button"
+                          className={styles.removeSpeakerBtn}
+                          onClick={() =>
+                            setEditForm((f) => ({ ...f, speakers: f.speakers.filter((x) => x.key !== sp.key) }))
+                          }
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                    <input
+                      placeholder="Name"
+                      value={sp.name}
+                      onChange={(e) =>
+                        setEditForm((f) => ({
+                          ...f,
+                          speakers: f.speakers.map((x) => (x.key === sp.key ? { ...x, name: e.target.value } : x)),
+                        }))
+                      }
+                    />
+                    <input
+                      placeholder="Title / role"
+                      value={sp.title}
+                      onChange={(e) =>
+                        setEditForm((f) => ({
+                          ...f,
+                          speakers: f.speakers.map((x) => (x.key === sp.key ? { ...x, title: e.target.value } : x)),
+                        }))
+                      }
+                    />
+                    <input
+                      placeholder="Company"
+                      value={sp.company}
+                      onChange={(e) =>
+                        setEditForm((f) => ({
+                          ...f,
+                          speakers: f.speakers.map((x) => (x.key === sp.key ? { ...x, company: e.target.value } : x)),
+                        }))
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
               <label>Location / Room</label>
               <input value={editForm.location} onChange={(e) => setEditForm((f) => ({ ...f, location: e.target.value }))} placeholder="Location" />
               <input value={editForm.room} onChange={(e) => setEditForm((f) => ({ ...f, room: e.target.value }))} placeholder="Room" />
@@ -958,12 +1370,78 @@ export default function Schedule() {
               <input type="datetime-local" value={editForm.start_time} onChange={(e) => setEditForm((f) => ({ ...f, start_time: e.target.value }))} required />
               <label>End (date & time)</label>
               <input type="datetime-local" value={editForm.end_time} onChange={(e) => setEditForm((f) => ({ ...f, end_time: e.target.value }))} required />
-              <label>Type</label>
-              <select value={editForm.session_type} onChange={(e) => setEditForm((f) => ({ ...f, session_type: e.target.value }))}>
-                {SESSION_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+              <label>Session type (select multiple)</label>
+              <div className={styles.typeRow}>
+                {SESSION_TYPES.map((t) => {
+                  const isSelected = editForm.session_types.includes(t);
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`${styles.typeChip} ${isSelected ? styles.typeChipActive : ''}`}
+                      onClick={() =>
+                        setEditForm((f) => {
+                          if (isSelected) {
+                            const next = f.session_types.filter((x) => x !== t);
+                            return { ...f, session_types: next.length > 0 ? next : [t] };
+                          }
+                          return { ...f, session_types: [...f.session_types, t] };
+                        })
+                      }
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+                {editForm.session_types
+                  .filter((t) => !SESSION_TYPES.includes(t as (typeof SESSION_TYPES)[number]))
+                  .map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`${styles.typeChip} ${styles.typeChipActive}`}
+                      onClick={() =>
+                        setEditForm((f) => {
+                          const next = f.session_types.filter((x) => x !== t);
+                          return { ...f, session_types: next.length > 0 ? next : ['breakout'] };
+                        })
+                      }
+                    >
+                      {t} x
+                    </button>
+                  ))}
+              </div>
+              <div className={styles.customTypeRow}>
+                <input
+                  value={editCustomTypeInput}
+                  onChange={(e) => setEditCustomTypeInput(e.target.value)}
+                  placeholder="Create custom type (e.g. Panel, Fireside)"
+                />
+                <button
+                  type="button"
+                  className={styles.customTypeAddBtn}
+                  disabled={
+                    !normalizeSessionTypeToken(editCustomTypeInput) ||
+                    editForm.session_types.includes(normalizeSessionTypeToken(editCustomTypeInput))
+                  }
+                  onClick={() => {
+                    const token = normalizeSessionTypeToken(editCustomTypeInput);
+                    if (!token || editForm.session_types.includes(token)) return;
+                    setEditForm((f) => ({ ...f, session_types: [...f.session_types, token] }));
+                    setEditCustomTypeInput('');
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={editForm.ratings_enabled}
+                  onChange={(e) => setEditForm((f) => ({ ...f, ratings_enabled: e.target.checked }))}
+                />
+                <span>Allow session ratings in the app (1–5 stars and optional feedback). Uncheck for breaks, meals, or non-rated sessions.</span>
+              </label>
               <button type="submit" className={styles.importBtn} disabled={savingEdit}>
                 {savingEdit ? 'Saving…' : 'Save'}
               </button>
@@ -974,7 +1452,7 @@ export default function Schedule() {
 
       {addingSession && (
         <div className={styles.modalOverlay} onClick={() => setAddingSession(false)} role="dialog" aria-modal="true">
-          <div className={styles.modal} onClick={(e) => e.stopPropagation()}>
+          <div className={`${styles.modal} ${styles.modalWide}`} onClick={(e) => e.stopPropagation()}>
             <div className={styles.modalHead}>
               <h2>Add session</h2>
               <button type="button" className={styles.modalClose} onClick={() => setAddingSession(false)} aria-label="Close">
@@ -986,10 +1464,73 @@ export default function Schedule() {
               <input value={addForm.title} onChange={(e) => setAddForm((f) => ({ ...f, title: e.target.value }))} required />
 
               <label>Description</label>
-              <input value={addForm.description} onChange={(e) => setAddForm((f) => ({ ...f, description: e.target.value }))} />
+              <textarea
+                rows={5}
+                value={addForm.description}
+                onChange={(e) => setAddForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder="Use one bullet per line, e.g. - Point 1"
+              />
 
-              <label>Speaker name</label>
-              <input value={addForm.speaker_name} onChange={(e) => setAddForm((f) => ({ ...f, speaker_name: e.target.value }))} />
+              <div className={styles.speakersBlock}>
+                <div className={styles.speakersBlockHead}>
+                  <span className={styles.speakersBlockTitle}>Speakers</span>
+                  <button
+                    type="button"
+                    className={styles.addSpeakerBtn}
+                    onClick={() => setAddForm((f) => ({ ...f, speakers: [...f.speakers, newSpeakerRow()] }))}
+                  >
+                    + Add speaker
+                  </button>
+                </div>
+                {addForm.speakers.map((sp, spIdx) => (
+                  <div key={sp.key} className={styles.speakerCard}>
+                    <div className={styles.speakerCardHead}>
+                      <span className={styles.speakerCardLabel}>Speaker {spIdx + 1}</span>
+                      {addForm.speakers.length > 1 ? (
+                        <button
+                          type="button"
+                          className={styles.removeSpeakerBtn}
+                          onClick={() =>
+                            setAddForm((f) => ({ ...f, speakers: f.speakers.filter((x) => x.key !== sp.key) }))
+                          }
+                        >
+                          Remove
+                        </button>
+                      ) : null}
+                    </div>
+                    <input
+                      placeholder="Name"
+                      value={sp.name}
+                      onChange={(e) =>
+                        setAddForm((f) => ({
+                          ...f,
+                          speakers: f.speakers.map((x) => (x.key === sp.key ? { ...x, name: e.target.value } : x)),
+                        }))
+                      }
+                    />
+                    <input
+                      placeholder="Title / role"
+                      value={sp.title}
+                      onChange={(e) =>
+                        setAddForm((f) => ({
+                          ...f,
+                          speakers: f.speakers.map((x) => (x.key === sp.key ? { ...x, title: e.target.value } : x)),
+                        }))
+                      }
+                    />
+                    <input
+                      placeholder="Company"
+                      value={sp.company}
+                      onChange={(e) =>
+                        setAddForm((f) => ({
+                          ...f,
+                          speakers: f.speakers.map((x) => (x.key === sp.key ? { ...x, company: e.target.value } : x)),
+                        }))
+                      }
+                    />
+                  </div>
+                ))}
+              </div>
 
               <label>Location / Room</label>
               <input value={addForm.location} onChange={(e) => setAddForm((f) => ({ ...f, location: e.target.value }))} placeholder="Location" />
@@ -1001,12 +1542,78 @@ export default function Schedule() {
               <label>End (date & time)</label>
               <input type="datetime-local" value={addForm.end_time} onChange={(e) => setAddForm((f) => ({ ...f, end_time: e.target.value }))} required />
 
-              <label>Type</label>
-              <select value={addForm.session_type} onChange={(e) => setAddForm((f) => ({ ...f, session_type: e.target.value }))}>
-                {SESSION_TYPES.map((t) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
+              <label>Session type (select multiple)</label>
+              <div className={styles.typeRow}>
+                {SESSION_TYPES.map((t) => {
+                  const isSelected = addForm.session_types.includes(t);
+                  return (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`${styles.typeChip} ${isSelected ? styles.typeChipActive : ''}`}
+                      onClick={() =>
+                        setAddForm((f) => {
+                          if (isSelected) {
+                            const next = f.session_types.filter((x) => x !== t);
+                            return { ...f, session_types: next.length > 0 ? next : [t] };
+                          }
+                          return { ...f, session_types: [...f.session_types, t] };
+                        })
+                      }
+                    >
+                      {t}
+                    </button>
+                  );
+                })}
+                {addForm.session_types
+                  .filter((t) => !SESSION_TYPES.includes(t as (typeof SESSION_TYPES)[number]))
+                  .map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`${styles.typeChip} ${styles.typeChipActive}`}
+                      onClick={() =>
+                        setAddForm((f) => {
+                          const next = f.session_types.filter((x) => x !== t);
+                          return { ...f, session_types: next.length > 0 ? next : ['breakout'] };
+                        })
+                      }
+                    >
+                      {t} x
+                    </button>
+                  ))}
+              </div>
+              <div className={styles.customTypeRow}>
+                <input
+                  value={addCustomTypeInput}
+                  onChange={(e) => setAddCustomTypeInput(e.target.value)}
+                  placeholder="Create custom type (e.g. Panel, Fireside)"
+                />
+                <button
+                  type="button"
+                  className={styles.customTypeAddBtn}
+                  disabled={
+                    !normalizeSessionTypeToken(addCustomTypeInput) ||
+                    addForm.session_types.includes(normalizeSessionTypeToken(addCustomTypeInput))
+                  }
+                  onClick={() => {
+                    const token = normalizeSessionTypeToken(addCustomTypeInput);
+                    if (!token || addForm.session_types.includes(token)) return;
+                    setAddForm((f) => ({ ...f, session_types: [...f.session_types, token] }));
+                    setAddCustomTypeInput('');
+                  }}
+                >
+                  Add
+                </button>
+              </div>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={addForm.ratings_enabled}
+                  onChange={(e) => setAddForm((f) => ({ ...f, ratings_enabled: e.target.checked }))}
+                />
+                <span>Allow session ratings in the app (1–5 stars and optional feedback). Uncheck for breaks, meals, or non-rated sessions.</span>
+              </label>
 
               <button type="submit" className={styles.importBtn} disabled={savingAdd}>
                 {savingAdd ? 'Saving…' : 'Add'}

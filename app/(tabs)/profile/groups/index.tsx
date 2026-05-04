@@ -22,6 +22,7 @@ import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage 
 import { addDebugLog } from '../../../../lib/debugLog';
 import { colors } from '../../../../constants/colors';
 import Avatar from '../../../../components/Avatar';
+import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
 
 type ChatGroup = {
   id: string;
@@ -69,7 +70,7 @@ export default function GroupsListScreen() {
       .select('role, roles')
       .eq('event_id', currentEvent.id)
       .eq('user_id', user.id)
-      .single();
+      .maybeSingle();
     if (__DEV__) console.log('[Groups] Supabase event_members (fetchAdmin) — data:', data, 'error:', error);
     const row = data as { role?: string; roles?: string[] } | null;
     const role = row?.role ?? 'attendee';
@@ -252,7 +253,8 @@ export default function GroupsListScreen() {
 
   if (!currentEvent?.id || !user?.id) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Groups" onBack={() => router.back()} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Select an event to see your groups.</Text>
         </View>
@@ -262,7 +264,8 @@ export default function GroupsListScreen() {
 
   if (loading && groups.length === 0) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Groups" onBack={() => router.back()} />
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.placeholderText}>Loading groups…</Text>
@@ -272,7 +275,8 @@ export default function GroupsListScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader variant="back" title="Groups" onBack={() => router.back()} />
       {currentEvent?.name ? (
         <View style={styles.eventHeader}>
           <Text style={styles.eventLabel}>Groups for</Text>
@@ -327,6 +331,7 @@ export default function GroupsListScreen() {
         </TouchableOpacity>
       )}
       <FlatList
+        style={{ flex: 1 }}
         data={groups}
         keyExtractor={(item) => item.id}
         initialNumToRender={12}

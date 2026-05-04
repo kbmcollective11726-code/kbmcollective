@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
+import { ensureAndroidNotificationChannel } from './notificationChannel';
 
 const MEETING_REMINDER_PREFIX = 'meeting-reminder-';
 const ANDROID_CHANNEL_ID = 'collectivelive_notifications_v2';
@@ -25,6 +26,8 @@ export async function scheduleMeetingReminders(meetings: MeetingToRemind[]): Pro
     const { status } = await Notifications.getPermissionsAsync();
     if (status !== 'granted') return;
 
+    await ensureAndroidNotificationChannel();
+
     await cancelAllMeetingReminders();
 
     const now = Date.now();
@@ -39,9 +42,12 @@ export async function scheduleMeetingReminders(meetings: MeetingToRemind[]): Pro
       await Notifications.scheduleNotificationAsync({
         content: {
           title: 'Meeting starting soon',
-          body: `Meeting with ${m.vendorName} starts in ${REMIND_MINUTES} minutes.`,
+          body: `Meeting with ${m.vendorName} is starting soon.`,
           data: { type: 'meeting_reminder', boothId: m.boothId, slotId: m.slotId },
-          sound: true,
+          sound: 'default',
+          vibrate: [0, 500, 250, 500],
+          interruptionLevel: 'active',
+          priority: Notifications.AndroidNotificationPriority.MAX,
           ...(Platform.OS === 'android' && { channelId: ANDROID_CHANNEL_ID }),
         },
         trigger: { date: new Date(remindAt) },

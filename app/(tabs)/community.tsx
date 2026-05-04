@@ -4,19 +4,20 @@ import {
   Text,
   StyleSheet,
   FlatList,
+  SectionList,
   TouchableOpacity,
   RefreshControl,
   ActivityIndicator,
   TextInput,
-  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { MessageCircle, UserPlus, UserMinus, Search, Users, Mic, Store, Check, X } from 'lucide-react-native';
+import { MessageCircle, UserPlus, Search, Users, Mic, Store, Check, X } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
+import { useBlockStore } from '../../stores/blockStore';
 import { supabase, withRetryAndRefresh } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
@@ -48,13 +49,13 @@ export default function CommunityScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { fetchBlockedUsers, isInteractionBlocked } = useBlockStore();
   const [members, setMembers] = useState<CommunityMember[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
-  const [removingId, setRemovingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const optimisticRequestSent = useRef(new Set<string>());
@@ -208,11 +209,12 @@ export default function CommunityScreen() {
       return;
     }
     let cancelled = false;
+    fetchBlockedUsers(user.id).catch(() => {});
     fetchMembers()
       .catch(() => { if (!cancelled) setTimeout(() => fetchMembers().finally(() => {}), 2000); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [currentEvent?.id, user?.id]);
+  }, [currentEvent?.id, user?.id, fetchBlockedUsers]);
 
   // Clear optimistic refs when switching events so we don't show stale "Request sent" from previous event
   useEffect(() => {
@@ -223,8 +225,11 @@ export default function CommunityScreen() {
   useFocusEffect(
     useCallback(() => {
       fetchInProgressRef.current = false;
-      if (currentEvent?.id && user?.id) fetchMembers().catch(() => {});
-    }, [currentEvent?.id, user?.id])
+      if (currentEvent?.id && user?.id) {
+        fetchMembers().catch(() => {});
+        fetchBlockedUsers(user.id).catch(() => {});
+      }
+    }, [currentEvent?.id, user?.id, fetchBlockedUsers])
   );
 
   // Refetch when root layout refreshes session after app resume (notifyAfterSessionRefreshed).
@@ -328,7 +333,11 @@ export default function CommunityScreen() {
     }
   };
 
-  const filteredMembers = useMemo(() => {
+  const nameSort = useCallback((a: CommunityMember, b: CommunityMember) => {
+    return (a.full_name ?? '').localeCompare(b.full_name ?? '', undefined, { sensitivity: 'base' });
+  }, []);
+
+  const listSections = useMemo(() => {
     let list = members;
     if (roleFilter !== 'all') {
       list = list.filter((m) => {
@@ -345,11 +354,30 @@ export default function CommunityScreen() {
           m.company?.toLowerCase().includes(q)
       );
     }
-    return list;
-  }, [members, roleFilter, searchQuery]);
+
+    const incoming = list.filter((m) => m.request_received_from_them).sort(nameSort);
+    const connected = list.filter((m) => m.is_connected).sort(nameSort);
+    const everyoneElse = list
+      .filter((m) => !m.request_received_from_them && !m.is_connected)
+      .sort(nameSort);
+
+    const sections: { title: string; data: CommunityMember[] }[] = [];
+    if (incoming.length) sections.push({ title: 'Respond to requests', data: incoming });
+    if (connected.length) sections.push({ title: 'Your connections', data: connected });
+    if (everyoneElse.length) sections.push({ title: 'Everyone', data: everyoneElse });
+    return sections;
+  }, [members, roleFilter, searchQuery, nameSort]);
 
   const handleConnect = async (otherUserId: string) => {
     if (!user?.id || !currentEvent?.id) return;
+    if (isInteractionBlocked(otherUserId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Cannot connect',
+        text2: 'This person is unavailable for connections.',
+      });
+      return;
+    }
     setConnectingId(otherUserId);
     try {
       const { data, error } = await supabase
@@ -411,6 +439,14 @@ export default function CommunityScreen() {
 
   const handleAccept = async (otherUserId: string) => {
     if (!user?.id || !currentEvent?.id) return;
+    if (isInteractionBlocked(otherUserId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Cannot accept',
+        text2: 'This person is unavailable for connections.',
+      });
+      return;
+    }
     setAcceptingId(otherUserId);
     try {
       const { data: req, error: selectErr } = await supabase
@@ -507,50 +543,15 @@ export default function CommunityScreen() {
     }
   };
 
-  const handleRemoveConnection = (otherUserId: string, fullName: string) => {
-    Alert.alert(
-      'Remove connection',
-      `Remove ${fullName} from your connections? You can send a new request later if you change your mind.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            if (!user?.id || !currentEvent?.id) return;
-            setRemovingId(otherUserId);
-            try {
-              const { error: err1 } = await supabase
-                .from('connections')
-                .delete()
-                .eq('event_id', currentEvent.id)
-                .eq('user_id', user.id)
-                .eq('connected_user_id', otherUserId);
-              if (err1) throw err1;
-              const { error: err2 } = await supabase
-                .from('connections')
-                .delete()
-                .eq('event_id', currentEvent.id)
-                .eq('user_id', otherUserId)
-                .eq('connected_user_id', user.id);
-              if (err2) throw err2;
-              setMembers((prev) =>
-                prev.map((p) => (p.user_id === otherUserId ? { ...p, is_connected: false } : p))
-              );
-              Toast.show({ type: 'success', text1: 'Connection removed' });
-            } catch (err) {
-              console.error('Remove connection error:', err);
-              Toast.show({ type: 'error', text1: 'Could not remove', text2: 'Please try again.' });
-            } finally {
-              setRemovingId(null);
-            }
-          },
-        },
-      ]
-    );
-  };
-
   const handleMessage = (otherUserId: string) => {
+    if (isInteractionBlocked(otherUserId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Cannot message',
+        text2: 'Messaging is not available for this person.',
+      });
+      return;
+    }
     router.push(`/profile/chat/${otherUserId}?from=${encodeURIComponent('/(tabs)/community')}` as any);
   };
 
@@ -560,7 +561,7 @@ export default function CommunityScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.title}>Community</Text>
           <Text style={styles.subtitle}>Select an event on the Info tab first.</Text>
@@ -572,7 +573,7 @@ export default function CommunityScreen() {
   // Show Community layout immediately so the tab "loads"; content is loading/error + retry.
   if (loading || fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <FlatList
           data={[]}
           renderItem={() => null}
@@ -624,9 +625,14 @@ export default function CommunityScreen() {
         <Text style={styles.name} numberOfLines={1}>
           {item.full_name}
         </Text>
-        {(item.title || item.company) ? (
-          <Text style={styles.titleCompany} numberOfLines={1}>
-            {[item.title, item.company].filter(Boolean).join(' · ')}
+        {item.title ? (
+          <Text style={styles.titleLine} numberOfLines={2}>
+            {item.title}
+          </Text>
+        ) : null}
+        {item.company ? (
+          <Text style={styles.companyLine} numberOfLines={2}>
+            {item.company}
           </Text>
         ) : null}
       </View>
@@ -634,7 +640,7 @@ export default function CommunityScreen() {
         {item.is_connected ? (
           <View style={styles.connectedActions}>
             <TouchableOpacity
-              style={[styles.button, styles.buttonPrimary]}
+              style={[styles.button, styles.buttonPrimary, styles.buttonMessageSolo]}
               onPress={(e) => {
                 e.stopPropagation();
                 handleMessage(item.user_id);
@@ -642,23 +648,6 @@ export default function CommunityScreen() {
             >
               <MessageCircle size={18} color={colors.textOnPrimary} />
               <Text style={styles.buttonPrimaryText}>Message</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, styles.buttonRemove]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleRemoveConnection(item.user_id, item.full_name ?? 'this person');
-              }}
-              disabled={removingId === item.user_id}
-            >
-              {removingId === item.user_id ? (
-                <ActivityIndicator size="small" color={colors.textMuted} />
-              ) : (
-                <>
-                  <UserMinus size={16} color={colors.textMuted} />
-                  <Text style={styles.buttonRemoveText}>Remove</Text>
-                </>
-              )}
             </TouchableOpacity>
           </View>
         ) : item.request_received_from_them ? (
@@ -720,7 +709,7 @@ export default function CommunityScreen() {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <View style={styles.eventHeader}>
         <Text style={styles.eventHeaderText} numberOfLines={1}>
           {currentEvent?.name ?? 'Community'}
@@ -760,10 +749,16 @@ export default function CommunityScreen() {
         ))}
       </View>
 
-      <FlatList
-        data={filteredMembers}
+      <SectionList
+        sections={listSections}
         keyExtractor={(item) => item.user_id}
         renderItem={renderItem}
+        renderSectionHeader={({ section: { title } }) => (
+          <View style={styles.sectionHeaderWrap}>
+            <Text style={styles.sectionHeader}>{title}</Text>
+          </View>
+        )}
+        stickySectionHeadersEnabled
         contentContainerStyle={styles.list}
         initialNumToRender={12}
         maxToRenderPerBatch={10}
@@ -855,6 +850,19 @@ const styles = StyleSheet.create({
   filterChipTextActive: {
     color: '#fff',
   },
+  sectionHeaderWrap: {
+    paddingHorizontal: 4,
+    paddingTop: 8,
+    paddingBottom: 6,
+    backgroundColor: colors.background,
+  },
+  sectionHeader: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textSecondary,
+    letterSpacing: 0.3,
+    textTransform: 'uppercase',
+  },
   list: {
     padding: 16,
     paddingBottom: 100,
@@ -910,10 +918,15 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: colors.text,
   },
-  titleCompany: {
+  titleLine: {
     fontSize: 12,
     color: colors.textMuted,
     marginTop: 2,
+  },
+  companyLine: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginTop: 1,
   },
   roleBadges: {
     flexDirection: 'row',
@@ -949,7 +962,11 @@ const styles = StyleSheet.create({
   connectedActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    justifyContent: 'flex-end',
+    minWidth: 160,
+  },
+  buttonMessageSolo: {
+    paddingHorizontal: 16,
   },
   button: {
     flexDirection: 'row',
@@ -1006,16 +1023,6 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
   },
   buttonMutedText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: colors.textMuted,
-  },
-  buttonRemove: {
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  buttonRemoveText: {
     fontSize: 12,
     fontWeight: '600',
     color: colors.textMuted,

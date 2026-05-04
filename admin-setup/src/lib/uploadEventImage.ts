@@ -1,10 +1,16 @@
-import { supabase, supabaseUrl } from './supabase';
+import { supabase, supabaseUrl, edgeFunctionHeaders } from './supabase';
 
 const DEFAULT_MAX_WIDTH = 1920;
 const DEFAULT_JPEG_QUALITY = 0.85;
-/** Booth logos display small in UI; smaller encode + payload = faster Edge upload. */
+/** Banners: slightly smaller than 1920 = faster encode + upload; still sharp on phones. */
+const BANNER_MAX_WIDTH = 1600;
+const BANNER_JPEG_QUALITY = 0.82;
+/** Booth logos display small in UI; smaller encode + payload = faster upload. */
 const VENDOR_LOGO_MAX_WIDTH = 768;
 const VENDOR_LOGO_JPEG_QUALITY = 0.82;
+
+const PRESIGN_REQUEST_TIMEOUT_MS = 25_000;
+const R2_PUT_TIMEOUT_MS = 120_000;
 
 export type CompressJpegOptions = { maxWidth?: number; quality?: number };
 
@@ -54,41 +60,70 @@ async function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-function buildStoragePath(eventId: string, userId: string, folder: string): string {
-  return `${eventId}/${folder}/${userId}_${Date.now()}.jpg`;
-}
-
-function buildR2Key(storagePath: string): string {
-  return `event-photos/${storagePath}`;
-}
-
 /**
- * Upload booth logo like the mobile app: R2 via Edge Function, then Supabase Storage.
+ * Same path as the mobile app: presigned URL + binary PUT to R2 (no base64 JSON through Edge).
  */
-export async function uploadEventImage(file: File, eventId: string, folder: 'vendor-logos'): Promise<string> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  if (!session?.access_token || !session.user?.id) {
-    throw new Error('Sign in required to upload images.');
+async function tryR2PresignedUpload(
+  arrayBuffer: ArrayBuffer,
+  r2Key: string,
+  accessToken: string
+): Promise<string | null> {
+  const fnUrl = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/get-r2-upload-url`;
+  const presignAc = new AbortController();
+  const presignTimer = setTimeout(() => presignAc.abort(), PRESIGN_REQUEST_TIMEOUT_MS);
+  let presignRes: Response;
+  try {
+    presignRes = await fetch(fnUrl, {
+      method: 'POST',
+      headers: edgeFunctionHeaders(accessToken),
+      body: JSON.stringify({ key: r2Key, contentType: 'image/jpeg' }),
+      signal: presignAc.signal,
+    });
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(presignTimer);
   }
-  const userId = session.user.id;
-  const jpegBlob = await compressImageToJpegBlob(file, {
-    maxWidth: VENDOR_LOGO_MAX_WIDTH,
-    quality: VENDOR_LOGO_JPEG_QUALITY,
-  });
-  const storagePath = buildStoragePath(eventId, userId, folder);
-  const r2Key = buildR2Key(storagePath);
-  const base64 = await blobToBase64(jpegBlob);
 
+  const text = await presignRes.text();
+  let body: { uploadUrl?: string; publicUrl?: string; error?: string } = {};
+  try {
+    body = text ? (JSON.parse(text) as { uploadUrl?: string; publicUrl?: string; error?: string }) : {};
+  } catch {
+    return null;
+  }
+  if (!presignRes.ok || !body.uploadUrl || !body.publicUrl) {
+    return null;
+  }
+
+  const putAc = new AbortController();
+  const putTimer = setTimeout(() => putAc.abort(), R2_PUT_TIMEOUT_MS);
+  try {
+    const putRes = await fetch(body.uploadUrl, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'image/jpeg' },
+      body: arrayBuffer,
+      signal: putAc.signal,
+    });
+    if (!putRes.ok) return null;
+    return body.publicUrl;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(putTimer);
+  }
+}
+
+async function tryR2Base64Proxy(
+  base64: string,
+  r2Key: string,
+  accessToken: string
+): Promise<string | null> {
   const fnUrl = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/upload-image-to-r2`;
   try {
     const res = await fetch(fnUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
-      },
+      headers: edgeFunctionHeaders(accessToken),
       body: JSON.stringify({
         key: r2Key,
         contentType: 'image/jpeg',
@@ -100,25 +135,66 @@ export async function uploadEventImage(file: File, eventId: string, folder: 'ven
     try {
       body = text ? (JSON.parse(text) as { publicUrl?: string; error?: string }) : {};
     } catch {
-      /* ignore */
+      return null;
     }
-    if (res.ok && body.publicUrl) {
-      return body.publicUrl;
-    }
+    if (res.ok && body.publicUrl) return body.publicUrl;
   } catch (e) {
     console.warn('upload-image-to-r2 fetch failed:', e);
   }
+  return null;
+}
 
+export type EventScopedImageFolder = 'vendor-logos' | 'event-banner' | 'sponsor-logos';
+
+function buildStoragePath(eventId: string, userId: string, folder: EventScopedImageFolder): string {
+  if (folder === 'event-banner') return `${eventId}/banner_${Date.now()}.jpg`;
+  return `${eventId}/${folder}/${userId}_${Date.now()}.jpg`;
+}
+
+function buildR2Key(storagePath: string): string {
+  return `event-photos/${storagePath}`;
+}
+
+/**
+ * Upload event-scoped image: R2 via presigned binary PUT (fast), then Storage, then base64 Edge proxy.
+ */
+export async function uploadEventImage(file: File, eventId: string, folder: EventScopedImageFolder): Promise<string> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session?.access_token || !session.user?.id) {
+    throw new Error('Sign in required to upload images.');
+  }
+  const userId = session.user.id;
+  const token = session.access_token;
+
+  const compressOpts =
+    folder === 'event-banner'
+      ? { maxWidth: BANNER_MAX_WIDTH, quality: BANNER_JPEG_QUALITY }
+      : { maxWidth: VENDOR_LOGO_MAX_WIDTH, quality: VENDOR_LOGO_JPEG_QUALITY }; // vendor + sponsor logos
+  const jpegBlob = await compressImageToJpegBlob(file, compressOpts);
+  const storagePath = buildStoragePath(eventId, userId, folder);
+  const r2Key = buildR2Key(storagePath);
   const buf = await jpegBlob.arrayBuffer();
+
+  const presignedUrl = await tryR2PresignedUpload(buf, r2Key, token);
+  if (presignedUrl) return presignedUrl;
+
   const { data, error } = await supabase.storage.from('event-photos').upload(storagePath, buf, {
     contentType: 'image/jpeg',
     upsert: false,
   });
+  if (!error && data?.path) {
+    const { data: pub } = supabase.storage.from('event-photos').getPublicUrl(data.path);
+    if (pub?.publicUrl) return pub.publicUrl;
+  }
+
+  const base64 = await blobToBase64(jpegBlob);
+  const proxyUrl = await tryR2Base64Proxy(base64, r2Key, token);
+  if (proxyUrl) return proxyUrl;
+
   if (error) {
     throw new Error(error.message || 'Storage upload failed. Check bucket policies for event-photos.');
   }
-  if (!data?.path) throw new Error('Upload returned no path');
-  const { data: pub } = supabase.storage.from('event-photos').getPublicUrl(data.path);
-  if (!pub?.publicUrl) throw new Error('Could not get public URL');
-  return pub.publicUrl;
+  throw new Error('Upload failed (R2 presign, storage, and proxy all unavailable). Check R2 secrets and network.');
 }

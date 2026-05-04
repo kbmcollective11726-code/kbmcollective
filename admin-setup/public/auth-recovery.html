@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>KBM Connect — password reset</title>
+  <link rel="icon" href="/logo.png" type="image/png" />
+  <link rel="apple-touch-icon" href="/logo.png" />
+  <meta name="theme-color" content="#0a0a0a" />
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; max-width: 520px; margin: 0 auto; line-height: 1.5; color: #111; }
     h1 { font-size: 1.25rem; }
@@ -23,24 +26,53 @@
       var fallbackEl = document.getElementById('fallback');
       var hash = window.location.hash || '';
       var search = window.location.search || '';
-      var hasTokens =
-        hash.indexOf('access_token') !== -1 ||
-        search.indexOf('access_token') !== -1 ||
-        hash.indexOf('type=recovery') !== -1 ||
-        search.indexOf('type=recovery') !== -1;
+      /** Supabase: implicit (hash) or PKCE (?code=). Avoid matching ?error_code= as "code=". */
+      function hasAuthPayload(h, s) {
+        var combined = (h || '') + '&' + (s || '');
+        if (combined.indexOf('access_token') !== -1) return true;
+        if (combined.indexOf('type=recovery') !== -1) return true;
+        if (/(?:^|[?&#])code=/.test(combined)) return true;
+        return false;
+      }
+      function parseParam(key, h, s) {
+        try {
+          var fromHash = new URLSearchParams(h.replace(/^#/, ''));
+          if (fromHash.get(key)) return fromHash.get(key);
+          var fromSearch = new URLSearchParams(s.replace(/^\?/, ''));
+          return fromSearch.get(key) || '';
+        } catch (e) {
+          return '';
+        }
+      }
+      var err = parseParam('error', hash, search) || parseParam('error_code', hash, search);
+      var errDesc = parseParam('error_description', hash, search);
 
-      if (!hasTokens) {
+      if (err || errDesc) {
         if (statusEl) {
           statusEl.textContent =
-            'This link is missing login data (expired or already used). Request a new password reset from the KBM Connect app.';
+            errDesc || err || 'This reset link is no longer valid.';
         }
         if (fallbackEl) fallbackEl.style.display = 'block';
         return;
       }
 
+      var hasTokens = hasAuthPayload(hash, search);
+
+      if (!hasTokens) {
+        if (statusEl) {
+          statusEl.textContent =
+            'This link is missing login data (expired, already used, or opened by a mail scanner before you tapped it). Request a new reset from the KBM Connect app, then open the link once from your mail app. If you use Outlook / corporate email, try forwarding the message to Gmail or use “view original link”.';
+        }
+        if (fallbackEl) fallbackEl.style.display = 'block';
+        return;
+      }
+
+      // Prefer query params for custom-scheme handoff (more reliable than URL fragments on some devices).
       var target = 'collectivelive://reset-password';
-      if (hash) target += hash;
-      else if (search) target += search;
+      var hashQuery = hash ? hash.replace(/^#/, '') : '';
+      var searchQuery = search ? search.replace(/^\?/, '') : '';
+      var query = hashQuery || searchQuery;
+      if (query) target += '?' + query;
 
       window.location.replace(target);
       setTimeout(function () {

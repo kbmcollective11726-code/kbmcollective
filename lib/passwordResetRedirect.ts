@@ -1,6 +1,9 @@
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 
+/** Project default HTTPS bridge so reset links never fall back to localhost browsers. */
+const DEFAULT_PASSWORD_RESET_WEB_URL = 'https://cadmin.kbmcollective.org/auth-recovery.html';
+
 /**
  * HTTPS page (deployed with admin-setup) forwards tokens → collectivelive://reset-password
  * so email clients open a real URL (no localhost). Set EXPO_PUBLIC_PASSWORD_RESET_WEB_URL in .env.
@@ -15,7 +18,7 @@ export function getPasswordResetRedirectUrl(): string {
   const fromEnv = (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_PASSWORD_RESET_WEB_URL
     ? String(process.env.EXPO_PUBLIC_PASSWORD_RESET_WEB_URL).trim().replace(/\/+$/, '')
     : '');
-  const web = fromExtra || fromEnv;
+  const web = fromExtra || fromEnv || DEFAULT_PASSWORD_RESET_WEB_URL;
   if (web && /^https?:\/\//i.test(web)) {
     return web;
   }

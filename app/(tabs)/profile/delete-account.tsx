@@ -89,7 +89,7 @@ export default function DeleteAccountScreen() {
 
   if (!user) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Sign in to continue.</Text>
         </View>
@@ -98,7 +98,7 @@ export default function DeleteAccountScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         <View style={styles.iconWrap}>
           <Trash2 size={48} color={colors.danger} strokeWidth={1.5} />

@@ -12,10 +12,11 @@ import {
   Dimensions,
   AppState,
   AppStateStatus,
+  Switch,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { ChevronLeft, Check, X } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
@@ -71,12 +72,58 @@ function dataPick(data: Record<string, string>, ...keys: string[]): string | und
 
 const RESUME_REFETCH_DEBOUNCE_MS = 12000;
 
+function NotificationsTopBar({
+  onBack,
+  onReadAll,
+  unreadCount,
+}: {
+  onBack: () => void;
+  onReadAll: () => void;
+  unreadCount: number;
+}) {
+  const readAllDisabled = unreadCount === 0;
+  return (
+    <View style={styles.topBar}>
+      <View style={styles.topBarSide}>
+        <TouchableOpacity
+          onPress={onBack}
+          style={styles.topBarBackHit}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          activeOpacity={0.85}
+        >
+          <ChevronLeft size={24} color={colors.text} />
+        </TouchableOpacity>
+      </View>
+      <Text style={styles.topBarTitle} numberOfLines={1}>
+        Notifications
+      </Text>
+      <View style={[styles.topBarSide, styles.topBarSideRight]}>
+        <TouchableOpacity
+          onPress={onReadAll}
+          style={styles.topBarReadAll}
+          hitSlop={8}
+          disabled={readAllDisabled}
+          activeOpacity={0.85}
+        >
+          <Check
+            size={20}
+            color={!readAllDisabled ? colors.primary : colors.textMuted}
+            strokeWidth={2}
+          />
+          <Text style={[styles.topBarReadAllText, readAllDisabled && styles.readAllTextDisabled]}>
+            Read all
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+}
+
 export default function NotificationsScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const isFocused = useIsFocused();
   const { from } = useLocalSearchParams<{ from?: string }>();
-  const { user } = useAuthStore();
+  const { user, updateProfile, refreshUser } = useAuthStore();
   const currentEvent = useEventStore((s) => s.currentEvent);
   const lastResumeRefetchAt = useRef<number>(0);
 
@@ -100,25 +147,29 @@ export default function NotificationsScreen() {
     }
   }, [from, router]);
 
-  useEffect(() => {
-    navigation.setOptions({
-      headerBackVisible: false,
-      headerLeft: () => (
-        <TouchableOpacity
-          onPress={goBack}
-          style={styles.backButton}
-          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-        >
-          <ChevronLeft size={24} color={colors.text} />
-        </TouchableOpacity>
-      ),
-    });
-  }, [goBack, navigation]);
   const [items, setItems] = useState<NotificationRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [fetchErrorDetail, setFetchErrorDetail] = useState<string | null>(null);
+  const [reminderPrefBusy, setReminderPrefBusy] = useState(false);
+
+  const skipSameRoomReminders = user?.session_reminder_skip_same_room !== false;
+
+  const onToggleSkipSameRoom = async (value: boolean) => {
+    if (!user?.id) return;
+    setReminderPrefBusy(true);
+    try {
+      const { error } = await updateProfile({ session_reminder_skip_same_room: value });
+      if (error) {
+        Toast.show({ type: 'error', text1: 'Could not save', text2: error, visibilityTime: 4000 });
+      } else {
+        await refreshUser();
+      }
+    } finally {
+      setReminderPrefBusy(false);
+    }
+  };
 
   const fetchInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
@@ -324,26 +375,6 @@ export default function NotificationsScreen() {
 
   const unreadCount = items.filter((n) => !n.is_read).length;
 
-  useEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <View style={styles.headerRight}>
-          <TouchableOpacity
-            onPress={markAllAsRead}
-            style={styles.headerBtn}
-            hitSlop={8}
-            disabled={unreadCount === 0}
-          >
-            <Check size={20} color={unreadCount > 0 ? colors.primary : colors.textMuted} strokeWidth={2} />
-            <Text style={[styles.headerBtnText, unreadCount === 0 && styles.headerBtnTextDisabled]}>
-              Read all
-            </Text>
-          </TouchableOpacity>
-        </View>
-      ),
-    });
-  }, [navigation, unreadCount, markAllAsRead]);
-
   const handleNotificationPress = (item: NotificationRow) => {
     markAsRead(item.id);
     const data = item.data ?? {};
@@ -462,7 +493,8 @@ export default function NotificationsScreen() {
 
   if (!currentEvent?.id) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={0} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>
             Join or select an event to see notifications for that event only.
@@ -474,7 +506,8 @@ export default function NotificationsScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={0} />
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.placeholderText}>Loading notifications…</Text>
@@ -485,7 +518,8 @@ export default function NotificationsScreen() {
 
   if (fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={unreadCount} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Error - page not loading</Text>
           {fetchErrorDetail ? (
@@ -518,11 +552,34 @@ export default function NotificationsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={unreadCount} />
       <FlatList
+        style={{ flex: 1 }}
         data={items}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
+        ListHeaderComponent={
+          <View style={styles.prefCard}>
+            <Text style={styles.prefTitle}>Agenda reminders</Text>
+            <View style={styles.prefRow}>
+              <View style={styles.prefTextCol}>
+                <Text style={styles.prefLabel}>Skip same-room alerts</Text>
+                <Text style={styles.prefHint}>
+                  When on, you will not get a starting-soon push if your previous bookmarked session that day was in the
+                  same room. Turn off to always get reminders.
+                </Text>
+              </View>
+              <Switch
+                value={skipSameRoomReminders}
+                onValueChange={(v) => void onToggleSkipSameRoom(v)}
+                disabled={reminderPrefBusy}
+                trackColor={{ false: colors.border, true: colors.primaryFaded }}
+                thumbColor={skipSameRoomReminders ? colors.primary : colors.textMuted}
+              />
+            </View>
+          </View>
+        }
         contentContainerStyle={[styles.list, (items.length === 0 || items.length < 5) && styles.listGrow, { minHeight: Dimensions.get('window').height + 2 }]}
         initialNumToRender={12}
         maxToRenderPerBatch={10}
@@ -541,11 +598,43 @@ export default function NotificationsScreen() {
 }
 
 const styles = StyleSheet.create({
-  backButton: { marginLeft: 8, padding: 4 },
-  headerRight: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  headerBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingVertical: 4, paddingHorizontal: 8 },
-  headerBtnText: { fontSize: 14, color: colors.primary, fontWeight: '500' },
-  headerBtnTextDisabled: { color: colors.textMuted },
+  topBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.background,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+    paddingHorizontal: 4,
+    minHeight: 48,
+  },
+  topBarSide: {
+    width: 108,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  topBarSideRight: {
+    justifyContent: 'flex-end',
+  },
+  topBarBackHit: {
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+  },
+  topBarTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+    textAlign: 'center',
+  },
+  topBarReadAll: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+  },
+  topBarReadAllText: { fontSize: 14, color: colors.primary, fontWeight: '500' },
+  readAllTextDisabled: { color: colors.textMuted },
   container: {
     flex: 1,
     backgroundColor: colors.background,
@@ -553,6 +642,40 @@ const styles = StyleSheet.create({
   list: {
     padding: 16,
     paddingBottom: 32,
+  },
+  prefCard: {
+    backgroundColor: colors.surface,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: 16,
+    marginBottom: 16,
+  },
+  prefTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: 12,
+  },
+  prefRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  prefTextCol: {
+    flex: 1,
+    paddingRight: 12,
+  },
+  prefLabel: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  prefHint: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginTop: 6,
+    lineHeight: 18,
   },
   listGrow: {
     flexGrow: 1,

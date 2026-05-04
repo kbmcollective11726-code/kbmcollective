@@ -27,6 +27,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../../lib/supabase';
+import { selectAllInPages, SUPABASE_SELECT_PAGE_SIZE } from '../../lib/supabaseSelectAllPages';
 import { colors } from '../../constants/colors';
 import type { Post } from '../../lib/types';
 import Toast from 'react-native-toast-message';
@@ -56,19 +57,20 @@ export default function PhotoBookScreen() {
     setFetchError(null);
     try {
       await withRetryAndRefresh(async () => {
-        const { data: postsData, error } = await supabase
-          .from('posts')
-          .select('id, image_url, caption, created_at, likes_count, user:users(full_name)')
-          .eq('event_id', currentEvent.id)
-          .eq('is_deleted', false)
-          .eq('is_approved', true)
-          .not('image_url', 'is', null)
-          .order('created_at', { ascending: false })
-          .limit(50);
+        const postsData = await selectAllInPages(SUPABASE_SELECT_PAGE_SIZE, async (from, to) => {
+          const res = await supabase
+            .from('posts')
+            .select('id, image_url, caption, created_at, likes_count, user:users(full_name)')
+            .eq('event_id', currentEvent.id)
+            .eq('is_deleted', false)
+            .eq('is_approved', true)
+            .not('image_url', 'is', null)
+            .order('created_at', { ascending: false })
+            .range(from, to);
+          return res;
+        });
 
-        if (error) throw error;
-
-        const raw = (postsData ?? []) as Array<Record<string, unknown>>;
+        const raw = postsData as Array<Record<string, unknown>>;
         const normalized: Post[] = raw.map((p) => ({
           ...p,
           user: Array.isArray(p.user) ? (p.user[0] ?? null) : p.user,
@@ -222,7 +224,7 @@ export default function PhotoBookScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Join an event on the Info tab to view the photo book.</Text>
         </View>
@@ -232,7 +234,7 @@ export default function PhotoBookScreen() {
 
   if (fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.placeholder}>
           <Text style={styles.placeholderTitle}>Error - page not loading</Text>
           <Text style={styles.subtitle}>Pull down to refresh or tap Try again.</Text>
@@ -254,7 +256,7 @@ export default function PhotoBookScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.subtitle}>Loading photos…</Text>
@@ -264,9 +266,14 @@ export default function PhotoBookScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Photo book</Text>
+        {posts.length > 0 ? (
+          <Text style={styles.headerCount}>
+            {posts.length} {posts.length === 1 ? 'photo' : 'photos'}
+          </Text>
+        ) : null}
       </View>
       {posts.length === 0 ? (
         <View style={styles.placeholder}>
@@ -394,6 +401,7 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   headerTitle: { fontSize: 20, fontWeight: '700', color: colors.text, textAlign: 'left' },
+  headerCount: { fontSize: 14, color: colors.textSecondary, marginTop: 4, fontWeight: '500' },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   placeholderTitle: { fontSize: 18, fontWeight: '600', color: colors.text, marginBottom: 8, textAlign: 'center' },
   subtitle: { fontSize: 14, color: colors.textSecondary, textAlign: 'center' },

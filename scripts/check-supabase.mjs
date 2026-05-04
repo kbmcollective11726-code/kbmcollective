@@ -48,12 +48,13 @@ async function get(path) {
 async function main() {
   console.log('Checking Supabase setup for', url.replace(/https?:\/\//, '').split('.')[0], '...\n');
 
-  // 1. Health / reachability
+  // 1. PostgREST reachability (bare /rest/v1/ often returns 401; probe a real resource)
   try {
-    const health = await fetch(`${url}/rest/v1/`, { headers });
-    console.log('1. API reachable:', health.ok ? '✓' : '✗', health.status);
+    const health = await fetch(`${url}/rest/v1/events?select=id&limit=1`, { headers });
+    console.log('1. PostgREST reachable:', health.ok ? '✓' : '✗', health.status);
+    if (!health.ok) process.exit(1);
   } catch (e) {
-    console.log('1. API reachable: ✗', e.message);
+    console.log('1. PostgREST reachable: ✗', e.message);
     process.exit(1);
   }
 
@@ -126,7 +127,7 @@ async function main() {
   const usersPush = await get('/users?select=push_token&limit=1');
   console.log('11. users.push_token (notifications):', usersPush.ok ? '✓' : '✗', usersPush.status);
 
-  // 12–27. All other app tables (exist + anon can reach)
+  // 12–27. Core app tables (exist + PostgREST; RLS may return empty rows but still 200)
   const extra = [
     ['messages', 'id', '12. messages (DMs)'],
     ['notifications', 'id', '13. notifications'],
@@ -152,6 +153,34 @@ async function main() {
     console.log(label + ':', r.ok ? '✓' : '✗', r.status);
   }
 
+  // 28–45. Feature tables from later migrations (badges, sponsors, registration, B2B extras, QA guides)
+  const feature = [
+    ['event_sponsors', 'id', '28. event_sponsors'],
+    ['event_badge_tokens', 'id', '29. event_badge_tokens'],
+    ['badge_scans', 'id', '30. badge_scans'],
+    ['badge_scan_meeting_attendance', 'id', '31. badge_scan_meeting_attendance'],
+    ['event_matchmaking_settings', 'event_id', '32. event_matchmaking_settings'],
+    ['event_registration_forms', 'id', '33. event_registration_forms'],
+    ['event_registration_questions', 'id', '34. event_registration_questions'],
+    ['event_registration_question_options', 'id', '35. event_registration_question_options'],
+    ['event_registration_submissions', 'id', '36. event_registration_submissions'],
+    ['event_registration_answers', 'id', '37. event_registration_answers'],
+    ['event_meeting_interest_requests', 'id', '38. event_meeting_interest_requests'],
+    ['event_match_reviews', 'id', '39. event_match_reviews'],
+    ['event_match_scheduled_meetings', 'id', '40. event_match_scheduled_meetings'],
+    ['vendor_booth_reps', 'booth_id', '41. vendor_booth_reps'],
+    ['b2b_meeting_feedback', 'id', '42. b2b_meeting_feedback'],
+    ['b2b_meeting_feedback_nudge_sent', 'booking_id', '43. b2b_meeting_feedback_nudge_sent'],
+    ['b2b_meeting_reminder_sent', 'booking_id', '44. b2b_meeting_reminder_sent'],
+    ['platform_test_guides', 'id', '45. platform_test_guides'],
+  ];
+  const featureOk = [];
+  for (const [table, col, label] of feature) {
+    const r = await get(`/${table}?select=${col}&limit=1`);
+    featureOk.push(r.ok);
+    console.log(label + ':', r.ok ? '✓' : '✗', r.status);
+  }
+
   const allOk =
     events.ok &&
     sessions.ok &&
@@ -163,9 +192,15 @@ async function main() {
     eventMembers.ok &&
     posts.ok &&
     usersPush.ok &&
-    extraOk.every(Boolean);
+    extraOk.every(Boolean) &&
+    featureOk.every(Boolean);
 
-  console.log('\nDone. If any table is ✗, create it or run migrations (see supabase/migrations, SUPABASE-TABLES-CHECKLIST.md).');
+  console.log(
+    '\nDone. If any table is ✗, create it or run migrations (see supabase/migrations, SUPABASE-TABLES-CHECKLIST.md).',
+  );
+  console.log(
+    '(Feature rows 28–45: ✓ means PostgREST accepts the table; RLS may hide rows for anon — use an authed session to verify data access.)',
+  );
   if (!allOk) {
     console.error('\nFAIL: One or more tables are missing or returned an error. Run migrations before iOS rebuild.');
     process.exit(1);

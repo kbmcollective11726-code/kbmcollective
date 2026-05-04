@@ -14,16 +14,24 @@
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
-        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://admin-setup-omega.vercel.app/auth-recovery.html"
+        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://cadmin.kbmcollective.org/auth-recovery.html",
+        "EXPO_PUBLIC_LIVE_WALL_URL": "https://live-wall-six.vercel.app",
+        "EXPO_PUBLIC_ADMIN_CONSOLE_URL": "https://cadmin.kbmcollective.org"
       }
     },
     "production": {
       "environment": "production",
+      "distribution": "store",
       "android": { "buildType": "app-bundle" },
+      "ios": {
+        "simulator": false
+      },
       "env": {
         "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
-        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://admin-setup-omega.vercel.app/auth-recovery.html"
+        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://cadmin.kbmcollective.org/auth-recovery.html",
+        "EXPO_PUBLIC_LIVE_WALL_URL": "https://live-wall-six.vercel.app",
+        "EXPO_PUBLIC_ADMIN_CONSOLE_URL": "https://cadmin.kbmcollective.org"
       }
     }
   },

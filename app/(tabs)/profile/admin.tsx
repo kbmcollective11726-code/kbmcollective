@@ -1,17 +1,31 @@
 import { useEffect, useState, useCallback } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, ActivityIndicator, Linking } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
-import { ChevronLeft } from 'lucide-react-native';
-import { ChevronRight, Calendar, Users, ImageIcon, Megaphone, CalendarDays, FileText, PlusCircle, Award, Building2, UserX, Store } from 'lucide-react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import {
+  ChevronRight,
+  Calendar,
+  CalendarClock,
+  Users,
+  ImageIcon,
+  Megaphone,
+  CalendarDays,
+  FileText,
+  PlusCircle,
+  Award,
+  Building2,
+  UserX,
+  Store,
+} from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
+import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
+import { adminConsoleMeetingsUrl } from '../../../lib/adminConsoleUrl';
 
 export default function AdminScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
@@ -58,23 +72,6 @@ export default function AdminScreen() {
     }
   }, [from, router]);
 
-  useEffect(() => {
-    if (from && typeof from === 'string') {
-      navigation.setOptions({
-        headerBackVisible: false,
-        headerLeft: () => (
-          <TouchableOpacity
-            onPress={goBack}
-            style={{ marginLeft: 8, padding: 4 }}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <ChevronLeft size={24} color={colors.text} />
-          </TouchableOpacity>
-        ),
-      });
-    }
-  }, [from, goBack, navigation]);
-
   // Event admin = manage their events + create multiple new events (they stay admin; super admin does not need to re-grant).
   // Platform admin = same + All events (platform), Delete user account. Everyone else = no admin access.
   useEffect(() => {
@@ -86,7 +83,8 @@ export default function AdminScreen() {
 
   if (!roleChecked) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Event admin" onBack={goBack} />
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -96,7 +94,8 @@ export default function AdminScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Event admin" onBack={goBack} />
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.subtitle}>
             {isPlatformAdmin
@@ -131,7 +130,14 @@ export default function AdminScreen() {
     { key: 'info', title: 'Edit info page', icon: FileText, href: '/profile/admin-info-page' },
     { key: 'points', title: 'Point rules', icon: Award, href: '/profile/admin-point-rules' },
     { key: 'schedule', title: 'Manage schedule', icon: CalendarDays, href: '/profile/admin-schedule' },
-    { key: 'vendor-booths', title: 'Vendor booths (B2B)', icon: Store, href: '/profile/admin-vendor-booths' },
+    { key: 'vendor-booths', title: 'Vendor booths (1:1 Meetings)', icon: Store, href: '/profile/admin-vendor-booths' },
+    {
+      key: 'meetings-web',
+      title: 'Assign 1:1 meetings (web)',
+      subtitle: 'Opens admin console — sign in there to schedule booth meetings',
+      icon: CalendarClock,
+      openExternal: adminConsoleMeetingsUrl(currentEvent.id),
+    },
     { key: 'vendor-performance', title: 'Vendor performance', icon: Award, href: '/profile/admin-vendor-performance' },
     { key: 'members', title: 'Manage members', icon: Users, href: '/profile/admin-members' },
     { key: 'posts', title: 'Moderate posts', icon: ImageIcon, href: '/profile/admin-posts' },
@@ -139,22 +145,36 @@ export default function AdminScreen() {
   ];
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader variant="back" title="Event admin" onBack={goBack} />
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.eventName}>{currentEvent.name}</Text>
         <View style={styles.menu}>
-          {menu.map(({ key, title, icon: Icon, href }) => (
-            <TouchableOpacity
-              key={key}
-              style={styles.menuRow}
-              onPress={() => router.push(href as any)}
-              activeOpacity={0.7}
-            >
-              <Icon size={22} color={colors.textSecondary} />
-              <Text style={styles.menuText}>{title}</Text>
-              <ChevronRight size={20} color={colors.textMuted} />
-            </TouchableOpacity>
-          ))}
+          {menu.map((item) => {
+            const Icon = item.icon;
+            const subtitle = 'subtitle' in item ? item.subtitle : undefined;
+            return (
+              <TouchableOpacity
+                key={item.key}
+                style={styles.menuRow}
+                onPress={() => {
+                  if ('openExternal' in item && item.openExternal) {
+                    Linking.openURL(item.openExternal).catch(() => {});
+                  } else if ('href' in item && item.href) {
+                    router.push(item.href as any);
+                  }
+                }}
+                activeOpacity={0.7}
+              >
+                <Icon size={22} color={colors.textSecondary} />
+                <View style={styles.menuTextCol}>
+                  <Text style={styles.menuText}>{item.title}</Text>
+                  {subtitle ? <Text style={styles.menuSubtitle}>{subtitle}</Text> : null}
+                </View>
+                <ChevronRight size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            );
+          })}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -179,5 +199,7 @@ const styles = StyleSheet.create({
   eventName: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: 20 },
   menu: { backgroundColor: colors.surface, borderRadius: 12, borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
   menuRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 16, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
-  menuText: { flex: 1, fontSize: 16, color: colors.text, fontWeight: '500' },
+  menuTextCol: { flex: 1, minWidth: 0 },
+  menuText: { fontSize: 16, color: colors.text, fontWeight: '500' },
+  menuSubtitle: { marginTop: 4, fontSize: 12, color: colors.textSecondary, lineHeight: 16 },
 });

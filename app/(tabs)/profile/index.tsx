@@ -10,24 +10,33 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
-  Pressable,
-  Modal,
   Dimensions,
   AppState,
   AppStateStatus,
 } from 'react-native';
+import Constants from 'expo-constants';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
-import { User, Mic, Store, ExternalLink, LogOut, Calendar, Building2, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle, Trash2, Lock } from 'lucide-react-native';
+import { ExternalLink, LogOut, Calendar, Building2, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle, Trash2, Lock, BookOpen } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
 import { addDebugLog } from '../../../lib/debugLog';
 import { colors } from '../../../constants/colors';
 import Avatar from '../../../components/Avatar';
+import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 
 const RESUME_REFETCH_DEBOUNCE_MS = 12000;
+
+function getAppVersionLabel(): string {
+  const marketing = Constants.expoConfig?.version?.trim() ?? '';
+  if (Constants.appOwnership === 'expo') {
+    return marketing ? `Version ${marketing} · Expo Go` : 'Expo Go';
+  }
+  if (marketing) return `Version ${marketing}`;
+  return '';
+}
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -45,8 +54,6 @@ export default function ProfileScreen() {
   const [postsCount, setPostsCount] = useState(0);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
   const [myRoles, setMyRoles] = useState<string[]>(['attendee']);
-  const [showRoleModal, setShowRoleModal] = useState(false);
-  const [roleSaving, setRoleSaving] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
 
   const fetchPointsAndRole = useCallback(async (): Promise<boolean> => {
@@ -84,9 +91,15 @@ export default function ProfileScreen() {
           const data = roleRes.data as { role?: string; roles?: string[] } | null;
           if (data) {
             const role = data.role ?? 'attendee';
-            const roles = Array.isArray(data.roles) ? data.roles : [];
-            setIsEventAdmin(role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin'));
-            setMyRoles(['attendee', 'speaker', 'vendor'].includes(role) ? [role] : ['attendee']);
+            const roles = Array.isArray(data.roles) && data.roles.length > 0 ? data.roles : role ? [role] : ['attendee'];
+            setIsEventAdmin(
+              role === 'admin' ||
+                role === 'super_admin' ||
+                roles.includes('admin') ||
+                roles.includes('super_admin') ||
+                user?.is_platform_admin === true
+            );
+            setMyRoles(roles);
           } else {
             // Platform admin viewing an event they're not a member of: still give admin access
             setIsEventAdmin(!!user?.is_platform_admin);
@@ -108,7 +121,7 @@ export default function ProfileScreen() {
     setIsEventAdmin(false);
     setMyRoles(['attendee']);
     return true;
-  }, [user?.id, currentEvent?.id]);
+  }, [user?.id, user?.is_platform_admin, currentEvent?.id]);
 
   const loadInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
@@ -248,62 +261,23 @@ export default function ProfileScreen() {
   };
 
   const ROLE_OPTIONS = [
-    { key: 'attendee', label: 'Attendee', icon: User },
-    { key: 'speaker', label: 'Speaker', icon: Mic },
-    { key: 'vendor', label: 'Vendor', icon: Store },
+    { key: 'attendee', label: 'Attendee' },
+    { key: 'speaker', label: 'Speaker' },
+    { key: 'vendor', label: 'Vendor' },
   ] as const;
-
-  const toggleRole = (key: string) => {
-    setMyRoles((prev) =>
-      prev.includes(key) ? prev.filter((r) => r !== key) : [...prev, key]
-    );
-  };
-
-  const handleSaveRoles = async () => {
-    if (!currentEvent?.id || !user?.id) return;
-    if (myRoles.length === 0) {
-      Alert.alert('Select at least one role', 'e.g. Attendee, Speaker, or Vendor.');
-      return;
-    }
-    // Users cannot remove their own admin role via Profile; only an event admin can do that
-    const { data: roleData } = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle();
-    if (!roleData) {
-      Alert.alert('Not a member', 'You are viewing this event as a platform admin. Use Event admin → Manage members to manage this event.');
-      return;
-    }
-    const currentRoles = Array.isArray(roleData.roles) ? roleData.roles : (roleData.role ? [roleData.role] : []);
-    const hasAdmin = currentRoles.includes('admin') || currentRoles.includes('super_admin');
-    const savingAdmin = myRoles.includes('admin') || myRoles.includes('super_admin');
-    if (hasAdmin && !savingAdmin) {
-      Alert.alert('Admin role', 'Only an event admin can change or remove your admin role. Go to Event admin → Manage members.');
-      return;
-    }
-    setRoleSaving(true);
-    try {
-      const newRoles = [...myRoles];
-      const newRole = newRoles[0] ?? 'attendee';
-      const { error } = await supabase
-        .from('event_members')
-        .update({ role: newRole, roles: newRoles })
-        .eq('event_id', currentEvent.id)
-        .eq('user_id', user.id);
-      if (error) throw error;
-      setShowRoleModal(false);
-    } catch (err) {
-      Alert.alert('Error', err instanceof Error ? err.message : 'Could not update role.');
-    } finally {
-      setRoleSaving(false);
-    }
-  };
 
   const roleLabel = (r: string) =>
     ROLE_OPTIONS.find((o) => o.key === r)?.label ?? (r === 'admin' || r === 'super_admin' ? 'Admin' : r);
 
   if (!user) return null;
 
+  const versionLabel = getAppVersionLabel();
+
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader variant="hamburger" title="Profile" />
       <ScrollView
+        style={{ flex: 1 }}
         contentContainerStyle={[styles.content, { minHeight: Dimensions.get('window').height + 2 }]}
         refreshControl={
           <RefreshControl
@@ -330,9 +304,7 @@ export default function ProfileScreen() {
             </Text>
           )}
           {user.bio ? (
-            <Text style={styles.bio} numberOfLines={3}>
-              {user.bio}
-            </Text>
+            <Text style={styles.bio}>{user.bio}</Text>
           ) : null}
           {user.linkedin_url ? (
             <TouchableOpacity
@@ -401,62 +373,19 @@ export default function ProfileScreen() {
               )}
             </View>
 
-            <TouchableOpacity
-              style={styles.roleCard}
-              onPress={() => !isEventAdmin && setShowRoleModal(true)}
-              activeOpacity={isEventAdmin ? 1 : 0.7}
-              disabled={isEventAdmin}
-            >
+            <View style={styles.roleCard}>
               <Text style={styles.roleLabel}>My roles for this event</Text>
               <View style={styles.roleRow}>
-                <Text style={styles.roleValue} numberOfLines={1}>
+                <Text style={styles.roleValue} numberOfLines={2}>
                   {myRoles.length ? myRoles.map(roleLabel).join(', ') : 'None'}
                 </Text>
-                {!isEventAdmin && <ChevronRight size={20} color={colors.textMuted} />}
               </View>
-              {isEventAdmin && (
-                <Text style={styles.roleHint}>Admins: change roles in Event admin → Manage members</Text>
-              )}
-            </TouchableOpacity>
+              <Text style={styles.roleHint}>
+                Only event or platform admins can change roles. They can do that in Event admin → Manage members.
+              </Text>
+            </View>
           </>
         )}
-
-        <Modal visible={showRoleModal} transparent animationType="fade">
-          <Pressable style={styles.modalOverlay} onPress={() => !roleSaving && setShowRoleModal(false)}>
-            <Pressable style={styles.roleModalContent} onPress={(e) => e.stopPropagation()}>
-              <Text style={styles.roleModalTitle}>Select your roles</Text>
-              <Text style={styles.roleModalSubtitle}>You can be a presenter and vendor (or more). Pick all that apply.</Text>
-              {ROLE_OPTIONS.map(({ key, label, icon: Icon }) => (
-                <TouchableOpacity
-                  key={key}
-                  style={[styles.roleOption, myRoles.includes(key) && styles.roleOptionActive]}
-                  onPress={() => toggleRole(key)}
-                  disabled={roleSaving}
-                >
-                  <Icon size={22} color={myRoles.includes(key) ? colors.textOnPrimary : colors.textSecondary} />
-                  <Text style={[styles.roleOptionText, myRoles.includes(key) && styles.roleOptionTextActive]}>
-                    {label}
-                  </Text>
-                  {myRoles.includes(key) && <Text style={styles.roleOptionCheck}>✓</Text>}
-                </TouchableOpacity>
-              ))}
-              <TouchableOpacity
-                style={[styles.roleModalClose, styles.roleModalSave]}
-                onPress={handleSaveRoles}
-                disabled={roleSaving || myRoles.length === 0}
-              >
-                <Text style={[styles.roleModalCloseText, styles.roleModalSaveText]}>Save</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.roleModalClose}
-                onPress={() => setShowRoleModal(false)}
-                disabled={roleSaving}
-              >
-                <Text style={styles.roleModalCloseText}>Cancel</Text>
-              </TouchableOpacity>
-            </Pressable>
-          </Pressable>
-        </Modal>
 
         <View style={styles.menu}>
           <TouchableOpacity
@@ -475,6 +404,15 @@ export default function ProfileScreen() {
           >
             <Lock size={22} color={colors.textSecondary} />
             <Text style={styles.menuText}>Change password</Text>
+            <ChevronRight size={20} color={colors.textMuted} />
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.menuRow}
+            onPress={() => router.push('/profile/user-guide' as any)}
+            activeOpacity={0.7}
+          >
+            <BookOpen size={22} color={colors.textSecondary} />
+            <Text style={styles.menuText}>How to use</Text>
             <ChevronRight size={20} color={colors.textMuted} />
           </TouchableOpacity>
           <TouchableOpacity
@@ -558,6 +496,12 @@ export default function ProfileScreen() {
             </>
           )}
         </TouchableOpacity>
+
+        {versionLabel ? (
+          <Text style={styles.versionFootnote} accessibilityLabel={`App version ${versionLabel}`}>
+            {versionLabel}
+          </Text>
+        ) : null}
       </ScrollView>
     </SafeAreaView>
   );
@@ -600,6 +544,7 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: 13,
     color: colors.textMuted,
+    textAlign: 'center',
     marginBottom: 8,
   },
   bio: {
@@ -607,6 +552,7 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
     lineHeight: 20,
+    alignSelf: 'stretch',
   },
   linkedinBtn: {
     flexDirection: 'row',
@@ -644,6 +590,13 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.textMuted,
     marginTop: 2,
+  },
+  versionFootnote: {
+    fontSize: 12,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 8,
   },
   menu: {
     backgroundColor: colors.surface,

@@ -1,6 +1,26 @@
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
-import { supabase } from './supabase';
+import { InteractionManager, Platform } from 'react-native';
+import { supabase, supabaseStorage } from './supabase';
+import { ensureAndroidNotificationChannel } from './notificationChannel';
+
+/**
+ * First-time sign-in fires registerPushToken from auth before the login screen finishes
+ * navigating away. requestPermissionsAsync() pauses the Android activity; prompting here
+ * can block the transition so users must tap Sign in again. Wait until interactions
+ * (and on Android a short beat) complete before showing the system permission UI.
+ */
+function waitUntilSafeToPromptForNotificationPermission(): Promise<void> {
+  return new Promise((resolve) => {
+    InteractionManager.runAfterInteractions(() => {
+      if (Platform.OS === 'android') {
+        setTimeout(resolve, 450);
+      } else {
+        resolve();
+      }
+    });
+  });
+}
 
 /**
  * Set the app icon badge count (red dot number). Call with 0 to clear.
@@ -31,10 +51,19 @@ export async function registerPushToken(userId: string): Promise<void> {
     const { status: existing } = await Notifications.getPermissionsAsync();
     let final = existing;
     if (existing !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
+      await waitUntilSafeToPromptForNotificationPermission();
+      const { status } = await Notifications.requestPermissionsAsync({
+        ios: {
+          allowAlert: true,
+          allowBadge: true,
+          allowSound: true,
+        },
+      });
       final = status;
     }
     if (final !== 'granted') return;
+
+    await ensureAndroidNotificationChannel();
 
     const tokenResult = await Notifications.getExpoPushTokenAsync({
       projectId: Constants.expoConfig?.extra?.eas?.projectId ?? undefined,
@@ -45,7 +74,9 @@ export async function registerPushToken(userId: string): Promise<void> {
       return;
     }
 
-    const { error } = await supabase.from('users').update({ push_token: token }).eq('id', userId);
+    // Android: use default-fetch client — same pattern as home/schedule/post; safeFetch can fail/time out so token never saves.
+    const db = Platform.OS === 'android' ? supabaseStorage : supabase;
+    const { error } = await db.from('users').update({ push_token: token }).eq('id', userId);
     if (error) {
       console.warn('[push] Could not save push_token to profile:', error.message);
       return;

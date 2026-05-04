@@ -113,7 +113,7 @@ export default function AdminDeleteUserScreen() {
 
   if (!user) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Sign in to continue.</Text>
         </View>
@@ -123,7 +123,7 @@ export default function AdminDeleteUserScreen() {
 
   if (!isPlatformAdmin) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Only platform admins can delete user accounts.</Text>
         </View>
@@ -132,7 +132,7 @@ export default function AdminDeleteUserScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <View style={styles.searchWrap}>
         <Search size={18} color={colors.textMuted} />
         <TextInput

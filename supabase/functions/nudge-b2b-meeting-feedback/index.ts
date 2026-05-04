@@ -5,6 +5,15 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const ANDROID_CHANNEL_ID = "collectivelive_notifications_v2";
+
+const EXPO_BANNER_FIELDS = {
+  sound: "default",
+  priority: "high",
+  channelId: ANDROID_CHANNEL_ID,
+  badge: 1,
+  vibrate: true,
+} as const;
+
 const NUDGE_WINDOW_START_MINS = 5;  // nudge 5 mins after meeting end
 const NUDGE_WINDOW_END_MINS = 24 * 60; // up to 24 hours after
 
@@ -149,10 +158,7 @@ Deno.serve(async (req: Request) => {
         bookingId: booking.id,
         url: `collectivelive://expo/${slot.booth_id}`,
       },
-      sound: "default",
-      priority: "high",
-      channelId: ANDROID_CHANNEL_ID,
-      badge: 1,
+      ...EXPO_BANNER_FIELDS,
     }];
 
     try {

@@ -218,7 +218,7 @@ export default function AdminVendorBoothEditScreen() {
 
   if (loading && !isNew) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.centered}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -227,7 +227,7 @@ export default function AdminVendorBoothEditScreen() {
   }
 
   return (
-    <SafeAreaView style={s.container} edges={['bottom']}>
+    <SafeAreaView style={s.container} edges={[]}>
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={s.flex}>
         <ScrollView contentContainerStyle={s.scrollContent} keyboardShouldPersistTaps="handled">
           <Text style={s.label}>Vendor name *</Text>

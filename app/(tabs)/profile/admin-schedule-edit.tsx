@@ -528,7 +528,7 @@ export default function AdminScheduleEditScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Select an event first.</Text>
         </View>
@@ -538,7 +538,7 @@ export default function AdminScheduleEditScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -547,27 +547,29 @@ export default function AdminScheduleEditScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}>
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
-        <View style={styles.csvRow}>
-          <TouchableOpacity
-            style={[styles.csvBtn, downloadTemplateBusy && styles.csvBtnDisabled]}
-            onPress={handleDownloadTemplate}
-            disabled={downloadTemplateBusy}
-          >
-            {downloadTemplateBusy ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <Download size={18} color={colors.primary} />
-            )}
-            <Text style={styles.csvBtnText}>{downloadTemplateBusy ? 'Preparing…' : 'Download template'}</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.csvBtn} onPress={handleUploadCSV}>
-            <Upload size={18} color={colors.primary} />
-            <Text style={styles.csvBtnText}>Upload CSV</Text>
-          </TouchableOpacity>
-        </View>
+        {isEdit ? (
+          <View style={styles.csvRow}>
+            <TouchableOpacity
+              style={[styles.csvBtn, downloadTemplateBusy && styles.csvBtnDisabled]}
+              onPress={handleDownloadTemplate}
+              disabled={downloadTemplateBusy}
+            >
+              {downloadTemplateBusy ? (
+                <ActivityIndicator size="small" color={colors.primary} />
+              ) : (
+                <Download size={18} color={colors.primary} />
+              )}
+              <Text style={styles.csvBtnText}>{downloadTemplateBusy ? 'Preparing…' : 'Download template'}</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.csvBtn} onPress={handleUploadCSV}>
+              <Upload size={18} color={colors.primary} />
+              <Text style={styles.csvBtnText}>Upload CSV</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
         <Text style={styles.label}>Title *</Text>
         <TextInput
           style={styles.input}

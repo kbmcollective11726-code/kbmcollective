@@ -1,12 +1,14 @@
 import { Stack } from 'expo-router';
 import { colors } from '../../constants/colors';
+import { flatNativeStackHeaderStyle } from '../../constants/headerStyle';
 
 export default function AuthLayout() {
   return (
     <Stack
       screenOptions={{
         headerShown: true,
-        headerStyle: { backgroundColor: colors.background },
+        headerStyle: flatNativeStackHeaderStyle,
+        headerShadowVisible: false,
         headerTintColor: colors.text,
         headerTitleAlign: 'left',
         headerBackVisible: true,

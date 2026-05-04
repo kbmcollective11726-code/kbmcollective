@@ -4,8 +4,16 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
-// Must match NOTIFICATION_CHANNEL_ID in app/_layout.tsx for sound + vibration on Android.
+// Must match app lib/notificationChannel.ts
 const ANDROID_CHANNEL_ID = "collectivelive_notifications_v2";
+
+const EXPO_BANNER_FIELDS = {
+  sound: "default",
+  priority: "high",
+  channelId: ANDROID_CHANNEL_ID,
+  badge: 1,
+  vibrate: true,
+} as const;
 
 interface AnnouncementRow {
   id: string;
@@ -80,17 +88,16 @@ Deno.serve(async (req: Request) => {
         .in("id", recipientIds)
         .not("push_token", "is", null);
 
-      const tokens = (users ?? []).map((u: { push_token: string }) => u.push_token).filter(Boolean);
+      const tokens = Array.from(
+        new Set((users ?? []).map((u: { push_token: string }) => u.push_token).filter(Boolean)),
+      );
       if (tokens.length > 0) {
         const messages = tokens.map((to: string) => ({
           to,
           title: row.title,
           body: (row.content ?? "").slice(0, 200),
           data: { event_id: row.event_id },
-          sound: "default",
-          priority: "high",
-          channelId: ANDROID_CHANNEL_ID,
-          badge: 1,
+          ...EXPO_BANNER_FIELDS,
         }));
         const pushRes = await fetch(EXPO_PUSH_URL, {
           method: "POST",

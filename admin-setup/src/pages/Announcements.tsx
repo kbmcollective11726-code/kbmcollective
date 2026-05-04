@@ -1,13 +1,14 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
-import { supabase, supabaseUrl } from '../lib/supabase';
+import { supabase, supabaseUrl, edgeFunctionHeaders } from '../lib/supabase';
+import { refreshSupabaseSessionIfNeeded } from '../lib/refreshSupabaseSession';
 import type { Event } from '../lib/types';
 import styles from './Announcements.module.css';
 
 type TargetType = 'all' | 'audience' | 'specific';
 type AudienceRole = 'attendee' | 'speaker' | 'vendor';
 
-type EventMemberOption = { user_id: string; full_name: string; role: string };
+type EventMemberOption = { user_id: string; full_name: string; role: string; roles: string[] };
 
 type AnnouncementRow = {
   id: string;
@@ -47,6 +48,7 @@ export default function Announcements() {
   const [scheduleNow, setScheduleNow] = useState(true);
   const [scheduledLocal, setScheduledLocal] = useState(() => toDatetimeLocalValue(new Date(Date.now() + 60 * 60 * 1000)));
   const [memberOptions, setMemberOptions] = useState<EventMemberOption[]>([]);
+  const [userSearch, setUserSearch] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -92,18 +94,31 @@ export default function Announcements() {
         .neq('role', 'super_admin');
       if (data) {
         setMemberOptions(
-          (data as unknown as { user_id: string; role: string; users: { full_name: string } }[]).map((r) => ({
+          (
+            data as unknown as { user_id: string; role: string; roles?: string[] | null; users: { full_name: string } }[]
+          ).map((r) => ({
             user_id: r.user_id,
             full_name:
               r.users && typeof r.users === 'object' && 'full_name' in r.users
                 ? (r.users as { full_name: string }).full_name
                 : 'Unknown',
             role: r.role,
+            roles: Array.isArray(r.roles) && r.roles.length > 0 ? r.roles : [r.role],
           }))
         );
       }
     })();
   }, [eventId]);
+
+  const filteredMembers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return memberOptions;
+    return memberOptions.filter(
+      (m) =>
+        m.full_name.toLowerCase().includes(q) ||
+        m.role.toLowerCase().includes(q)
+    );
+  }, [memberOptions, userSearch]);
 
   const toggleAudienceRole = (role: AudienceRole) => {
     setAudienceRoles((prev) => (prev.includes(role) ? prev.filter((r) => r !== role) : [...prev, role]));
@@ -117,18 +132,17 @@ export default function Announcements() {
     if (!eventId) return [];
     if (targetType === 'all') {
       const { data } = await supabase.from('event_members').select('user_id').eq('event_id', eventId);
-      return (data ?? []).map((r: { user_id: string }) => r.user_id);
+      return [...new Set((data ?? []).map((r: { user_id: string }) => r.user_id))];
     }
     if (targetType === 'audience' && audienceRoles.length > 0) {
-      const { data } = await supabase
-        .from('event_members')
-        .select('user_id')
-        .eq('event_id', eventId)
-        .in('role', audienceRoles);
-      return (data ?? []).map((r: { user_id: string }) => r.user_id);
+      const selected = new Set(audienceRoles);
+      const ids = memberOptions
+        .filter((m) => m.roles.some((role) => selected.has(role as AudienceRole)))
+        .map((m) => m.user_id);
+      return [...new Set(ids)];
     }
     if (targetType === 'specific' && selectedUserIds.length > 0) {
-      return selectedUserIds;
+      return [...new Set(selectedUserIds)];
     }
     return [];
   };
@@ -158,8 +172,15 @@ export default function Announcements() {
     setError('');
     setSending(true);
     try {
+      await refreshSupabaseSessionIfNeeded();
       const { data: { session } } = await supabase.auth.getSession();
       if (!session?.user?.id) throw new Error('Not signed in');
+
+      const targetMeta = {
+        target_type: targetType,
+        target_audience: targetType === 'audience' ? audienceRoles : null,
+        target_user_ids: targetType === 'specific' ? selectedUserIds : null,
+      } as const;
 
       const basePayload = {
         event_id: eventId,
@@ -168,6 +189,7 @@ export default function Announcements() {
         priority: priority || 'normal',
         send_push: scheduleNow ? sendPush : false,
         sent_by: session.user.id,
+        ...targetMeta,
       };
 
       if (scheduleNow) {
@@ -185,33 +207,66 @@ export default function Announcements() {
             data: {},
           });
         }
+        let pushNote = '';
         if (sendPush && recipientIds.length > 0 && session.access_token) {
-          const pushRes = await fetch(`${supabaseUrl}/functions/v1/send-announcement-push`, {
+          const pushBody = {
+            event_id: eventId,
+            title: title.trim(),
+            body: content.trim(),
+            recipient_user_ids: recipientIds,
+          };
+          let activeToken = session.access_token;
+          let pushRes = await fetch(`${supabaseUrl}/functions/v1/send-announcement-push`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
-            body: JSON.stringify({
-              event_id: eventId,
-              title: title.trim(),
-              body: content.trim(),
-              recipient_user_ids: recipientIds,
-            }),
+            headers: edgeFunctionHeaders(activeToken),
+            body: JSON.stringify(pushBody),
           });
-          if (!pushRes.ok) {
-            const t = await pushRes.text();
-            console.warn('Push send warning:', t);
+          // Access token may expire while admin page is open; refresh once and retry.
+          if (pushRes.status === 401) {
+            await supabase.auth.refreshSession();
+            const { data: refreshed } = await supabase.auth.getSession();
+            if (refreshed.session?.access_token) {
+              activeToken = refreshed.session.access_token;
+              pushRes = await fetch(`${supabaseUrl}/functions/v1/send-announcement-push`, {
+                method: 'POST',
+                headers: edgeFunctionHeaders(activeToken),
+                body: JSON.stringify(pushBody),
+              });
+            }
           }
+
+          const pushText = await pushRes.text();
+          let pushData: { sent?: number; error?: string; message?: string; ticket_errors?: string[] } = {};
+          try {
+            pushData = pushText ? (JSON.parse(pushText) as typeof pushData) : {};
+          } catch {
+            /* non-JSON error body */
+          }
+          if (!pushRes.ok) {
+            pushNote = ` Device push failed (${pushRes.status}): ${pushData.error || pushText.slice(0, 180)}`;
+            console.warn('Push send warning:', pushText);
+          } else {
+            const n = pushData.sent ?? 0;
+            if (n === 0) {
+              pushNote = ` No device push — ${pushData.message || 'no Expo push tokens for these users (open the app on a store/EAS build, allow notifications; check users.push_token in Supabase).'}`;
+            } else {
+              pushNote = ` Device push OK for ${n} token(s).`;
+              if (pushData.ticket_errors?.length) {
+                pushNote += ` Expo: ${pushData.ticket_errors.slice(0, 2).join('; ')}`;
+              }
+            }
+          }
+        } else if (sendPush && recipientIds.length > 0 && !session.access_token) {
+          pushNote = ' Device push skipped (no access token — refresh the page and sign in again).';
         }
         setSuccess(
-          `Sent to ${recipientIds.length} recipient(s)${sendPush ? ' (push requested where users have tokens).' : '.'}`
+          `In-app notification to ${recipientIds.length} recipient(s).${sendPush ? pushNote : ''}`
         );
       } else {
         const scheduledAt = scheduledDate.toISOString();
         const { error: insertErr } = await supabase.from('announcements').insert({
           ...basePayload,
           scheduled_at: scheduledAt,
-          target_type: targetType,
-          target_audience: targetType === 'audience' ? audienceRoles : null,
-          target_user_ids: targetType === 'specific' ? selectedUserIds : null,
         });
         if (insertErr) {
           const columnMissing =
@@ -294,7 +349,10 @@ export default function Announcements() {
               key={t}
               type="button"
               className={`${styles.chip} ${targetType === t ? styles.chipActive : ''}`}
-              onClick={() => setTargetType(t)}
+              onClick={() => {
+                setTargetType(t);
+                if (t !== 'specific') setUserSearch('');
+              }}
             >
               {t === 'all' ? 'All' : t === 'audience' ? 'By role' : 'Specific'}
             </button>
@@ -317,19 +375,45 @@ export default function Announcements() {
         )}
 
         {targetType === 'specific' && (
-          <div className={styles.userList}>
-            {memberOptions.slice(0, 50).map((m) => (
-              <button
-                key={m.user_id}
-                type="button"
-                className={`${styles.userRow} ${selectedUserIds.includes(m.user_id) ? styles.userRowSelected : ''}`}
-                onClick={() => toggleUserSelection(m.user_id)}
-              >
-                <span className={styles.userName}>{m.full_name}</span>
-                <span className={styles.userRole}>{m.role}</span>
-              </button>
-            ))}
-            {memberOptions.length > 50 && <p className={styles.listHint}>Showing first 50 members</p>}
+          <div className={styles.specificWrap}>
+            <label className={styles.srOnly} htmlFor="announcement-user-search">
+              Search members
+            </label>
+            <input
+              id="announcement-user-search"
+              type="search"
+              className={styles.searchInput}
+              value={userSearch}
+              onChange={(e) => setUserSearch(e.target.value)}
+              placeholder="Search by name or role…"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <p className={styles.listHint}>
+              {filteredMembers.length === memberOptions.length
+                ? `${memberOptions.length} member${memberOptions.length === 1 ? '' : 's'}`
+                : `${filteredMembers.length} of ${memberOptions.length} shown`}
+              {selectedUserIds.length > 0 ? ` · ${selectedUserIds.length} selected` : ''}
+            </p>
+            <div className={styles.userList}>
+              {filteredMembers.map((m) => (
+                <button
+                  key={m.user_id}
+                  type="button"
+                  className={`${styles.userRow} ${selectedUserIds.includes(m.user_id) ? styles.userRowSelected : ''}`}
+                  onClick={() => toggleUserSelection(m.user_id)}
+                >
+                  <span className={styles.userName}>{m.full_name}</span>
+                  <span className={styles.userRole}>{m.role}</span>
+                </button>
+              ))}
+              {filteredMembers.length === 0 && memberOptions.length > 0 && (
+                <p className={styles.searchEmpty}>No members match your search.</p>
+              )}
+              {memberOptions.length === 0 && (
+                <p className={styles.searchEmpty}>No members loaded for this event.</p>
+              )}
+            </div>
           </div>
         )}
 

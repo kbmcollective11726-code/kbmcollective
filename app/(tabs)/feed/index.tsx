@@ -28,11 +28,13 @@ import { addDebugLog } from '../../../lib/debugLog';
 import { awardPoints } from '../../../lib/points';
 import { createNotificationAndPush } from '../../../lib/notifications';
 import { withRefreshTimeout } from '../../../lib/refreshWithTimeout';
-import type { Post } from '../../../lib/types';
+import { selectAllInPages, chunkIds, SUPABASE_SELECT_PAGE_SIZE } from '../../../lib/supabaseSelectAllPages';
+import type { EventSponsor, Post } from '../../../lib/types';
 import { Camera } from 'lucide-react-native';
 import { colors } from '../../../constants/colors';
 import PostCard from '../../../components/PostCard';
 import CommentSheet from '../../../components/CommentSheet';
+import CompactSponsorStrip from '../../../components/CompactSponsorStrip';
 
 export default function FeedScreen() {
   const { user } = useAuthStore();
@@ -47,6 +49,7 @@ export default function FeedScreen() {
   const [expandedImagePost, setExpandedImagePost] = useState<Post | null>(null);
   const [likingPostId, setLikingPostId] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [feedSponsors, setFeedSponsors] = useState<EventSponsor[]>([]);
   const fetchPostsRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const fetchPosts = useCallback(async () => {
     const eventId = useEventStore.getState().currentEvent?.id;
@@ -59,34 +62,42 @@ export default function FeedScreen() {
     setFetchError(null);
     try {
       await withRetryAndRefresh(async () => {
-        const { data: postsData, error } = await supabase
-          .from('posts')
-          .select('id, event_id, user_id, image_url, caption, image_hash, likes_count, comments_count, is_pinned, is_approved, is_deleted, created_at, user:users(id, full_name, avatar_url)')
-          .eq('event_id', eventId)
-          .eq('is_deleted', false)
-          .eq('is_approved', true)
-          .order('is_pinned', { ascending: false })
-          .order('created_at', { ascending: false })
-          .limit(30);
+        const postsData = await selectAllInPages<Record<string, unknown>>(SUPABASE_SELECT_PAGE_SIZE, async (from, to) => {
+          const res = await supabase
+            .from('posts')
+            .select(
+              'id, event_id, user_id, image_url, caption, image_hash, likes_count, comments_count, is_pinned, is_approved, is_deleted, created_at, user:users(id, full_name, avatar_url)'
+            )
+            .eq('event_id', eventId)
+            .eq('is_deleted', false)
+            .eq('is_approved', true)
+            .order('is_pinned', { ascending: false })
+            .order('created_at', { ascending: false })
+            .range(from, to);
+          return res;
+        });
 
-        if (error) throw error;
-
-        const raw = postsData ?? [];
-        const normalized: Post[] = raw.map((p: Record<string, unknown>) => ({
+        const raw = postsData;
+        const normalized: Post[] = raw.map((p) => ({
           ...p,
           user: Array.isArray(p.user) ? (p.user[0] ?? null) : p.user,
         })) as Post[];
 
         const postIds = normalized.map((p) => p.id);
-        let likedSet = new Set<string>();
+        const likedSet = new Set<string>();
+        const LIKES_IN_CHUNK = 120;
         if (postIds.length > 0) {
-          const { data: likesData, error: likesError } = await supabase
-            .from('likes')
-            .select('post_id')
-            .eq('user_id', user.id)
-            .in('post_id', postIds);
-          if (!likesError) {
-            likedSet = new Set((likesData ?? []).map((l: { post_id: string }) => l.post_id));
+          for (const idChunk of chunkIds(postIds, LIKES_IN_CHUNK)) {
+            const { data: likesData, error: likesError } = await supabase
+              .from('likes')
+              .select('post_id')
+              .eq('user_id', user.id)
+              .in('post_id', idChunk);
+            if (!likesError) {
+              for (const row of likesData ?? []) {
+                likedSet.add((row as { post_id: string }).post_id);
+              }
+            }
           }
         }
 
@@ -110,6 +121,34 @@ export default function FeedScreen() {
     }
   }, [user?.id, blockedUserIds]);
   fetchPostsRef.current = fetchPosts;
+
+  const loadFeedSponsors = useCallback(async () => {
+    const eventId = useEventStore.getState().currentEvent?.id;
+    if (!eventId) {
+      setFeedSponsors([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('event_sponsors')
+      .select('id, company_name, logo_url, website_url, tier_label, sort_order, show_on_feed, is_active')
+      .eq('event_id', eventId)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+    if (error) {
+      setFeedSponsors([]);
+      return;
+    }
+    const rows = (data ?? []) as EventSponsor[];
+    setFeedSponsors(rows.filter((r) => r.show_on_feed));
+  }, []);
+
+  useEffect(() => {
+    if (!currentEvent?.id) {
+      setFeedSponsors([]);
+      return;
+    }
+    void loadFeedSponsors();
+  }, [currentEvent?.id, loadFeedSponsors]);
 
   useEffect(() => {
     if (user?.id) fetchBlockedUsers(user.id);
@@ -333,6 +372,7 @@ export default function FeedScreen() {
     addDebugLog('Feed', 'Pull-to-refresh started');
     try {
       await loadFeedWithRetry();
+      await loadFeedSponsors();
       addDebugLog('Feed', 'Pull-to-refresh finished');
     } catch (e) {
       addDebugLog('Feed', 'Pull-to-refresh failed', getErrorMessage(e));
@@ -343,7 +383,7 @@ export default function FeedScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholderWrap}>
         <View style={styles.placeholder}>
           <View style={styles.placeholderIconWrap}>
@@ -359,7 +399,7 @@ export default function FeedScreen() {
 
   // Always show Feed layout (header + list) so the tab "loads" immediately; loading/error live in the empty state.
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <FlatList
         data={posts}
         keyExtractor={(item) => item.id}
@@ -369,6 +409,9 @@ export default function FeedScreen() {
         maxToRenderPerBatch={8}
         windowSize={6}
         removeClippedSubviews={true}
+        ListHeaderComponent={
+          feedSponsors.length > 0 ? <CompactSponsorStrip sponsors={feedSponsors} /> : null
+        }
         ListEmptyComponent={
           <View style={styles.placeholder}>
             {loading ? (
@@ -489,7 +532,7 @@ const styles = StyleSheet.create({
   },
   list: {
     paddingHorizontal: 0,
-    paddingTop: 16,
+    paddingTop: 8,
     paddingBottom: 32,
   },
   imageModalOverlay: {

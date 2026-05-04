@@ -16,6 +16,7 @@ import {
   ActivityIndicator,
   AppState,
   AppStateStatus,
+  InteractionManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
@@ -68,11 +69,11 @@ function formatDayKey(key: string, index: number): string {
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { awardPoints } from '../../lib/points';
-import { supabase, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
+import { supabase, supabaseStorage, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { colors, sessionTypeColors } from '../../constants/colors';
-import { theme } from '../../constants/theme';
-import type { ScheduleSession, SessionRating } from '../../lib/types';
+import type { EventSponsor, ScheduleSession, SessionRating } from '../../lib/types';
+import CompactSponsorStrip from '../../components/CompactSponsorStrip';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
 import {
   isSessionLiveWallClockOnEventDay,
@@ -96,6 +97,8 @@ export type B2BMeetingItem = {
   dateKey: string;
   /** true when current user is the vendor (so they cannot rate) */
   isVendorMeeting?: boolean;
+  /** Event / platform admin viewing all bookings for the event (not eligible to rate as attendee). */
+  isAdminOverview?: boolean;
 };
 
 type AgendaListItem = SessionWithBookmarked | B2BMeetingItem;
@@ -113,12 +116,88 @@ function agendaItemSortKey(item: AgendaListItem, eventDateKey: string): number {
   return wall?.getTime() ?? start.getTime();
 }
 
+/** Start key aligned with Agenda's wall-clock rules (schedule) vs real instant rules (B2B). */
+function agendaItemStartKey(item: AgendaListItem, eventDateKey: string): number {
+  const start = parseDate(item.start_time);
+  if (!start) return Number.NaN;
+  if (isB2BItem(item)) return start.getTime();
+  return sessionInstantOnEventDayLocal(start, eventDateKey)?.getTime() ?? start.getTime();
+}
+
+/** End key aligned with Agenda's wall-clock rules (schedule) vs real instant rules (B2B). */
+function agendaItemEndKey(item: AgendaListItem, eventDateKey: string): number {
+  const end = parseDate(item.end_time);
+  if (!end) return Number.NaN;
+  if (isB2BItem(item)) return end.getTime();
+  return sessionInstantOnEventDayLocal(end, eventDateKey)?.getTime() ?? end.getTime();
+}
+
 /** Scroll target: schedule rows use wall-clock end on `eventDateKey`; B2B slots use real ISO end. */
 function agendaItemNotYetEnded(now: Date, item: AgendaListItem, eventDateKey: string): boolean {
   const end = parseDate(item.end_time);
   if (!end) return false;
   if (isB2BItem(item)) return isSessionNotYetEndedInstant(now, end);
   return isSessionNotYetEndedWallClockOnEventDay(now, end, eventDateKey);
+}
+
+/**
+ * Pick the best "Now" target index for agenda lists.
+ * Priority:
+ * 1) live item that started most recently (closest start <= now)
+ * 2) next upcoming item
+ * 3) last past item
+ */
+function getBestAgendaNowIndex(now: Date, list: AgendaListItem[], eventDateKey: string): number {
+  if (list.length === 0) return -1;
+
+  let bestLiveIdx = -1;
+  let bestLiveStart = Number.NEGATIVE_INFINITY;
+  let bestUpcomingIdx = -1;
+  let bestUpcomingStart = Number.POSITIVE_INFINITY;
+  let bestPastIdx = -1;
+  let bestPastEnd = Number.NEGATIVE_INFINITY;
+
+  for (let i = 0; i < list.length; i += 1) {
+    const item = list[i];
+    const start = parseDate(item.start_time);
+    const end = parseDate(item.end_time);
+    if (!start || !end) continue;
+    const startMs = agendaItemStartKey(item, eventDateKey);
+    const endMs = agendaItemEndKey(item, eventDateKey);
+    if (Number.isNaN(startMs) || Number.isNaN(endMs)) continue;
+
+    const isLive = isB2BItem(item)
+      ? isSessionLiveInstant(now, start, end)
+      : isSessionLiveWallClockOnEventDay(now, start, end, eventDateKey);
+
+    if (isLive) {
+      if (startMs <= now.getTime() && startMs > bestLiveStart) {
+        bestLiveStart = startMs;
+        bestLiveIdx = i;
+      }
+      continue;
+    }
+
+    const notYetEnded = isB2BItem(item)
+      ? isSessionNotYetEndedInstant(now, end)
+      : isSessionNotYetEndedWallClockOnEventDay(now, end, eventDateKey);
+
+    if (notYetEnded) {
+      if (startMs < bestUpcomingStart) {
+        bestUpcomingStart = startMs;
+        bestUpcomingIdx = i;
+      }
+    } else {
+      if (endMs > bestPastEnd) {
+        bestPastEnd = endMs;
+        bestPastIdx = i;
+      }
+    }
+  }
+
+  if (bestLiveIdx >= 0) return bestLiveIdx;
+  if (bestUpcomingIdx >= 0) return bestUpcomingIdx;
+  return bestPastIdx;
 }
 
 function getSessionDateKey(iso: string | null | undefined): string | null {
@@ -229,8 +308,10 @@ export default function ScheduleScreen() {
   const [showSavedOnly, setShowSavedOnly] = useState(false);
   const [b2bMeetings, setB2bMeetings] = useState<B2BMeetingItem[]>([]);
   const listRef = useRef<FlatList>(null);
+  const pendingScrollIndexRef = useRef<number | null>(null);
   // Session rating (modal): current user's rating/comment and aggregate stats for admins
   const [myRating, setMyRating] = useState<SessionRating | null>(null);
+  const [ratedSessionIds, setRatedSessionIds] = useState<Set<string>>(new Set());
   const [ratingDraft, setRatingDraft] = useState<number | null>(null);
   const [commentDraft, setCommentDraft] = useState('');
   const [ratingStats, setRatingStats] = useState<{ avg_rating: number | null; count: number } | null>(null);
@@ -239,10 +320,45 @@ export default function ScheduleScreen() {
   const [ratingJustSaved, setRatingJustSaved] = useState(false);
   /** Recompute "Live now" badges every minute (wall-clock vs device local). */
   const [liveTick, setLiveTick] = useState(0);
+  const [scheduleSponsors, setScheduleSponsors] = useState<EventSponsor[]>([]);
   useEffect(() => {
     const id = setInterval(() => setLiveTick((t) => t + 1), 60_000);
     return () => clearInterval(id);
   }, []);
+
+  const loadScheduleSponsors = React.useCallback(async () => {
+    if (!currentEvent?.id) {
+      setScheduleSponsors([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('event_sponsors')
+      .select(
+        'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_schedule, is_active'
+      )
+      .eq('event_id', currentEvent.id)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+    if (error) {
+      setScheduleSponsors([]);
+      return;
+    }
+    const rows = (data ?? []) as EventSponsor[];
+    setScheduleSponsors(rows.filter((r) => r.show_on_schedule));
+  }, [currentEvent?.id]);
+
+  useEffect(() => {
+    void loadScheduleSponsors();
+  }, [loadScheduleSponsors]);
+
+  /** Same rule as agenda "live" / end time: rating only after the session has ended on its event day. */
+  const canRateSelectedSession = useMemo(() => {
+    if (!selectedSession) return false;
+    if (selectedSession.ratings_enabled === false) return false;
+    const sessionDayKey = getSessionDateKey(selectedSession.start_time);
+    if (!sessionDayKey) return false;
+    return !agendaItemNotYetEnded(new Date(), selectedSession, sessionDayKey);
+  }, [selectedSession, liveTick]);
 
   const fetchInProgressRef = useRef(false);
   const fetchSessions = async () => {
@@ -257,9 +373,10 @@ export default function ScheduleScreen() {
     setFetchError(null);
     try {
       await withRetryAndRefresh(async () => {
+        // Use * so the app still loads if `ratings_enabled` migration is not applied yet; optional field in types.
         const { data, error } = await supabase
           .from('schedule_sessions')
-          .select('id, event_id, title, description, speaker_name, speaker_title, speaker_photo, speakers, location, room, start_time, end_time, day_number, track, session_type, is_active, sort_order')
+          .select('*')
           .eq('event_id', currentEvent.id)
           .eq('is_active', true)
           .order('day_number', { ascending: true })
@@ -296,8 +413,9 @@ export default function ScheduleScreen() {
 
   const fetchIsAdmin = async () => {
     if (!user?.id || !currentEvent?.id) return;
+    const db = Platform.OS === 'android' ? supabaseStorage : supabase;
     try {
-      const { data } = await supabase
+      const { data } = await db
         .from('event_members')
         .select('role, roles')
         .eq('event_id', currentEvent.id)
@@ -317,12 +435,98 @@ export default function ScheduleScreen() {
       setB2bMeetings([]);
       return;
     }
+    const db = Platform.OS === 'android' ? supabaseStorage : supabase;
     try {
       type SlotRow = { slot_id: string; meeting_slots: { booth_id: string; start_time: string; end_time: string } | null };
       type BookingRow = { slot_id: string; attendee_id: string; meeting_slots: { booth_id: string; start_time: string; end_time: string } | null };
 
-      // 1) Meetings where current user is the attendee
-      const { data: myBookings } = await supabase
+      const { data: emAdmin } = await db
+        .from('event_members')
+        .select('role, roles')
+        .eq('event_id', currentEvent.id)
+        .eq('user_id', user.id)
+        .maybeSingle();
+      const emRow = emAdmin as { role?: string; roles?: string[] } | null;
+      const emRole = emRow?.role;
+      const emRoles = Array.isArray(emRow?.roles) ? emRow.roles : [];
+      const isEventAdminUser =
+        user?.is_platform_admin === true ||
+        emRole === 'admin' ||
+        emRole === 'super_admin' ||
+        emRoles.includes('admin') ||
+        emRoles.includes('super_admin');
+
+      if (isEventAdminUser) {
+        const { data: booths } = await db
+          .from('vendor_booths')
+          .select('id, vendor_name')
+          .eq('event_id', currentEvent.id)
+          .eq('is_active', true);
+        const boothList = booths ?? [];
+        const boothIds = boothList.map((b: { id: string }) => b.id);
+        const nameByBoothId = new Map(
+          boothList.map((b: { id: string; vendor_name: string | null }) => [b.id, b.vendor_name ?? 'Booth'])
+        );
+        let adminList: B2BMeetingItem[] = [];
+        if (boothIds.length > 0) {
+          const { data: slotsData } = await db
+            .from('meeting_slots')
+            .select('id, booth_id, start_time, end_time')
+            .in('booth_id', boothIds);
+          const slotIds = (slotsData ?? []).map((s: { id: string }) => s.id);
+          if (slotIds.length > 0) {
+            const { data: allBookings } = await db
+              .from('meeting_bookings')
+              .select('slot_id, attendee_id, meeting_slots(booth_id, start_time, end_time)')
+              .in('slot_id', slotIds)
+              .neq('status', 'cancelled');
+            const rows = (allBookings ?? []) as unknown as BookingRow[];
+            const attendeeIds = [...new Set(rows.map((r) => r.attendee_id))];
+            const nameByUser = new Map<string, string>();
+            if (attendeeIds.length > 0) {
+              const { data: usersData } = await db.from('users').select('id, full_name').in('id', attendeeIds);
+              for (const u of usersData ?? []) {
+                const row = u as { id: string; full_name: string | null };
+                nameByUser.set(row.id, row.full_name ?? 'Attendee');
+              }
+            }
+            const slotBySlotId = new Map(
+              (slotsData ?? []).map((s: { id: string; booth_id: string; start_time: string; end_time: string }) => [s.id, s])
+            );
+            adminList = rows
+              .map((r): B2BMeetingItem | null => {
+                const slot = r.meeting_slots ?? slotBySlotId.get(r.slot_id);
+                if (!slot?.booth_id || !slot.start_time || !slot.end_time) return null;
+                let dateKey = '';
+                try {
+                  const d = parseDate(slot.start_time);
+                  dateKey = d ? format(d, 'yyyy-MM-dd') : '';
+                } catch {
+                  dateKey = '';
+                }
+                const boothName = nameByBoothId.get(slot.booth_id) ?? 'Booth';
+                const attName = nameByUser.get(r.attendee_id) ?? 'Attendee';
+                return {
+                  type: 'b2b' as const,
+                  id: r.slot_id,
+                  booth_id: slot.booth_id,
+                  vendor_name: `${boothName} — ${attName}`,
+                  start_time: slot.start_time,
+                  end_time: slot.end_time,
+                  dateKey,
+                  isAdminOverview: true as const,
+                };
+              })
+              .filter((x): x is B2BMeetingItem => x != null);
+          }
+        }
+        adminList.sort((a, b) => (parseDate(a.start_time)?.getTime() ?? 0) - (parseDate(b.start_time)?.getTime() ?? 0));
+        setB2bMeetings(adminList);
+        return;
+      }
+
+      // 1) Meetings where current user is the attendee (booths filtered to this event below)
+      const { data: myBookings } = await db
         .from('meeting_bookings')
         .select('slot_id, meeting_slots(booth_id, start_time, end_time)')
         .eq('attendee_id', user.id)
@@ -337,14 +541,16 @@ export default function ScheduleScreen() {
       const boothIdsFromAttendee = [...new Set(attendeeSlotList.map((s) => s.booth_id))];
       let nameByBooth = new Map<string, string>();
       if (boothIdsFromAttendee.length > 0) {
-        const { data: boothData } = await supabase
+        const { data: boothData } = await db
           .from('vendor_booths')
           .select('id, vendor_name')
           .eq('event_id', currentEvent.id)
           .in('id', boothIdsFromAttendee);
-        nameByBooth = new Map((boothData ?? []).map((b: { id: string; vendor_name: string }) => [b.id, b.vendor_name ?? 'B2B']));
+        nameByBooth = new Map((boothData ?? []).map((b: { id: string; vendor_name: string }) => [b.id, b.vendor_name ?? '1:1 Meeting']));
       }
-      const attendeeList: B2BMeetingItem[] = attendeeSlotList.map((s) => {
+      const boothIdsInThisEvent = new Set(nameByBooth.keys());
+      const attendeeSlotListThisEvent = attendeeSlotList.filter((s) => boothIdsInThisEvent.has(s.booth_id));
+      const attendeeList: B2BMeetingItem[] = attendeeSlotListThisEvent.map((s) => {
         let dateKey = '';
         try {
           const d = parseDate(s.start_time);
@@ -356,7 +562,7 @@ export default function ScheduleScreen() {
           type: 'b2b',
           id: s.slot_id,
           booth_id: s.booth_id,
-          vendor_name: nameByBooth.get(s.booth_id) ?? 'B2B meeting',
+          vendor_name: nameByBooth.get(s.booth_id) ?? '1:1 meeting',
           start_time: s.start_time,
           end_time: s.end_time,
           dateKey,
@@ -364,7 +570,7 @@ export default function ScheduleScreen() {
       });
 
       // 2) Meetings where current user is the vendor (their booth has a booking)
-      const repsRes = await supabase
+      const repsRes = await db
         .from('vendor_booth_reps')
         .select('booth_id, vendor_booths!inner(event_id, is_active)')
         .eq('user_id', user.id)
@@ -373,7 +579,7 @@ export default function ScheduleScreen() {
       let myBoothIds = (repsRes.data ?? []).map((b: { booth_id: string }) => b.booth_id);
       if (repsRes.error) {
         // Backward-compat fallback for projects before migration
-        const { data: myBooths } = await supabase
+        const { data: myBooths } = await db
           .from('vendor_booths')
           .select('id')
           .eq('event_id', currentEvent.id)
@@ -383,20 +589,20 @@ export default function ScheduleScreen() {
       }
       let vendorList: B2BMeetingItem[] = [];
       if (myBoothIds.length > 0) {
-        const { data: slotsData } = await supabase
+        const { data: slotsData } = await db
           .from('meeting_slots')
           .select('id, booth_id, start_time, end_time')
           .in('booth_id', myBoothIds);
         const slotIds = (slotsData ?? []).map((s: { id: string }) => s.id);
         if (slotIds.length > 0) {
-          const { data: vendorBookings } = await supabase
+          const { data: vendorBookings } = await db
             .from('meeting_bookings')
             .select('slot_id, attendee_id, meeting_slots(booth_id, start_time, end_time)')
             .in('slot_id', slotIds)
             .neq('status', 'cancelled');
           const vRows = (vendorBookings ?? []) as unknown as BookingRow[];
           const attendeeIds = [...new Set(vRows.map((r) => r.attendee_id))];
-          const { data: usersData } = await supabase
+          const { data: usersData } = await db
             .from('users')
             .select('id, full_name')
             .in('id', attendeeIds);
@@ -459,6 +665,35 @@ export default function ScheduleScreen() {
     if (user?.id && sessions.length > 0) fetchBookmarks();
   }, [user?.id, sessions.length]);
 
+  useEffect(() => {
+    if (!user?.id || sessions.length === 0) {
+      setRatedSessionIds(new Set());
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const sessionIds = sessions.map((s) => s.id).filter(Boolean);
+        if (sessionIds.length === 0) {
+          if (!cancelled) setRatedSessionIds(new Set());
+          return;
+        }
+        const { data } = await supabase
+          .from('session_ratings')
+          .select('session_id')
+          .eq('user_id', user.id)
+          .in('session_id', sessionIds);
+        if (cancelled) return;
+        setRatedSessionIds(new Set((data ?? []).map((r: { session_id: string }) => r.session_id)));
+      } catch {
+        if (!cancelled) setRatedSessionIds(new Set());
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id, sessions]);
+
   // When session modal opens, fetch current user's rating and (for admins) aggregate stats
   useEffect(() => {
     if (!selectedSession || !user?.id) {
@@ -467,6 +702,15 @@ export default function ScheduleScreen() {
       setCommentDraft('');
       setRatingStats(null);
       setRatingJustSaved(false);
+      return;
+    }
+    if (selectedSession.ratings_enabled === false) {
+      setMyRating(null);
+      setRatingDraft(null);
+      setCommentDraft('');
+      setRatingStats(null);
+      setRatingJustSaved(false);
+      setLoadingRating(false);
       return;
     }
     let cancelled = false;
@@ -498,10 +742,13 @@ export default function ScheduleScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedSession?.id, user?.id, isEventAdmin]);
+  }, [selectedSession?.id, selectedSession?.ratings_enabled, user?.id, isEventAdmin]);
 
   const saveSessionRating = async () => {
     if (!selectedSession || !user?.id || ratingDraft == null || ratingDraft < 1 || ratingDraft > 5) return;
+    if (selectedSession.ratings_enabled === false) return;
+    const sessionDayKey = getSessionDateKey(selectedSession.start_time);
+    if (!sessionDayKey || agendaItemNotYetEnded(new Date(), selectedSession, sessionDayKey)) return;
     setSavingRating(true);
     setRatingJustSaved(false);
     const doSave = async () => {
@@ -524,7 +771,10 @@ export default function ScheduleScreen() {
       if (updated?.id && currentEvent?.id) {
         awardPoints(user.id, currentEvent.id, 'session_feedback', updated.id).catch(() => {});
       }
-      if (updated) setMyRating(updated as SessionRating);
+      if (updated) {
+        setMyRating(updated as SessionRating);
+        setRatedSessionIds((prev) => new Set(prev).add(selectedSession.id));
+      }
       if (isEventAdmin) {
         const { data: stats } = await supabase.rpc('get_session_rating_stats', { p_session_id: selectedSession.id });
         if (stats) setRatingStats(stats as { avg_rating: number | null; count: number });
@@ -550,7 +800,10 @@ export default function ScheduleScreen() {
     setRefreshing(true);
     setFetchError(null);
     try {
-      await withRefreshTimeout(Promise.all([fetchSessions(), fetchBookmarks(), fetchIsAdmin(), fetchB2BMeetings()]), LOAD_TIMEOUT_MS);
+      await withRefreshTimeout(
+        Promise.all([fetchSessions(), fetchBookmarks(), fetchIsAdmin(), fetchB2BMeetings(), loadScheduleSponsors()]),
+        LOAD_TIMEOUT_MS
+      );
     } catch {
       setFetchError('Error - page not loading');
     } finally {
@@ -761,19 +1014,9 @@ export default function ScheduleScreen() {
   }, [focusSessionId, loading, sessions, sessionsForSelectedDay, router]);
 
   const hasScrolledToNow = useRef(false);
-  useEffect(() => {
-    if (loading || sessionsForSelectedDay.length === 0 || selectedDay == null) return;
-    const todayKey = getDeviceLocalDateKey();
-    const selectedDateKey = getDateKeyForDayNumber(selectedDay, eventStartDate);
-    if (!selectedDateKey || selectedDateKey !== todayKey) return;
-    if (hasScrolledToNow.current) return;
-    hasScrolledToNow.current = true;
-    const now = new Date();
-    const idx = sessionsForSelectedDay.findIndex((s) => agendaItemNotYetEnded(now, s, selectedDateKey));
-    if (idx >= 0 && listRef.current) {
-      setTimeout(() => listRef.current?.scrollToIndex({ index: Math.max(0, idx), animated: true }), 200);
-    }
-  }, [loading, selectedDay, eventStartDate, sessionsForSelectedDay]);
+  const [nowScrollRequestId, setNowScrollRequestId] = useState(0);
+  const handledNowScrollRequestRef = useRef(0);
+  const requestedInitialNowScrollRef = useRef(false);
 
   // When user opens Agenda tab: refetch (so admin edits/deletes show) and show today / scroll to now
   useFocusEffect(
@@ -788,6 +1031,7 @@ export default function ScheduleScreen() {
       if (todayDay != null) {
         setSelectedDayNumber(todayDay);
         hasScrolledToNow.current = false;
+        setNowScrollRequestId((id) => id + 1);
       }
     }, [currentEvent?.id, dayNumbers.length, eventStartDate])
   );
@@ -823,19 +1067,51 @@ export default function ScheduleScreen() {
     return () => clearTimeout(t);
   }, [loading]);
 
-  const goToNow = () => {
+  const goToNow = React.useCallback(() => {
     const todayKey = getDeviceLocalDateKey();
     const todayDay = dayNumbers.find((d) => getDateKeyForDayNumber(d, eventStartDate) === todayKey);
     if (todayDay != null) {
+      const switchingDay = selectedDayNumber !== todayDay;
       setSelectedDayNumber(todayDay);
-      const listForToday = filteredSessions.filter((s) => getSessionDateKey(s.start_time) === todayKey);
-      const now = new Date();
-      const idx = listForToday.findIndex((s) => agendaItemNotYetEnded(now, s, todayKey));
-      setTimeout(() => {
-        if (idx >= 0 && listRef.current) listRef.current.scrollToIndex({ index: Math.max(0, idx), animated: true });
-      }, 150);
+      hasScrolledToNow.current = false;
+      setNowScrollRequestId((id) => id + 1);
+      if (switchingDay) return;
     } else if (dayNumbers.length > 0) setSelectedDayNumber(dayNumbers[0]);
-  };
+  }, [dayNumbers, eventStartDate, selectedDayNumber]);
+
+  useEffect(() => {
+    requestedInitialNowScrollRef.current = false;
+  }, [currentEvent?.id]);
+
+  // First load safeguard: request one "Now" scroll when today's list becomes ready.
+  useEffect(() => {
+    if (requestedInitialNowScrollRef.current) return;
+    if (loading || selectedDay == null || !eventStartDate || sessionsForSelectedDay.length === 0) return;
+    const todayKey = getDeviceLocalDateKey();
+    const selectedDateKey = getDateKeyForDayNumber(selectedDay, eventStartDate);
+    if (!selectedDateKey || selectedDateKey !== todayKey) return;
+    requestedInitialNowScrollRef.current = true;
+    hasScrolledToNow.current = false;
+    setNowScrollRequestId((id) => id + 1);
+  }, [loading, selectedDay, eventStartDate, sessionsForSelectedDay.length]);
+
+  // Single source of truth for auto "Now" scroll:
+  // run only when explicitly requested and when today's list is ready.
+  useEffect(() => {
+    if (nowScrollRequestId <= 0) return;
+    if (handledNowScrollRequestRef.current === nowScrollRequestId) return;
+    if (loading || selectedDay == null || !eventStartDate || sessionsForSelectedDay.length === 0) return;
+    const todayKey = getDeviceLocalDateKey();
+    const selectedDateKey = getDateKeyForDayNumber(selectedDay, eventStartDate);
+    if (!selectedDateKey || selectedDateKey !== todayKey) return;
+    const idx = getBestAgendaNowIndex(new Date(), sessionsForSelectedDay, selectedDateKey);
+    if (idx < 0 || !listRef.current) return;
+    handledNowScrollRequestRef.current = nowScrollRequestId;
+    hasScrolledToNow.current = true;
+    const safeIdx = Math.max(0, idx);
+    pendingScrollIndexRef.current = safeIdx;
+    setTimeout(() => listRef.current?.scrollToIndex({ index: safeIdx, animated: true, viewPosition: 0.12 }), 120);
+  }, [nowScrollRequestId, loading, selectedDay, eventStartDate, sessionsForSelectedDay]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -871,10 +1147,12 @@ export default function ScheduleScreen() {
               <Plus size={20} color={colors.primary} />
             </TouchableOpacity>
           )}
-          <HeaderNotificationBell />
-          <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={s.headerProfileBtn} hitSlop={12}>
-            <User size={24} color={colors.primary} strokeWidth={2} />
-          </TouchableOpacity>
+          <View style={s.headerNotifyProfile}>
+            <HeaderNotificationBell style={s.headerBellInPair} />
+            <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={s.headerProfileBtn} hitSlop={12}>
+              <User size={24} color={colors.primary} strokeWidth={2} />
+            </TouchableOpacity>
+          </View>
         </View>
       ),
     });
@@ -920,7 +1198,7 @@ export default function ScheduleScreen() {
   // ─── Empty state ───
   if (!currentEvent) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.emptyState}>
           <View style={s.emptyIconWrap}>
             <Calendar size={48} color={colors.primary} strokeWidth={1.5} />
@@ -935,7 +1213,7 @@ export default function ScheduleScreen() {
   // ─── Loading or fetch error: show Agenda layout immediately so the tab "loads"; content is loading/error + retry.
   if (loading || fetchError) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24 }}
           refreshControl={
@@ -975,10 +1253,12 @@ export default function ScheduleScreen() {
   }
 
   const monthYearLabel = selectedDay != null ? getMonthYearLabel(selectedDay, eventStartDate) : null;
+  const selectedDateKeyForList =
+    selectedDay != null && eventStartDate ? getDateKeyForDayNumber(selectedDay, eventStartDate) : null;
 
   // ─── Main content ───
   return (
-    <SafeAreaView style={s.container} edges={['bottom']}>
+    <SafeAreaView style={s.container} edges={[]}>
       <View style={s.contentWrap} {...panResponder.panHandlers}>
       {/* Top panel: search + month + dates */}
       <View style={s.topPanel}>
@@ -1061,9 +1341,14 @@ export default function ScheduleScreen() {
       {/* Session list — guide-book style: time left, event right */}
       {sessionsForSelectedDay.length === 0 ? (
         <ScrollView
-          contentContainerStyle={s.emptyList}
+          contentContainerStyle={[s.emptyList, scheduleSponsors.length > 0 ? { justifyContent: 'flex-start' as const, paddingTop: 20 } : null]}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
         >
+          {scheduleSponsors.length > 0 ? (
+            <View style={s.sponsorStripBleedEmpty}>
+              <CompactSponsorStrip sponsors={scheduleSponsors} />
+            </View>
+          ) : null}
           <View style={s.emptyIconWrap}>
             <Calendar size={44} color={colors.textMuted} strokeWidth={1.5} />
           </View>
@@ -1085,15 +1370,38 @@ export default function ScheduleScreen() {
           initialNumToRender={12}
           maxToRenderPerBatch={10}
           windowSize={5}
-          onScrollToIndexFailed={() => {}}
+          onScrollToIndexFailed={({ index, averageItemLength }) => {
+            const retryIndex = pendingScrollIndexRef.current ?? index;
+            const safeIdx = Math.max(0, retryIndex);
+            // First jump near target using estimated offset so RN can measure more rows.
+            if (averageItemLength > 0) {
+              listRef.current?.scrollToOffset({
+                offset: Math.max(0, averageItemLength * safeIdx),
+                animated: false,
+              });
+            }
+            // Then retry exact index after layout settles.
+            InteractionManager.runAfterInteractions(() => {
+              setTimeout(() => {
+                listRef.current?.scrollToIndex({ index: safeIdx, animated: true, viewPosition: 0.12 });
+              }, 120);
+            });
+          }}
           ItemSeparatorComponent={() => <View style={s.rowDivider} />}
           refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
-          ListHeaderComponent={null}
-          ListFooterComponent={<View style={s.listFooter} />}
+          ListHeaderComponent={
+            scheduleSponsors.length > 0 ? (
+              <View style={s.sponsorStripBleed}>
+                <CompactSponsorStrip sponsors={scheduleSponsors} />
+              </View>
+            ) : null
+          }
+          ListFooterComponent={null}
           renderItem={({ item, index }) => {
             if (isB2BItem(item)) {
               const b2bEnd = parseDate(item.end_time);
-              const canRate = !item.isVendorMeeting && b2bEnd != null && isPast(b2bEnd);
+              const canRate =
+                !item.isVendorMeeting && !item.isAdminOverview && b2bEnd != null && isPast(b2bEnd);
               const isLiveB2b = liveB2bIds.has(item.id);
               return (
                 <TouchableOpacity
@@ -1113,7 +1421,7 @@ export default function ScheduleScreen() {
                       <View style={s.b2bTitleRow}>
                         <Store size={14} color={colors.primary} style={{ marginRight: 6 }} />
                         <Text style={s.b2bVendor} numberOfLines={1}>{item.vendor_name}</Text>
-                        <Text style={s.b2bLabel}>B2B</Text>
+                        <Text style={s.b2bLabel}>1:1</Text>
                       </View>
                         {isLiveB2b && (
                           <View style={s.guideLive}>
@@ -1132,6 +1440,12 @@ export default function ScheduleScreen() {
             const session = item;
             const loc = [session.room, session.location].filter(Boolean).join(' · ');
             const isLive = liveSessionIds.has(session.id);
+            const canRateSessionInRow =
+              !!user?.id &&
+              session.ratings_enabled !== false &&
+              !!selectedDateKeyForList &&
+              !agendaItemNotYetEnded(new Date(), session, selectedDateKeyForList);
+            const sessionAlreadyRated = ratedSessionIds.has(session.id);
             const rowStyle = [s.scheduleRow, index % 2 === 1 && !isLive && s.scheduleRowAlt];
             return (
               <Pressable
@@ -1193,6 +1507,11 @@ export default function ScheduleScreen() {
                           <Text style={s.guideLocationText} numberOfLines={1}>{loc}</Text>
                         </View>
                       ) : null}
+                      {canRateSessionInRow ? (
+                        <Text style={s.sessionTapToRate}>
+                          {sessionAlreadyRated ? 'Session already rated' : 'Tap to rate this session'}
+                        </Text>
+                      ) : null}
                     </View>
                     <TouchableOpacity
                       hitSlop={12}
@@ -1220,12 +1539,20 @@ export default function ScheduleScreen() {
 
       {/* Session detail modal */}
       <Modal visible={!!selectedSession} animationType="slide" transparent onRequestClose={() => setSelectedSession(null)}>
-        <Pressable style={s.modalOverlay} onPress={() => setSelectedSession(null)}>
-          <Pressable style={s.modalSheet} onPress={(e) => e.stopPropagation()}>
+        <View style={s.modalOverlay}>
+          <Pressable style={s.modalBackdrop} onPress={() => setSelectedSession(null)} />
+          <View style={s.modalSheet}>
             {selectedSession && (
-              <ScrollView showsVerticalScrollIndicator={false}>
+              <ScrollView
+                style={s.modalScroll}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                scrollEnabled
+                alwaysBounceVertical
+                contentContainerStyle={s.modalScrollContent}
+              >
                 <View style={s.modalHeader}>
-                  <Text style={s.modalTitle} numberOfLines={2}>{selectedSession.title}</Text>
+                  <Text style={s.modalTitle}>{selectedSession.title}</Text>
                   <TouchableOpacity onPress={() => setSelectedSession(null)} hitSlop={12}>
                     <X size={24} color={colors.text} />
                   </TouchableOpacity>
@@ -1276,21 +1603,27 @@ export default function ScheduleScreen() {
                   </View>
                 )}
                 {selectedSession.description && <Text style={s.modalDesc}>{selectedSession.description}</Text>}
-                {/* Rate this session */}
-                {user?.id && (
+                {/* Rate this session (hidden per session in web admin when ratings disabled) */}
+                {user?.id && selectedSession.ratings_enabled !== false && (
                   <View style={s.modalRatingBlock}>
                     <Text style={s.modalRatingTitle}>Rate this session</Text>
+                    {!canRateSelectedSession && (
+                      <Text style={s.modalRatingLockedHint}>
+                        You can rate this session after it ends.
+                      </Text>
+                    )}
                     {loadingRating ? (
                       <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 8 }} />
                     ) : (
                       <>
-                        <View style={s.modalStarsRow}>
+                        <View style={[s.modalStarsRow, !canRateSelectedSession && s.modalStarsRowDisabled]}>
                           {[1, 2, 3, 4, 5].map((star) => (
                             <TouchableOpacity
                               key={star}
                               onPress={() => setRatingDraft(star)}
                               hitSlop={8}
                               style={s.modalStarBtn}
+                              disabled={!canRateSelectedSession}
                             >
                               <Star
                                 size={28}
@@ -1301,18 +1634,22 @@ export default function ScheduleScreen() {
                           ))}
                         </View>
                         <TextInput
-                          style={s.modalCommentInput}
+                          style={[s.modalCommentInput, !canRateSelectedSession && s.modalCommentInputDisabled]}
                           placeholder="Optional comment"
                           placeholderTextColor={colors.textMuted}
                           value={commentDraft}
                           onChangeText={setCommentDraft}
                           multiline
                           maxLength={500}
+                          editable={canRateSelectedSession}
                         />
                         <TouchableOpacity
-                          style={[s.modalRatingSaveBtn, savingRating && s.modalRatingSaveBtnDisabled]}
+                          style={[
+                            s.modalRatingSaveBtn,
+                            (savingRating || !canRateSelectedSession) && s.modalRatingSaveBtnDisabled,
+                          ]}
                           onPress={saveSessionRating}
-                          disabled={savingRating || ratingDraft == null}
+                          disabled={savingRating || ratingDraft == null || !canRateSelectedSession}
                         >
                           {savingRating ? (
                             <ActivityIndicator size="small" color="#fff" />
@@ -1348,8 +1685,8 @@ export default function ScheduleScreen() {
                 </TouchableOpacity>
               </ScrollView>
             )}
-          </Pressable>
-        </Pressable>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1389,6 +1726,16 @@ const s = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
+    flexShrink: 1,
+  },
+  headerNotifyProfile: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 0,
+  },
+  headerBellInPair: {
+    marginRight: 0,
   },
   headerButtonGroup: {
     flexDirection: 'row',
@@ -1426,7 +1773,6 @@ const s = StyleSheet.create({
     marginLeft: 2,
   },
   headerProfileBtn: {
-    marginLeft: 4,
     padding: 4,
     justifyContent: 'center',
     alignItems: 'center',
@@ -1520,9 +1866,20 @@ const s = StyleSheet.create({
   listContent: {
     paddingHorizontal: 20,
     paddingTop: 0,
-    paddingBottom: 0,
+    paddingBottom: 12,
   },
-  listFooter: { height: theme.spacing.xxl },
+  /** Cancels `listContent` (20) horizontal padding so the banner is full width. */
+  sponsorStripBleed: {
+    marginHorizontal: -20,
+    alignSelf: 'stretch',
+    marginBottom: 2,
+  },
+  /** Empty-day `emptyList` uses `padding: 32`; offset so the banner is still edge-to-edge. */
+  sponsorStripBleedEmpty: {
+    marginHorizontal: -32,
+    alignSelf: 'stretch',
+    marginBottom: 2,
+  },
   rowDivider: {
     height: 1,
     backgroundColor: colors.border,
@@ -1570,6 +1927,11 @@ const s = StyleSheet.create({
     color: colors.primary,
     marginTop: 2,
     marginLeft: 20,
+  },
+  sessionTapToRate: {
+    fontSize: 11,
+    color: colors.primary,
+    marginTop: 4,
   },
   b2bVendor: {
     flex: 1,
@@ -1689,13 +2051,22 @@ const s = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'flex-end',
   },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
   modalSheet: {
     backgroundColor: colors.background,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
     padding: 20,
     paddingBottom: 32,
-    maxHeight: '90%',
+    height: '90%',
+  },
+  modalScroll: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    paddingBottom: 8,
   },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 },
   modalTitle: { fontSize: 20, fontWeight: '700', color: colors.text, flex: 1, marginRight: 12, lineHeight: 26 },
@@ -1721,7 +2092,9 @@ const s = StyleSheet.create({
   modalSaveBtnText: { fontSize: 16, fontWeight: '600', color: colors.text },
   modalRatingBlock: { marginBottom: 24 },
   modalRatingTitle: { fontSize: 16, fontWeight: '600', color: colors.text, marginBottom: 8 },
+  modalRatingLockedHint: { fontSize: 14, color: colors.textMuted, marginBottom: 10, lineHeight: 20 },
   modalStarsRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 12 },
+  modalStarsRowDisabled: { opacity: 0.55 },
   modalStarBtn: { padding: 4 },
   modalCommentInput: {
     borderWidth: 1,
@@ -1735,6 +2108,7 @@ const s = StyleSheet.create({
     textAlignVertical: 'top',
     marginBottom: 12,
   },
+  modalCommentInputDisabled: { opacity: 0.55, backgroundColor: colors.surface },
   modalRatingSaveBtn: {
     backgroundColor: colors.primary,
     paddingVertical: 12,

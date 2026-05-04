@@ -45,7 +45,7 @@ export default function B2BFeedback() {
       <div className={styles.head}>
         <Link to={`/events/${eventId}`} className={styles.back}>← Event</Link>
       </div>
-      <h1>B2B meeting feedback — {event?.name ?? 'Event'}</h1>
+      <h1>1:1 Meeting feedback — {event?.name ?? 'Event'}</h1>
       <p className={styles.hint}>All attendee feedback for vendor meetings. Click Detail to see full feedback.</p>
 
       {perf.length > 0 && (
@@ -61,7 +61,7 @@ export default function B2BFeedback() {
 
       <h2 className={styles.listTitle}>All feedback ({list.length})</h2>
       {list.length === 0 ? (
-        <p className={styles.empty}>No B2B meeting feedback yet.</p>
+        <p className={styles.empty}>No 1:1 Meeting feedback yet.</p>
       ) : (
         <div className={styles.tableWrap}>
           <table className={styles.table}>

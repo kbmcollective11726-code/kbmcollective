@@ -20,6 +20,7 @@ import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
 import { Send, ChevronLeft, ImageIcon } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
+import { useBlockStore } from '../../../../stores/blockStore';
 import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
 import { createNotificationAndPush } from '../../../../lib/notifications';
 import { pickImage } from '../../../../lib/image';
@@ -46,6 +47,10 @@ export default function ChatScreen() {
   const navigation = useNavigation();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const fetchBlockedUsers = useBlockStore((s) => s.fetchBlockedUsers);
+  const interactionBlocked = useBlockStore((s) =>
+    userId ? s.blockedUserIds.has(userId) || s.usersWhoBlockedMeIds.has(userId) : false
+  );
   const [messages, setMessages] = useState<MessageRow[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(true);
@@ -135,10 +140,11 @@ export default function ChatScreen() {
   useFocusEffect(
     useCallback(() => {
       if (user?.id && userId && currentEvent?.id) {
+        fetchBlockedUsers(user.id).catch(() => {});
         fetchOtherUser().catch(() => {});
         fetchMessages().catch(() => {});
       }
-    }, [user?.id, userId, currentEvent?.id, fetchOtherUser, fetchMessages])
+    }, [user?.id, userId, currentEvent?.id, fetchBlockedUsers, fetchOtherUser, fetchMessages])
   );
 
   const checkConnection = useCallback(async () => {
@@ -199,6 +205,10 @@ export default function ChatScreen() {
     const text = input.trim();
     const hasImage = !!imageUri;
     if ((!text && !hasImage) || !user?.id || !userId || !currentEvent?.id) return;
+    if (interactionBlocked) {
+      Alert.alert('Cannot send', 'Messaging is not available for this conversation.');
+      return;
+    }
     setSending(true);
     setInput('');
     const imageToSend = imageUri;
@@ -272,7 +282,7 @@ export default function ChatScreen() {
 
   if (!userId || !user?.id || !currentEvent?.id) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Select an event and open a chat from Community.</Text>
         </View>
@@ -282,7 +292,7 @@ export default function ChatScreen() {
 
   if (isConnected === null || loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.placeholderText}>Loading chat…</Text>
@@ -293,7 +303,7 @@ export default function ChatScreen() {
 
   if (isConnected === false) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Connect with {otherName || 'this user'} first to message.</Text>
           <TouchableOpacity
@@ -309,7 +319,7 @@ export default function ChatScreen() {
 
   if (fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Error - page not loading</Text>
           <Text style={styles.errorSubtext}>Tap Try again or check your connection.</Text>
@@ -329,10 +339,10 @@ export default function ChatScreen() {
     );
   }
 
-  const canSend = (input.trim() || imageUri) && !sending;
+  const canSend = (input.trim() || imageUri) && !sending && !interactionBlocked;
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <Modal visible={!!expandedImageUrl} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setExpandedImageUrl(null)}>
           {expandedImageUrl ? (
@@ -364,14 +374,21 @@ export default function ChatScreen() {
             </TouchableOpacity>
           </View>
         ) : null}
+        {interactionBlocked ? (
+          <View style={styles.blockedBanner}>
+            <Text style={styles.blockedBannerText}>
+              Messaging is turned off for this conversation (block or restriction).
+            </Text>
+          </View>
+        ) : null}
         <View style={styles.inputRow}>
           <TouchableOpacity
             onPress={handlePickImage}
-            disabled={sending}
+            disabled={sending || interactionBlocked}
             style={styles.attachButton}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <ImageIcon size={24} color={colors.primary} />
+            <ImageIcon size={24} color={interactionBlocked ? colors.textMuted : colors.primary} />
           </TouchableOpacity>
           <TextInput
             style={styles.input}
@@ -381,7 +398,7 @@ export default function ChatScreen() {
             placeholderTextColor={colors.textMuted}
             multiline
             maxLength={2000}
-            editable={!sending}
+            editable={!sending && !interactionBlocked}
           />
           <TouchableOpacity
             style={[styles.sendButton, (!canSend) && styles.sendButtonDisabled]}
@@ -447,6 +464,18 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: colors.textOnPrimary,
+  },
+  blockedBanner: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+  },
+  blockedBannerText: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    textAlign: 'center',
   },
   bubbleWrap: {
     marginBottom: 8,

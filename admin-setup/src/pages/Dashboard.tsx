@@ -81,7 +81,7 @@ export default function Dashboard() {
         else if (!cancelled) setSessionList((sessionRes.data as SessionRatingRow[]) ?? []);
 
         const b2bRes = await supabase.rpc('get_event_b2b_feedback', { p_event_id: eventId });
-        if (b2bRes.error) errors.push(`B2B feedback: ${b2bRes.error.message}`);
+        if (b2bRes.error) errors.push(`1:1 Meeting feedback: ${b2bRes.error.message}`);
         else if (!cancelled) setB2bList((b2bRes.data as B2BFeedbackRow[]) ?? []);
 
         const perfRes = await supabase.rpc('get_b2b_vendor_performance', { p_event_id: eventId, p_booth_id: null });
@@ -154,7 +154,7 @@ export default function Dashboard() {
       <div className={styles.head}>
         <Link to={`/events/${eventId}`} className={styles.back}>← Event</Link>
       </div>
-      <h1 className={styles.title}>Dashboard — {event?.name ?? 'Event'}</h1>
+      <h1 className={styles.title}>Member dashboard — {event?.name ?? 'Event'}</h1>
       <p className={styles.hint}>
         See what attendees think about sessions and speakers, and which vendors they want to see again.
       </p>
@@ -177,7 +177,7 @@ export default function Dashboard() {
           )}
           {b2bList.length > 0 && (
             <span className={styles.insight}>
-              <strong>{b2bList.length}</strong> B2B feedback
+              <strong>{b2bList.length}</strong> 1:1 Meeting feedback
               {b2bAvg != null && ` · avg ${b2bAvg.toFixed(1)}/5`}
             </span>
           )}
@@ -200,7 +200,7 @@ export default function Dashboard() {
           <span className={styles.cardLink}>View all →</span>
         </Link>
         <Link to={`/events/${eventId}/b2b-feedback`} className={styles.bigCard}>
-          <span className={styles.bigCardLabel}>B2B meeting feedback</span>
+          <span className={styles.bigCardLabel}>1:1 Meeting feedback</span>
           <span className={styles.bigCardValue}>{b2bList.length}</span>
           <span className={styles.bigCardSub}>
             {b2bAvg != null ? `Avg ${b2bAvg.toFixed(1)}/5 · ${vendorsWithFeedback.length} vendors` : 'No ratings yet'}
@@ -209,7 +209,12 @@ export default function Dashboard() {
         </Link>
       </section>
 
-      {/* Tabs: Sessions | B2B */}
+      <p className={styles.dashboardCrossLink}>
+        <strong>Scheduled booth meetings</strong> (assign times, attendees, notifications) live on a separate page:{' '}
+        <Link to={`/events/${eventId}/meetings`}>Meetings →</Link>
+      </p>
+
+      {/* Tabs: Sessions | 1:1 Meeting */}
       <div className={styles.tabs}>
         <button
           type="button"
@@ -223,7 +228,7 @@ export default function Dashboard() {
           className={activeTab === 'b2b' ? `${styles.tab} ${styles.tabActive}` : styles.tab}
           onClick={() => setActiveTab('b2b')}
         >
-          B2B / Vendors
+          1:1 Meetings / Vendors
         </button>
       </div>
 
@@ -341,7 +346,7 @@ export default function Dashboard() {
           {b2bQuotes.length > 0 && (
             <section className={styles.section}>
               <h2 className={styles.sectionTitle}>What attendees are saying</h2>
-              <p className={styles.sectionDesc}>Recent comments from B2B / vendor feedback.</p>
+              <p className={styles.sectionDesc}>Recent comments from 1:1 Meeting / vendor feedback.</p>
               <div className={styles.quoteGrid}>
                 {b2bQuotes.map((q, i) => (
                   <div key={i} className={styles.quoteCard}>
@@ -360,7 +365,7 @@ export default function Dashboard() {
             <h2 className={styles.sectionTitle}>Vendors</h2>
             <p className={styles.sectionDesc}>Which vendors attendees want to meet again and would recommend.</p>
             {topVendorsByRating.length === 0 ? (
-              <p className={styles.empty}>No B2B feedback yet.</p>
+              <p className={styles.empty}>No 1:1 Meeting feedback yet.</p>
             ) : (
               <>
                 <h3 className={styles.subTitle}>Top rated</h3>
@@ -407,14 +412,14 @@ export default function Dashboard() {
                     </ul>
                   </>
                 )}
-                <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>All B2B feedback →</Link>
+                <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>All 1:1 Meeting feedback →</Link>
               </>
             )}
           </section>
           <section className={styles.section}>
-            <h2 className={styles.sectionTitle}>Recent B2B feedback</h2>
+            <h2 className={styles.sectionTitle}>Recent 1:1 Meeting feedback</h2>
             {recentB2b.length === 0 ? (
-              <p className={styles.empty}>No B2B meeting feedback yet.</p>
+              <p className={styles.empty}>No 1:1 Meeting feedback yet.</p>
             ) : (
               <div className={styles.tableWrap}>
                 <table className={styles.table}>
@@ -444,7 +449,7 @@ export default function Dashboard() {
               </div>
             )}
             {b2bList.length > 0 && (
-              <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>View all B2B feedback →</Link>
+              <Link to={`/events/${eventId}/b2b-feedback`} className={styles.sectionLink}>View all 1:1 Meeting feedback →</Link>
             )}
           </section>
         </>

@@ -13,6 +13,8 @@ export interface User {
   bio: string | null;
   phone: string | null;
   push_token: string | null;
+  /** When true (default), server skips agenda "starting soon" reminders if same room as previous bookmarked session that day. */
+  session_reminder_skip_same_room?: boolean | null;
   is_active: boolean;
   is_platform_admin?: boolean;
   created_at: string;
@@ -52,6 +54,46 @@ export interface Event {
   points_section_intro: string | null;
   /** Phone from "request to create event" signup; KBM uses for payment/setup. */
   contact_phone: string | null;
+  /** Hamburger: 1:1 Meetings (default on). */
+  menu_show_1on1?: boolean;
+  /** Hamburger: Live wall (default on). */
+  menu_show_live_wall?: boolean;
+  /** Hamburger: Solution Provider (default on). */
+  menu_show_solution_providers?: boolean;
+  /** Hamburger: Scan badge (default on). */
+  menu_show_scan_badge?: boolean;
+  /** Hamburger: Agenda link (default on). */
+  menu_show_agenda?: boolean;
+  /** Hamburger: Notes (badge scans) for admins / vendor reps (default on). */
+  menu_show_notes?: boolean;
+  /** Printed on attendee badges (e.g. Hosted by …). */
+  badge_host_footer?: string | null;
+}
+
+export interface EventSponsor {
+  id: string;
+  event_id: string;
+  company_name: string;
+  logo_url: string | null;
+  website_url: string | null;
+  tier_label: string | null;
+  sort_order: number;
+  show_on_info_screen: boolean;
+  /** Legacy one flag; prefer header + footer. Kept for old rows. */
+  show_in_hamburger?: boolean;
+  /** Small logo in drawer header beside "Menu". (Optional when using legacy `show_in_hamburger` only.) */
+  show_in_hamburger_header?: boolean;
+  /** "Sponsored by" block at bottom of drawer. */
+  show_in_hamburger_footer?: boolean;
+  /** Compact strip on the Schedule tab (horizontal logos). */
+  show_on_schedule: boolean;
+  /** Compact strip at top of the event Feed. */
+  show_on_feed: boolean;
+  /** Logo strip on the public live wall (when enabled in admin). */
+  show_on_live_wall?: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
 }
 
 export type EventRole = 'attendee' | 'speaker' | 'vendor' | 'admin' | 'super_admin';
@@ -123,6 +165,8 @@ export interface ScheduleSession {
   is_active: boolean;
   sort_order: number;
   is_bookmarked?: boolean;
+  /** When false, star rating / feedback is hidden for this session. */
+  ratings_enabled?: boolean;
 }
 
 export interface SessionRating {

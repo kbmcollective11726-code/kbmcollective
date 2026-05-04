@@ -5,13 +5,22 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
-// Must match NOTIFICATION_CHANNEL_ID in app/_layout.tsx for sound + vibration on Android.
+// Must match NOTIFICATION_CHANNEL_ID in app lib/notificationChannel.ts (sound + vibration on Android).
 const ANDROID_CHANNEL_ID = "collectivelive_notifications_v2";
+
+/** High priority + default sound + vibration (Android also uses channel pattern). Omit timeSensitive (needs iOS entitlement). */
+const EXPO_BANNER_FIELDS = {
+  sound: "default",
+  priority: "high",
+  channelId: ANDROID_CHANNEL_ID,
+  badge: 1,
+  vibrate: true,
+} as const;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",
 };
 
 Deno.serve(async (req: Request) => {
@@ -64,7 +73,9 @@ Deno.serve(async (req: Request) => {
     .in("id", uniqueIds)
     .not("push_token", "is", null);
 
-  const tokens = (users ?? []).map((u: { push_token: string }) => u.push_token).filter(Boolean);
+  const tokens = Array.from(
+    new Set((users ?? []).map((u: { push_token: string }) => u.push_token).filter(Boolean)),
+  );
   if (tokens.length === 0) {
     return json({ sent: 0, message: "No push tokens found for recipients" }, 200);
   }
@@ -93,10 +104,7 @@ Deno.serve(async (req: Request) => {
     title,
     body: (bodyText ?? "").slice(0, 200),
     data: pushData,
-    sound: "default",
-    priority: "high",
-    channelId: ANDROID_CHANNEL_ID,
-    badge: 1,
+    ...EXPO_BANNER_FIELDS,
   }));
 
   try {

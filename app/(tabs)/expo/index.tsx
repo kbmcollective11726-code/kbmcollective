@@ -30,10 +30,26 @@ export type RepMeetingAttendee = {
   company: string | null;
   title: string | null;
   avatar_url: string | null;
-  meetingTimes: { start: string; end: string }[];
+  /** Includes `bookingId` so vendor scan rows can show correct local times (RPC `meeting_label` uses DB TZ). */
+  meetingTimes: { start: string; end: string; bookingId: string }[];
 };
 
 export type BoothWithMeeting = VendorBooth & { meetingStart?: string; meetingEnd?: string; meetingSlotId?: string };
+
+type VendorMeetingAttendanceRow = {
+  id: string;
+  subject_user_id: string;
+  meeting_booking_id: string;
+  attended_meeting: boolean;
+  note: string;
+  meeting_label?: string | null;
+  updated_at: string;
+};
+
+type VendorAttendeeBadgeTokenRow = {
+  user_id: string;
+  token: string;
+};
 
 function formatMeetingTime(start: string, end: string): string {
   try {
@@ -45,12 +61,40 @@ function formatMeetingTime(start: string, end: string): string {
   }
 }
 
+/** Prefer slot times on device TZ; `meeting_label` from RPC uses Postgres `to_char` (often UTC). */
+function formatVendorAttendanceMeetingLine(
+  row: VendorMeetingAttendanceRow,
+  attendee: RepMeetingAttendee
+): string {
+  const bid = row.meeting_booking_id;
+  const slot = bid ? attendee.meetingTimes.find((t) => t.bookingId === bid) : undefined;
+  if (slot?.start && slot?.end) {
+    const raw = (row.meeting_label || '').trim();
+    const vendorPart = raw.includes(' · ') ? raw.split(' · ')[0].trim() : '';
+    const timePart = formatMeetingTime(slot.start, slot.end);
+    if (vendorPart) return `${vendorPart} · ${timePart}`;
+    return timePart;
+  }
+  return (row.meeting_label || '').trim() || 'General visit';
+}
+
+function toTimeMs(value: string): number {
+  try {
+    return parseISO(value.replace(' ', 'T')).getTime();
+  } catch {
+    return NaN;
+  }
+}
+
 export default function ExpoScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
   const [booths, setBooths] = useState<BoothWithMeeting[]>([]);
+  const [ratedMeetingSlotIds, setRatedMeetingSlotIds] = useState<Set<string>>(new Set());
   const [repAttendees, setRepAttendees] = useState<RepMeetingAttendee[]>([]);
+  const [repAttendanceByAttendee, setRepAttendanceByAttendee] = useState<Record<string, VendorMeetingAttendanceRow[]>>({});
+  const [repBadgeTokensByAttendee, setRepBadgeTokensByAttendee] = useState<Record<string, string>>({});
   const [isVendorRep, setIsVendorRep] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -60,10 +104,9 @@ export default function ExpoScreen() {
   const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
     const repsRes = await client
       .from('vendor_booth_reps')
-      .select('booth_id, vendor_booths!inner(event_id, is_active)')
+      .select('booth_id, vendor_booths!inner(event_id)')
       .eq('user_id', uid)
-      .eq('vendor_booths.event_id', eventId)
-      .eq('vendor_booths.is_active', true);
+      .eq('vendor_booths.event_id', eventId);
     if (!repsRes.error) {
       return (repsRes.data ?? []).map((r: { booth_id: string }) => r.booth_id);
     }
@@ -72,14 +115,57 @@ export default function ExpoScreen() {
       .from('vendor_booths')
       .select('id')
       .eq('event_id', eventId)
-      .eq('is_active', true)
       .eq('contact_user_id', uid);
     return (legacy.data ?? []).map((b: { id: string }) => b.id);
   }, []);
 
+  const loadVendorRepAttendance = useCallback(
+    async (eventId: string, attendeeIds: string[], client: typeof supabase) => {
+      const { data, error } = await client.rpc('list_vendor_meeting_attendance_for_event', {
+        p_event_id: eventId,
+        p_subject_ids: attendeeIds,
+      });
+      if (error) throw error;
+      const pack = data as { rows?: VendorMeetingAttendanceRow[]; error?: string } | null;
+      if (pack?.error) throw new Error(pack.error);
+      const rows = Array.isArray(pack?.rows) ? pack.rows : [];
+      const map: Record<string, VendorMeetingAttendanceRow[]> = {};
+      for (const row of rows) {
+        if (!row?.subject_user_id) continue;
+        const arr = map[row.subject_user_id] ?? [];
+        arr.push(row);
+        map[row.subject_user_id] = arr;
+      }
+      setRepAttendanceByAttendee(map);
+    },
+    []
+  );
+
+  const loadVendorRepBadgeTokens = useCallback(
+    async (eventId: string, attendeeIds: string[], client: typeof supabase) => {
+      const { data, error } = await client.rpc('list_vendor_attendee_badge_tokens', {
+        p_event_id: eventId,
+        p_subject_ids: attendeeIds,
+      });
+      if (error) throw error;
+      const pack = data as { rows?: VendorAttendeeBadgeTokenRow[]; error?: string } | null;
+      if (pack?.error) throw new Error(pack.error);
+      const rows = Array.isArray(pack?.rows) ? pack.rows : [];
+      const map: Record<string, string> = {};
+      for (const row of rows) {
+        if (!row?.user_id || !row?.token) continue;
+        map[row.user_id] = row.token;
+      }
+      setRepBadgeTokensByAttendee(map);
+    },
+    []
+  );
+
   const fetchBooths = useCallback(async () => {
     if (!currentEvent?.id) {
       setBooths([]);
+      setRepAttendanceByAttendee({});
+      setRepBadgeTokensByAttendee({});
       setLoading(false);
       setError(null);
       return;
@@ -91,7 +177,7 @@ export default function ExpoScreen() {
 
       if (user?.id) {
         const [roleDataRes, myBookingsRes, repBoothIds] = await Promise.all([
-          client.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single(),
+          client.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle(),
           client
             .from('meeting_bookings')
             .select('slot_id, meeting_slots(booth_id, start_time, end_time)')
@@ -102,17 +188,15 @@ export default function ExpoScreen() {
         const row = roleDataRes.data as { role?: string; roles?: string[] } | null;
         const roles = Array.isArray(row?.roles) ? row.roles : [];
         const role = row?.role ?? roles[0] ?? '';
-        const isAdminOrVendor =
+        const isEventAdmin =
           user?.is_platform_admin === true ||
           role === 'admin' ||
           role === 'super_admin' ||
-          role === 'vendor' ||
           roles.includes('admin') ||
-          roles.includes('super_admin') ||
-          roles.includes('vendor');
+          roles.includes('super_admin');
         const isVendorRep = repBoothIds.length > 0;
 
-        if (isVendorRep) {
+        if (isVendorRep && !isEventAdmin) {
           setIsVendorRep(true);
           const { data: slotsData } = await client
             .from('meeting_slots')
@@ -123,63 +207,104 @@ export default function ExpoScreen() {
           if (slotIds.length === 0) {
             setBooths([]);
             setRepAttendees([]);
+            setRepAttendanceByAttendee({});
+            setRepBadgeTokensByAttendee({});
             list = [];
           } else {
             const { data: bookingsData } = await client
               .from('meeting_bookings')
-              .select('slot_id, attendee_id')
+              .select('id, slot_id, attendee_id')
               .in('slot_id', slotIds)
               .neq('status', 'cancelled');
-            type BookingRow = { slot_id: string; attendee_id: string };
+            type BookingRow = { id: string; slot_id: string; attendee_id: string };
             const bookings = (bookingsData ?? []) as BookingRow[];
-            const attendeeToTimes = new Map<string, { start: string; end: string }[]>();
+            const attendeeToTimes = new Map<string, { start: string; end: string; bookingId: string }[]>();
             for (const b of bookings) {
               const slot = slotMap.get(b.slot_id);
               if (!slot) continue;
               const arr = attendeeToTimes.get(b.attendee_id) ?? [];
-              arr.push(slot);
+              arr.push({ start: slot.start, end: slot.end, bookingId: b.id });
               attendeeToTimes.set(b.attendee_id, arr);
             }
             const attendeeIds = [...attendeeToTimes.keys()];
             if (attendeeIds.length === 0) {
               setBooths([]);
               setRepAttendees([]);
+              setRepAttendanceByAttendee({});
+              setRepBadgeTokensByAttendee({});
               list = [];
             } else {
               const { data: usersData } = await client
                 .from('users')
                 .select('id, full_name, company, title, avatar_url')
                 .in('id', attendeeIds);
-              const attendees: RepMeetingAttendee[] = (usersData ?? []).map((u: { id: string; full_name: string | null; company: string | null; title: string | null; avatar_url: string | null }) => ({
-                id: u.id,
-                full_name: u.full_name ?? null,
-                company: u.company ?? null,
-                title: u.title ?? null,
-                avatar_url: u.avatar_url ?? null,
-                meetingTimes: attendeeToTimes.get(u.id) ?? [],
-              }));
-              // Sort by most recent meeting time first (descending)
+              const userById = new Map(
+                (usersData ?? []).map((u: { id: string; full_name: string | null; company: string | null; title: string | null; avatar_url: string | null }) => [
+                  u.id,
+                  u,
+                ])
+              );
+              // List every person with a booking — do not drop rows if a profile SELECT misses one id.
+              const attendees: RepMeetingAttendee[] = attendeeIds.map((id) => {
+                const u = userById.get(id);
+                const meetingTimes = attendeeToTimes.get(id) ?? [];
+                if (u) {
+                  return {
+                    id: u.id,
+                    full_name: u.full_name ?? null,
+                    company: u.company ?? null,
+                    title: u.title ?? null,
+                    avatar_url: u.avatar_url ?? null,
+                    meetingTimes,
+                  };
+                }
+                return {
+                  id,
+                  full_name: null,
+                  company: null,
+                  title: null,
+                  avatar_url: null,
+                  meetingTimes,
+                };
+              });
+              // Sort by earliest meeting time first (ascending).
               attendees.sort((a, b) => {
-                const aLatest = a.meetingTimes.length ? a.meetingTimes.reduce((max, t) => (t.start > max ? t.start : max), a.meetingTimes[0].start) : '';
-                const bLatest = b.meetingTimes.length ? b.meetingTimes.reduce((max, t) => (t.start > max ? t.start : max), b.meetingTimes[0].start) : '';
-                return bLatest.localeCompare(aLatest);
+                const aEarliest = a.meetingTimes.length
+                  ? a.meetingTimes.reduce((min, t) => (t.start < min ? t.start : min), a.meetingTimes[0].start)
+                  : '';
+                const bEarliest = b.meetingTimes.length
+                  ? b.meetingTimes.reduce((min, t) => (t.start < min ? t.start : min), b.meetingTimes[0].start)
+                  : '';
+                return aEarliest.localeCompare(bEarliest);
               });
               setBooths([]);
               setRepAttendees(attendees);
+              await Promise.all([
+                loadVendorRepAttendance(currentEvent.id, attendeeIds, client),
+                loadVendorRepBadgeTokens(currentEvent.id, attendeeIds, client),
+              ]);
             }
             list = [];
           }
         } else {
           setIsVendorRep(false);
           setRepAttendees([]);
+          setRepAttendanceByAttendee({});
+          setRepBadgeTokensByAttendee({});
         }
-        if (!isVendorRep) {
-        if (!isAdminOrVendor) {
-          type BookingRow = { slot_id: string; meeting_slots: { booth_id: string; start_time: string; end_time: string } | null };
+        if (!isVendorRep || isEventAdmin) {
+        if (!isEventAdmin) {
+          type BookingRow = {
+            slot_id: string;
+            meeting_slots:
+              | { booth_id: string; start_time: string; end_time: string }
+              | { booth_id: string; start_time: string; end_time: string }[]
+              | null;
+          };
           const rows = (myBookingsRes.data ?? []) as unknown as BookingRow[];
           const boothIdToSlot = new Map<string, { start_time: string; end_time: string; slot_id: string }>();
           for (const r of rows) {
-            const slot = r.meeting_slots;
+            const slot = Array.isArray(r.meeting_slots) ? r.meeting_slots[0] : r.meeting_slots;
             if (slot?.booth_id && slot.start_time && slot.end_time && !boothIdToSlot.has(slot.booth_id)) {
               boothIdToSlot.set(slot.booth_id, { start_time: slot.start_time, end_time: slot.end_time, slot_id: r.slot_id });
             }
@@ -199,15 +324,57 @@ export default function ExpoScreen() {
             .in('id', meetingBoothIds)
             .order('vendor_name');
           if (e) throw e;
-          list = ((boothData ?? []) as VendorBooth[]).map((b) => {
-            const slot = boothIdToSlot.get(b.id);
-            return {
-              ...b,
-              meetingStart: slot?.start_time,
-              meetingEnd: slot?.end_time,
-              meetingSlotId: slot?.slot_id,
-            };
-          });
+          list = ((boothData ?? []) as VendorBooth[])
+            .map((b) => {
+              const slot = boothIdToSlot.get(b.id);
+              return {
+                ...b,
+                meetingStart: slot?.start_time,
+                meetingEnd: slot?.end_time,
+                meetingSlotId: slot?.slot_id,
+              };
+            })
+            // Attendee view: upcoming/live first (earliest first), past meetings at the bottom.
+            .sort((a, b) => {
+              const now = Date.now();
+              const aStartMs = a.meetingStart ? Date.parse(a.meetingStart.replace(' ', 'T')) : Number.NaN;
+              const bStartMs = b.meetingStart ? Date.parse(b.meetingStart.replace(' ', 'T')) : Number.NaN;
+              const aEndMs = a.meetingEnd ? Date.parse(a.meetingEnd.replace(' ', 'T')) : Number.NaN;
+              const bEndMs = b.meetingEnd ? Date.parse(b.meetingEnd.replace(' ', 'T')) : Number.NaN;
+              const aIsPast = Number.isFinite(aEndMs) ? aEndMs < now : true;
+              const bIsPast = Number.isFinite(bEndMs) ? bEndMs < now : true;
+
+              if (aIsPast !== bIsPast) return aIsPast ? 1 : -1;
+
+              const aSort = Number.isFinite(aStartMs) ? aStartMs : Number.MAX_SAFE_INTEGER;
+              const bSort = Number.isFinite(bStartMs) ? bStartMs : Number.MAX_SAFE_INTEGER;
+              return aSort - bSort;
+            });
+
+          const attendeeSlotIds = rows.map((r) => r.slot_id).filter(Boolean);
+          if (attendeeSlotIds.length > 0) {
+            const { data: feedbackRows } = await client
+              .from('b2b_meeting_feedback')
+              .select('meeting_bookings!inner(slot_id)')
+              .eq('user_id', user.id)
+              .in('meeting_bookings.slot_id', attendeeSlotIds);
+            const ratedIds = new Set(
+              (feedbackRows ?? [])
+                .flatMap((row: { meeting_bookings?: { slot_id?: string | null } | Array<{ slot_id?: string | null }> | null }) => {
+                  const bookings = Array.isArray(row.meeting_bookings)
+                    ? row.meeting_bookings
+                    : row.meeting_bookings
+                      ? [row.meeting_bookings]
+                      : [];
+                  return bookings.map((booking) => booking.slot_id ?? '');
+                }
+                )
+                .filter(Boolean)
+            );
+            setRatedMeetingSlotIds(ratedIds);
+          } else {
+            setRatedMeetingSlotIds(new Set());
+          }
         } else {
           const { data: boothData, error: e } = await client
             .from('vendor_booths')
@@ -217,11 +384,15 @@ export default function ExpoScreen() {
             .order('vendor_name');
           if (e) throw e;
           list = (boothData ?? []) as BoothWithMeeting[];
+          setRatedMeetingSlotIds(new Set());
         }
         }
       } else {
         setIsVendorRep(false);
         setRepAttendees([]);
+        setRepAttendanceByAttendee({});
+        setRepBadgeTokensByAttendee({});
+        setRatedMeetingSlotIds(new Set());
         const { data: boothData, error: e } = await client
           .from('vendor_booths')
           .select('*')
@@ -237,13 +408,15 @@ export default function ExpoScreen() {
       console.error('Expo fetch error:', err);
       setBooths([]);
       setRepAttendees([]);
+      setRepAttendanceByAttendee({});
+      setRepBadgeTokensByAttendee({});
       setIsVendorRep(false);
       setError(err instanceof Error ? err.message : 'Could not load booths.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentEvent?.id, user?.id, fetchRepBoothIds]);
+  }, [currentEvent?.id, user?.id, fetchRepBoothIds, loadVendorRepAttendance, loadVendorRepBadgeTokens]);
 
   // Like Info: load on mount and on focus. No timeout so first try can complete.
   useEffect(() => {
@@ -282,6 +455,12 @@ export default function ExpoScreen() {
     );
   }, [booths]);
 
+  const isBoothMeetingPast = (b: BoothWithMeeting) => {
+    if (!b.meetingEnd) return false;
+    const endMs = Date.parse(b.meetingEnd.replace(' ', 'T'));
+    return Number.isFinite(endMs) ? endMs < Date.now() : false;
+  };
+
   useEffect(() => {
     if (!user?.id || !currentEvent?.id) return;
     const client = Platform.OS === 'android' ? supabaseStorage : supabase;
@@ -291,7 +470,7 @@ export default function ExpoScreen() {
         .select('role, roles')
         .eq('event_id', currentEvent.id)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
       const row = data as { role?: string; roles?: string[] } | null;
       const role = row?.role ?? '';
       const roles = Array.isArray(row?.roles) ? row.roles : [];
@@ -312,7 +491,7 @@ export default function ExpoScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.centered}>
           <Text style={s.emptyText}>Select an event to see vendor booths.</Text>
         </View>
@@ -322,7 +501,7 @@ export default function ExpoScreen() {
 
   if (loading && booths.length === 0 && repAttendees.length === 0) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.centered}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={s.loadingText}>{isVendorRep ? 'Loading…' : 'Loading booths…'}</Text>
@@ -333,8 +512,27 @@ export default function ExpoScreen() {
 
   // Vendor rep first screen: list of people who signed up to meet with them
   if (isVendorRep) {
+    const nowMs = Date.now();
+    const isAttendeeUpcoming = (attendee: RepMeetingAttendee) =>
+      attendee.meetingTimes.some((t) => {
+        const endMs = toTimeMs(t.end);
+        return Number.isFinite(endMs) && endMs >= nowMs;
+      });
+
+    const upcomingAttendees = repAttendees.filter(isAttendeeUpcoming);
+    const pastAttendees = repAttendees.filter((a) => !isAttendeeUpcoming(a));
+    type RepListRow =
+      | { kind: 'section'; id: string; label: string }
+      | { kind: 'attendee'; id: string; attendee: RepMeetingAttendee };
+    const repListRows: RepListRow[] = [
+      ...(upcomingAttendees.length > 0 ? [{ kind: 'section', id: 'section-upcoming', label: 'Upcoming' } as const] : []),
+      ...upcomingAttendees.map((attendee) => ({ kind: 'attendee', id: `attendee-${attendee.id}`, attendee }) as const),
+      ...(pastAttendees.length > 0 ? [{ kind: 'section', id: 'section-past', label: 'Past' } as const] : []),
+      ...pastAttendees.map((attendee) => ({ kind: 'attendee', id: `attendee-${attendee.id}`, attendee }) as const),
+    ];
+
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         {error ? (
           <View style={s.errorBanner}>
             <Text style={s.errorText}>{error}</Text>
@@ -343,12 +541,12 @@ export default function ExpoScreen() {
         {repAttendees.length === 0 ? (
           <View style={s.centered}>
             <Users size={48} color={colors.textMuted} />
-            <Text style={s.emptyText}>No one has booked a meeting with you yet.</Text>
-            <Text style={s.emptySubtext}>Attendees who book a slot at your booth will appear here.</Text>
+            <Text style={s.emptyText}>No meetings assigned to you yet.</Text>
+            <Text style={s.emptySubtext}>Once meetings are assigned, they will appear here.</Text>
           </View>
         ) : (
           <FlatList
-            data={repAttendees}
+            data={repListRows}
             keyExtractor={(item) => item.id}
             contentContainerStyle={s.listContent}
             refreshControl={
@@ -358,31 +556,84 @@ export default function ExpoScreen() {
               <View style={s.repHeader}>
                 <Text style={s.repTitle}>People you're meeting with</Text>
                 <Text style={s.repSubtitle}>{repAttendees.length} {repAttendees.length === 1 ? 'person' : 'people'} signed up</Text>
+                <Text style={s.repSubtitle}>
+                  {Object.keys(repAttendanceByAttendee).length} scanned
+                </Text>
               </View>
             }
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={s.attendeeCard}
-                activeOpacity={0.7}
-                onPress={() => router.push(`/(tabs)/feed/user/${item.id}?from=${encodeURIComponent('/(tabs)/expo')}` as any)}
-              >
-                <Avatar uri={item.avatar_url} name={item.full_name} size={48} />
-                <View style={s.attendeeBody}>
-                  <Text style={s.attendeeName} numberOfLines={1}>{item.full_name || 'Unknown'}</Text>
-                  {item.company ? <Text style={s.attendeeMeta} numberOfLines={1}>{item.company}</Text> : null}
-                  {item.title ? <Text style={s.attendeeMeta} numberOfLines={1}>{item.title}</Text> : null}
-                  {item.meetingTimes.length > 0 ? (
-                    <View style={s.attendeeTimes}>
-                      {item.meetingTimes.slice(0, 2).map((t, i) => (
-                        <Text key={i} style={s.attendeeTime}>{formatMeetingTime(t.start, t.end)}</Text>
-                      ))}
-                      {item.meetingTimes.length > 2 ? <Text style={s.attendeeTime}>+{item.meetingTimes.length - 2} more</Text> : null}
-                    </View>
-                  ) : null}
-                </View>
-                <ChevronRight size={22} color={colors.textMuted} strokeWidth={2} />
-              </TouchableOpacity>
-            )}
+            renderItem={({ item }) => {
+              if (item.kind === 'section') {
+                return (
+                  <View style={s.repSectionHeader}>
+                    <Text style={s.repSectionTitle}>{item.label}</Text>
+                  </View>
+                );
+              }
+              const attendee = item.attendee;
+              const attendanceRows = repAttendanceByAttendee[attendee.id] ?? [];
+              const attendeeToken = repBadgeTokensByAttendee[attendee.id];
+              return (
+                <TouchableOpacity
+                  style={s.attendeeCard}
+                  activeOpacity={0.7}
+                  onPress={() => router.push(`/(tabs)/feed/user/${attendee.id}?from=${encodeURIComponent('/(tabs)/expo')}` as any)}
+                >
+                  <Avatar uri={attendee.avatar_url} name={attendee.full_name} size={48} />
+                  <View style={s.attendeeBody}>
+                    <Text style={s.attendeeName} numberOfLines={1}>{attendee.full_name || 'Unknown'}</Text>
+                    {attendee.company ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.company}</Text> : null}
+                    {attendee.title ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.title}</Text> : null}
+                    {attendee.meetingTimes.length > 0 ? (
+                      <View style={s.attendeeTimes}>
+                        {attendee.meetingTimes.slice(0, 2).map((t, i) => (
+                          <Text key={i} style={s.attendeeTime}>{formatMeetingTime(t.start, t.end)}</Text>
+                        ))}
+                        {attendee.meetingTimes.length > 2 ? <Text style={s.attendeeTime}>+{attendee.meetingTimes.length - 2} more</Text> : null}
+                      </View>
+                    ) : null}
+                    {attendeeToken ? (
+                      <TouchableOpacity
+                        style={s.markAttendanceLink}
+                        onPress={() =>
+                          router.push(
+                            `/(tabs)/profile/badge-scan?t=${encodeURIComponent(attendeeToken)}&from=${encodeURIComponent('/(tabs)/expo')}` as any
+                          )
+                        }
+                      >
+                        <Text style={s.markAttendanceLinkText}>Mark attendance</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                    {attendanceRows.length > 0 ? (
+                      <View style={s.scanSummaryWrap}>
+                        {attendanceRows.slice(0, 2).map((row) => (
+                          <View key={row.id} style={s.scanRow}>
+                            <View style={[s.scanPill, row.attended_meeting ? s.scanPillAttended : s.scanPillNoShow]}>
+                              <Text style={[s.scanPillText, row.attended_meeting ? s.scanPillTextAttended : s.scanPillTextNoShow]}>
+                                {row.attended_meeting ? 'Attended' : 'No-show'}
+                              </Text>
+                            </View>
+                            <Text style={s.scanMeta} numberOfLines={1}>
+                              {formatVendorAttendanceMeetingLine(row, attendee)}
+                            </Text>
+                            {row.note?.trim() ? (
+                              <Text style={s.scanNote} numberOfLines={2}>
+                                {row.note.trim()}
+                              </Text>
+                            ) : null}
+                          </View>
+                        ))}
+                        {attendanceRows.length > 2 ? (
+                          <Text style={s.scanMeta}>+{attendanceRows.length - 2} more saved</Text>
+                        ) : null}
+                      </View>
+                    ) : (
+                      <Text style={s.scanNotRecorded}>Not scanned yet</Text>
+                    )}
+                  </View>
+                  <ChevronRight size={22} color={colors.textMuted} strokeWidth={2} />
+                </TouchableOpacity>
+              );
+            }}
           />
         )}
       </SafeAreaView>
@@ -390,7 +641,7 @@ export default function ExpoScreen() {
   }
 
   return (
-    <SafeAreaView style={s.container} edges={['bottom']}>
+    <SafeAreaView style={s.container} edges={[]}>
       {error ? (
         <View style={s.errorBanner}>
           <Text style={s.errorText}>{error}</Text>
@@ -422,16 +673,31 @@ export default function ExpoScreen() {
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
           }
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={s.card}
-              activeOpacity={0.7}
-              onPress={() => router.push(`/expo/${item.id}` as any)}
-            >
+          renderItem={({ item, index }) => {
+            const currentIsPast = isBoothMeetingPast(item);
+            const prevIsPast = index > 0 ? isBoothMeetingPast(booths[index - 1] as BoothWithMeeting) : false;
+            const showPastHeader = currentIsPast && !prevIsPast;
+            return (
+              <>
+                {showPastHeader ? (
+                  <View style={s.pastSectionHeader}>
+                    <Text style={s.pastSectionTitle}>Past meetings</Text>
+                  </View>
+                ) : null}
+                <TouchableOpacity
+                  style={s.card}
+                  activeOpacity={0.7}
+                  onPress={() => router.push(`/expo/${item.id}` as any)}
+                >
               <View style={s.cardInner}>
                 <View style={s.cardRow}>
                   {item.logo_url ? (
-                    <Image source={{ uri: item.logo_url }} style={s.logo} />
+                    <Image
+                      source={{ uri: item.logo_url }}
+                      style={s.logo}
+                      resizeMode="contain"
+                      accessibilityIgnoresInvertColors
+                    />
                   ) : (
                     <View style={s.logoPlaceholder}>
                       <Store size={28} color={colors.textMuted} />
@@ -461,18 +727,26 @@ export default function ExpoScreen() {
                       try {
                         const endDate = parseISO((item.meetingEnd ?? '').replace(' ', 'T'));
                         if (!Number.isNaN(endDate.getTime()) && isPast(endDate) && item.meetingSlotId) {
+                          const alreadyRated = ratedMeetingSlotIds.has(item.meetingSlotId);
                           return (
-                            <TouchableOpacity
-                              style={s.rateMeetingBtn}
-                              onPress={() => {
-                                const fromEnc = encodeURIComponent('/(tabs)/expo');
-                                router.push(`/expo/${item.id}?from=${fromEnc}&rate_slot_id=${encodeURIComponent(item.meetingSlotId!)}` as any);
-                              }}
-                              activeOpacity={0.7}
-                            >
-                              <Star size={18} color={colors.primary} />
-                              <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
-                            </TouchableOpacity>
+                            alreadyRated ? (
+                              <View style={s.ratedMeetingRow}>
+                                <Star size={18} color={colors.primary} />
+                                <Text style={s.rateMeetingBtnText}>Already rated</Text>
+                              </View>
+                            ) : (
+                              <TouchableOpacity
+                                style={s.rateMeetingBtn}
+                                onPress={() => {
+                                  const fromEnc = encodeURIComponent('/(tabs)/expo');
+                                  router.push(`/expo/${item.id}?from=${fromEnc}&rate_slot_id=${encodeURIComponent(item.meetingSlotId!)}` as any);
+                                }}
+                                activeOpacity={0.7}
+                              >
+                                <Star size={18} color={colors.primary} />
+                                <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
+                              </TouchableOpacity>
+                            )
                           );
                         }
                       } catch {}
@@ -486,8 +760,10 @@ export default function ExpoScreen() {
                   </View>
                 ) : null}
               </View>
-            </TouchableOpacity>
-          )}
+                </TouchableOpacity>
+              </>
+            );
+          }}
         />
       )}
     </SafeAreaView>
@@ -508,6 +784,10 @@ const s = StyleSheet.create({
   repHeader: { marginBottom: 16, paddingHorizontal: 4 },
   repTitle: { fontSize: 20, fontWeight: '700', color: colors.text },
   repSubtitle: { fontSize: 14, color: colors.textSecondary, marginTop: 4 },
+  repSectionHeader: { marginTop: 4, marginBottom: 8, paddingHorizontal: 4 },
+  repSectionTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, letterSpacing: 0.4, textTransform: 'uppercase' },
+  pastSectionHeader: { marginTop: 4, marginBottom: 8, paddingHorizontal: 4 },
+  pastSectionTitle: { fontSize: 13, fontWeight: '700', color: colors.textMuted, letterSpacing: 0.4, textTransform: 'uppercase' },
   attendeeCard: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -522,6 +802,19 @@ const s = StyleSheet.create({
   attendeeMeta: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
   attendeeTimes: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
   attendeeTime: { fontSize: 13, color: colors.primary, fontWeight: '500' },
+  markAttendanceLink: { marginTop: 8, alignSelf: 'flex-start' },
+  markAttendanceLinkText: { fontSize: 13, color: colors.primary, fontWeight: '600' },
+  scanSummaryWrap: { marginTop: 8, gap: 4 },
+  scanRow: { gap: 3 },
+  scanPill: { alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
+  scanPillAttended: { backgroundColor: '#dcfce7' },
+  scanPillNoShow: { backgroundColor: '#fee2e2' },
+  scanPillText: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.3 },
+  scanPillTextAttended: { color: '#166534' },
+  scanPillTextNoShow: { color: '#991b1b' },
+  scanMeta: { fontSize: 12, color: colors.textSecondary },
+  scanNote: { fontSize: 12, color: colors.text, lineHeight: 16 },
+  scanNotRecorded: { marginTop: 8, fontSize: 12, color: colors.textMuted },
   card: {
     backgroundColor: colors.card,
     borderRadius: 16,
@@ -531,10 +824,15 @@ const s = StyleSheet.create({
   },
   cardInner: { padding: 16 },
   cardRow: { flexDirection: 'row', alignItems: 'center' },
-  logo: { width: 52, height: 52, borderRadius: 12 },
+  logo: {
+    width: 56,
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+  },
   logoPlaceholder: {
-    width: 52,
-    height: 52,
+    width: 56,
+    height: 56,
     borderRadius: 12,
     backgroundColor: colors.surface,
     justifyContent: 'center',
@@ -565,6 +863,17 @@ const s = StyleSheet.create({
     alignSelf: 'flex-start',
   },
   rateMeetingBtnText: { fontSize: 15, fontWeight: '600', color: colors.primary },
+  ratedMeetingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    backgroundColor: colors.primaryFaded,
+    borderRadius: 10,
+    alignSelf: 'flex-start',
+  },
   metaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 10, gap: 6 },
   metaText: { fontSize: 13, color: colors.textMuted },
   websiteBtn: { flexDirection: 'row', alignItems: 'center', marginTop: 6, gap: 4 },

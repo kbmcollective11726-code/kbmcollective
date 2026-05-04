@@ -1,14 +1,14 @@
-// Create user accounts in bulk and/or link existing users to an event with per-row name + role(s).
-// CSV may send comma-separated roles; we set event_members.role (primary) + event_members.roles (array).
-// - Normal mode: default_password required; creates Auth users; duplicate emails → link + optional name update.
-// - link_only: no password; only existing public.users by email → update full_name, upsert event_members.
+// Create user accounts in bulk and/or link existing users to an event with per-row profile + role(s).
+// Rows may include full_name, title, company (maps to public.users); roles → event_members.role + roles array.
+// - Normal mode: default_password required; creates Auth users; duplicate emails → link + optional profile update.
+// - link_only: no password; only existing public.users by email → update profile fields when provided, upsert event_members.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type",
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",
 };
 
 function json(body: object, status: number) {
@@ -70,7 +70,14 @@ function isAlreadyExistsError(err: { message?: string } | null): boolean {
   );
 }
 
-type Row = { email: string; full_name?: string; role?: string; roles?: string[] };
+type Row = {
+  email: string;
+  full_name?: string;
+  title?: string;
+  company?: string;
+  role?: string;
+  roles?: string[];
+};
 
 type Body = {
   emails?: string[];
@@ -122,6 +129,8 @@ Deno.serve(async (req: Request) => {
       return {
         email: String(row.email ?? "").trim().toLowerCase(),
         full_name: typeof row.full_name === "string" ? row.full_name.trim() : undefined,
+        title: typeof row.title === "string" ? row.title.trim() : undefined,
+        company: typeof row.company === "string" ? row.company.trim() : undefined,
         role: row.role,
         roles: Array.isArray(row.roles) ? row.roles.map((x) => String(x).trim().toLowerCase()) : undefined,
       };
@@ -176,10 +185,24 @@ Deno.serve(async (req: Request) => {
   let created = 0;
   let linked = 0;
 
+  function profilePatchFromRow(
+    fullName: string | undefined,
+    row: Row,
+  ): Record<string, string> {
+    const patch: Record<string, string> = {};
+    if (fullName && fullName.length > 0) patch.full_name = fullName;
+    const t = row.title?.trim();
+    if (t) patch.title = t;
+    const c = row.company?.trim();
+    if (c) patch.company = c;
+    return patch;
+  }
+
   async function linkExistingUser(
     email: string,
-    fullName: string | undefined,
     rolesList: string[],
+    row: Row,
+    fullNameForProfile: string | undefined,
   ): Promise<boolean> {
     const { data: prof } = await admin.from("users").select("id").eq("email", email).maybeSingle();
     const userId = (prof as { id?: string } | null)?.id;
@@ -187,8 +210,9 @@ Deno.serve(async (req: Request) => {
       errors.push(`${email}: not found (user must sign up or use bulk create first)`);
       return false;
     }
-    if (fullName && fullName.length > 0) {
-      await admin.from("users").update({ full_name: fullName }).eq("id", userId);
+    const patch = profilePatchFromRow(fullNameForProfile, row);
+    if (Object.keys(patch).length > 0) {
+      await admin.from("users").update(patch).eq("id", userId);
     }
     if (eventId) {
       const pr = primaryRole(rolesList);
@@ -218,7 +242,7 @@ Deno.serve(async (req: Request) => {
       }
       const rolesList = rolesFromRow(row, "attendee");
       const fullName = row.full_name && row.full_name.length > 0 ? row.full_name : undefined;
-      const ok = await linkExistingUser(email, fullName, rolesList);
+      const ok = await linkExistingUser(email, rolesList, row, fullName);
       if (ok) linked++;
     }
     return json({
@@ -250,11 +274,8 @@ Deno.serve(async (req: Request) => {
 
       if (error) {
         if (isAlreadyExistsError(error)) {
-          const ok = await linkExistingUser(
-            email,
-            row.full_name && row.full_name.length > 0 ? row.full_name : fullName,
-            rolesList,
-          );
+          const nameForProfile = row.full_name && row.full_name.length > 0 ? row.full_name : fullName;
+          const ok = await linkExistingUser(email, rolesList, row, nameForProfile);
           if (ok) linked++;
         } else {
           errors.push(`${email}: ${error.message}`);
@@ -265,6 +286,10 @@ Deno.serve(async (req: Request) => {
       if (newUser?.user?.id) {
         created++;
         toMember.push({ user_id: newUser.user.id, roles: rolesList });
+        const patch = profilePatchFromRow(fullName, row);
+        if (Object.keys(patch).length > 0) {
+          await admin.from("users").update(patch).eq("id", newUser.user.id);
+        }
       }
     } catch (e) {
       errors.push(`${email}: ${e instanceof Error ? e.message : "Failed"}`);

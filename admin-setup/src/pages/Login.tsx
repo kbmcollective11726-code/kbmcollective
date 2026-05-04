@@ -43,10 +43,14 @@ export default function Login() {
       }
       const { data: memberRows } = await supabase
         .from('event_members')
-        .select('event_id')
-        .eq('user_id', user.id)
-        .in('role', ['admin', 'super_admin']);
-      const hasEventAdminRole = (memberRows ?? []).length > 0;
+        .select('event_id, role, roles')
+        .eq('user_id', user.id);
+      const hasEventAdminRole = (memberRows ?? []).some(
+        (r: { role?: string; roles?: string[] | null }) =>
+          r.role === 'admin' ||
+          r.role === 'super_admin' ||
+          (Array.isArray(r.roles) && (r.roles.includes('admin') || r.roles.includes('super_admin')))
+      );
       if (hasEventAdminRole) {
         navigate('/', { replace: true });
         return;

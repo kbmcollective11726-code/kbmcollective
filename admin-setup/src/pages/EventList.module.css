@@ -45,12 +45,19 @@
 
 .empty {
   color: var(--color-text-secondary);
-  margin: 0;
+  margin: 0 0 16px;
+}
+
+.sectionTitle {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
 }
 
 .list {
   list-style: none;
-  margin: 0;
+  margin: 0 0 18px;
   padding: 0;
   display: flex;
   flex-direction: column;
@@ -58,14 +65,15 @@
 }
 
 .card {
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
   padding: 20px 24px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  text-decoration: none;
-  color: inherit;
-  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+  transition: background var(--transition), border-color var(--transition), box-shadow var(--transition);
   box-shadow: var(--shadow-card);
 }
 
@@ -73,7 +81,20 @@
   background: var(--color-surface-hover);
   border-color: var(--color-accent);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
-  transform: translateY(-2px);
+}
+
+.eventLink {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
+
+.eventLink:hover {
   text-decoration: none;
 }
 
@@ -86,4 +107,33 @@
 .meta {
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+.statusBtnOk,
+.statusBtnWarn {
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  min-width: 96px;
+}
+
+.statusBtnOk {
+  background: #dcfce7;
+  color: #166534;
+  border-color: #86efac;
+}
+
+.statusBtnWarn {
+  background: #fee2e2;
+  color: #991b1b;
+  border-color: #fecaca;
+}
+
+.statusBtnOk:disabled,
+.statusBtnWarn:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
 }

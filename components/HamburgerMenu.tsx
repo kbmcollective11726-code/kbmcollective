@@ -30,6 +30,9 @@ import {
   Calendar,
   Trophy,
   Store,
+  BookOpen,
+  QrCode,
+  FileText,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
@@ -38,6 +41,23 @@ import { useEventStore } from '../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../lib/supabase';
 import { setAppBadgeCount } from '../lib/pushNotifications';
 import { colors } from '../constants/colors';
+import type { EventSponsor } from '../lib/types';
+import { SponsorMark } from './SponsorMark';
+
+/** New columns, when missing, follow legacy `show_in_hamburger`. */
+function sponsorUsesHamburgerHeader(s: EventSponsor): boolean {
+  const h = s.show_in_hamburger_header;
+  if (h === true) return true;
+  if (h === false) return false;
+  return s.show_in_hamburger === true;
+}
+
+function sponsorUsesHamburgerFooter(s: EventSponsor): boolean {
+  const f = s.show_in_hamburger_footer;
+  if (f === true) return true;
+  if (f === false) return false;
+  return s.show_in_hamburger === true;
+}
 
 function getLiveWallBaseUrl(): string {
   const fromEnv =
@@ -60,10 +80,13 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   const [visible, setVisible] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
+  const [isVendorRep, setIsVendorRep] = useState(false);
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuthStore();
   const { currentEvent, adminCheckTick } = useEventStore();
   const isPlatformAdmin = user?.is_platform_admin === true;
+  const [sponsorsMenuHeader, setSponsorsMenuHeader] = useState<EventSponsor[]>([]);
+  const [sponsorsMenuFooter, setSponsorsMenuFooter] = useState<EventSponsor[]>([]);
 
   const fetchUnreadCount = useCallback(() => {
     if (!user?.id) return;
@@ -155,21 +178,95 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
     await tryAnyEventAdmin();
   }, [user?.id, currentEvent?.id, tryAnyEventAdmin]);
 
+  const fetchVendorRepStatus = useCallback(async () => {
+    if (!user?.id || !currentEvent?.id) {
+      setIsVendorRep(false);
+      return;
+    }
+    try {
+      const repsRes = await supabase
+        .from('vendor_booth_reps')
+        .select('booth_id, vendor_booths!inner(event_id)')
+        .eq('user_id', user.id)
+        .eq('vendor_booths.event_id', currentEvent.id);
+      if (!repsRes.error && (repsRes.data?.length ?? 0) > 0) {
+        setIsVendorRep(true);
+        return;
+      }
+      const legacy = await supabase
+        .from('vendor_booths')
+        .select('id')
+        .eq('event_id', currentEvent.id)
+        .eq('contact_user_id', user.id)
+        .limit(1)
+        .maybeSingle();
+      setIsVendorRep(!legacy.error && legacy.data != null);
+    } catch {
+      setIsVendorRep(false);
+    }
+  }, [user?.id, currentEvent?.id]);
+
   useEffect(() => {
     fetchEventAdminStatus();
   }, [fetchEventAdminStatus, adminCheckTick]);
 
   useEffect(() => {
+    fetchVendorRepStatus();
+  }, [fetchVendorRepStatus, adminCheckTick]);
+
+  useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && user?.id) fetchEventAdminStatus();
+      if (state === 'active' && user?.id) {
+        fetchEventAdminStatus();
+        fetchVendorRepStatus();
+      }
     });
     return () => sub.remove();
-  }, [user?.id, fetchEventAdminStatus]);
+  }, [user?.id, fetchEventAdminStatus, fetchVendorRepStatus]);
 
   // Refetch when menu opens so she always sees latest role (e.g. just made admin, or event selected after load)
   useEffect(() => {
-    if (visible && user?.id) fetchEventAdminStatus();
-  }, [visible, user?.id, fetchEventAdminStatus]);
+    if (visible && user?.id) {
+      fetchEventAdminStatus();
+      fetchVendorRepStatus();
+    }
+  }, [visible, user?.id, fetchEventAdminStatus, fetchVendorRepStatus]);
+
+  useEffect(() => {
+    setSponsorsMenuHeader([]);
+    setSponsorsMenuFooter([]);
+  }, [currentEvent?.id]);
+
+  useEffect(() => {
+    if (!currentEvent?.id || !visible) return;
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('event_sponsors')
+        .select(
+          'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_info_screen, show_in_hamburger, show_in_hamburger_header, show_in_hamburger_footer, show_on_schedule, show_on_feed, is_active'
+        )
+        .eq('event_id', currentEvent.id)
+        .eq('is_active', true)
+        .order('sort_order', { ascending: true });
+      if (cancelled) return;
+      if (error) {
+        if (__DEV__) {
+          // eslint-disable-next-line no-console
+          console.warn('HamburgerMenu: event_sponsors fetch failed', error);
+        }
+        setSponsorsMenuHeader([]);
+        setSponsorsMenuFooter([]);
+        return;
+      }
+      const rows = (data ?? []) as EventSponsor[];
+      setSponsorsMenuHeader(rows.filter(sponsorUsesHamburgerHeader));
+      setSponsorsMenuFooter(rows.filter(sponsorUsesHamburgerFooter));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentEvent?.id, visible]);
 
   const close = () => setVisible(false);
 
@@ -203,7 +300,10 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
     Linking.openURL(url).catch(() => {});
   };
 
-  const menuWidth = Math.min(width * 0.8, 320);
+  /** Slightly narrower drawer — easier to scan, less “wide sheet” on phone. */
+  const menuWidth = Math.min(width * 0.7, 288);
+  /** Match `CompactSponsorStrip` stacked row height for the drawer width. */
+  const footerSponsorLogoH = Math.min(120, Math.max(72, Math.round(menuWidth / 3.35)));
 
   const openMenu = () => {
     setVisible(true);
@@ -213,7 +313,12 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
 
   return (
     <>
-      <TouchableOpacity onPress={openMenu} style={styles.trigger} hitSlop={12}>
+      <TouchableOpacity
+        onPress={openMenu}
+        style={styles.trigger}
+        hitSlop={12}
+        activeOpacity={0.85}
+      >
         <View>
           <Menu size={24} color={colors.text} />
           {unreadNotifications > 0 && (
@@ -231,21 +336,89 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
             onPress={(e) => e.stopPropagation()}
           >
             <View style={styles.drawerHeader}>
-              <Text style={styles.drawerTitle}>Menu</Text>
-              <TouchableOpacity onPress={close} hitSlop={12}>
-                <X size={24} color={colors.text} />
-              </TouchableOpacity>
+              <View style={styles.drawerHeaderLeft}>
+                <Text style={styles.drawerTitle}>Menu</Text>
+                {sponsorsMenuHeader.slice(0, 2).map((s, i) => (
+                  <TouchableOpacity
+                    key={s.id}
+                    style={[styles.headerSponsorBtn, i > 0 ? { marginLeft: 8 } : null]}
+                    onPress={() => (s.website_url ? Linking.openURL(s.website_url) : undefined)}
+                    activeOpacity={s.website_url ? 0.75 : 1}
+                    disabled={!s.website_url}
+                    hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
+                    accessibilityLabel={s.company_name}
+                    accessibilityRole={s.website_url ? 'link' : 'text'}
+                  >
+                    {s.logo_url?.trim() ? (
+                      <View style={styles.headerSponsorImageWrap} pointerEvents="none">
+                        <SponsorMark uri={s.logo_url} style={styles.headerSponsorImg} />
+                      </View>
+                    ) : (
+                      <Text style={styles.headerSponsorName} numberOfLines={1}>
+                        {s.company_name}
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+              <View style={styles.drawerHeaderClose}>
+                <TouchableOpacity onPress={close} hitSlop={12} accessibilityLabel="Close menu">
+                  <X size={22} color={colors.textMuted} />
+                </TouchableOpacity>
+              </View>
             </View>
 
-            <ScrollView style={styles.menuList} showsVerticalScrollIndicator={false}>
+            <ScrollView
+              style={styles.menuList}
+              contentContainerStyle={styles.menuListContent}
+              showsVerticalScrollIndicator={false}
+            >
               <MenuItem icon={Home} label="Info" onPress={() => navigate('/(tabs)/home')} />
               <MenuItem icon={ImageIcon} label="Feed" onPress={() => navigate('/(tabs)/feed')} />
-              <MenuItem icon={Calendar} label="Agenda" onPress={() => navigate('/(tabs)/schedule')} />
+              {currentEvent?.menu_show_agenda !== false && (
+                <MenuItem icon={Calendar} label="Agenda" onPress={() => navigate('/(tabs)/schedule')} />
+              )}
               <MenuItem icon={Users} label="Community" onPress={() => navigate('/(tabs)/community')} />
               <MenuItem icon={Trophy} label="Rank" onPress={() => navigate('/(tabs)/leaderboard')} />
+              {currentEvent?.menu_show_1on1 !== false && (
+                <MenuItem icon={Store} label="1:1 Meetings" onPress={() => navigate('/(tabs)/expo')} />
+              )}
+              {currentEvent?.menu_show_scan_badge !== false && (
+                <MenuItem
+                  icon={QrCode}
+                  label="Scan badge"
+                  onPress={() => navigate(`/(tabs)/profile/badge-scan?from=${encodeURIComponent(returnTo)}` as any)}
+                />
+              )}
+              {currentEvent?.id &&
+                (isEventAdmin || isPlatformAdmin || isVendorRep) &&
+                currentEvent?.menu_show_notes !== false && (
+                  <MenuItem
+                    icon={FileText}
+                    label="Notes"
+                    onPress={() => navigateToProfileScreen('/profile/badge-notes')}
+                  />
+                )}
               <MenuItem icon={LayoutGrid} label="Photo book" onPress={() => navigate('/(tabs)/photo-book')} />
-              <MenuItem icon={Store} label="B2B" onPress={() => navigate('/(tabs)/expo')} />
-              <MenuItem icon={Tv} label="Live wall" onPress={openLiveWall} />
+              {currentEvent?.menu_show_solution_providers !== false && (
+                <MenuItem
+                  icon={Store}
+                  label="Solution Provider"
+                  onPress={() =>
+                    navigate(
+                      `/(tabs)/solution-providers?from=${encodeURIComponent(returnTo)}` as any
+                    )
+                  }
+                />
+              )}
+              {currentEvent?.menu_show_live_wall !== false && (
+                <MenuItem icon={Tv} label="Live wall" onPress={openLiveWall} />
+              )}
+              <MenuItem
+                icon={BookOpen}
+                label="How to use"
+                onPress={() => navigateToProfileScreen('/profile/user-guide')}
+              />
               <View style={styles.divider} />
               <MenuItem
                 icon={User}
@@ -277,6 +450,35 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                 onPress={handleLogout}
                 labelStyle={styles.logoutLabel}
               />
+              {sponsorsMenuFooter.length > 0 ? (
+                <View style={styles.sponsorMenuSection}>
+                  <View style={styles.sponsorMenuStrip}>
+                    <Text style={styles.sponsorMenuTitle}>Sponsored by</Text>
+                    {sponsorsMenuFooter.map((s, i) => (
+                      <TouchableOpacity
+                        key={s.id}
+                        style={[styles.sponsorFooterRow, i > 0 ? styles.sponsorFooterRowSpacing : null]}
+                        onPress={() => (s.website_url ? Linking.openURL(s.website_url) : undefined)}
+                        activeOpacity={s.website_url ? 0.75 : 1}
+                        disabled={!s.website_url}
+                        accessibilityLabel={s.company_name}
+                      >
+                        {s.tier_label ? <Text style={styles.sponsorMenuTier}>{s.tier_label}</Text> : null}
+                        {s.logo_url?.trim() ? (
+                          <View style={[styles.sponsorFooterLogoShell, { height: footerSponsorLogoH }]}>
+                            <SponsorMark uri={s.logo_url} style={styles.sponsorFooterLogoImg} />
+                          </View>
+                        ) : (
+                          <Text style={styles.sponsorMenuName} numberOfLines={2}>
+                            {s.company_name}
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+              <View style={styles.bottomSpacer} />
             </ScrollView>
           </Pressable>
         </Pressable>
@@ -347,26 +549,73 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    borderBottomWidth: 1,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: colors.border,
+    minHeight: 48,
+  },
+  /** “Menu” + inline sponsor mark(s) on the same row, left side. */
+  drawerHeaderLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+    marginRight: 8,
   },
   drawerTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: colors.text,
+    flexShrink: 0,
+    marginRight: 10,
+    letterSpacing: 0.2,
+  },
+  headerSponsorBtn: {
+    width: 108,
+    height: 34,
+    borderRadius: 4,
+    overflow: 'hidden',
+    backgroundColor: colors.background,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerSponsorImageWrap: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: 'transparent',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  headerSponsorImg: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: colors.background,
+  },
+  headerSponsorName: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    textAlign: 'center',
+    maxWidth: 72,
+  },
+  drawerHeaderClose: {
+    flexShrink: 0,
   },
   menuList: {
     flex: 1,
-    paddingVertical: 8,
+  },
+  menuListContent: {
+    paddingTop: 8,
+    paddingBottom: 70,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 20,
-    gap: 14,
+    paddingVertical: 11,
+    paddingHorizontal: 16,
+    gap: 12,
   },
   menuItemLabel: {
     flex: 1,
@@ -393,9 +642,71 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   divider: {
-    height: 1,
+    height: StyleSheet.hairlineWidth,
     backgroundColor: colors.border,
-    marginVertical: 8,
-    marginHorizontal: 20,
+    marginVertical: 6,
+    marginHorizontal: 16,
+  },
+  bottomSpacer: {
+    height: 14,
+  },
+  /** Full drawer width — inner strip matches Feed / Info `CompactSponsorStrip` band. */
+  sponsorMenuSection: {
+    width: '100%',
+    paddingTop: 6,
+    paddingBottom: 4,
+    marginTop: 4,
+  },
+  sponsorMenuStrip: {
+    width: '100%',
+    backgroundColor: colors.background,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: 10,
+    paddingBottom: 16,
+  },
+  sponsorMenuTitle: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textMuted,
+    letterSpacing: 0.3,
+    marginBottom: 8,
+    paddingHorizontal: 16,
+  },
+  sponsorFooterRow: {
+    width: '100%',
+    alignItems: 'stretch',
+    paddingHorizontal: 6,
+  },
+  sponsorFooterRowSpacing: {
+    marginTop: 12,
+  },
+  sponsorMenuTier: {
+    fontSize: 11,
+    color: colors.textMuted,
+    marginBottom: 6,
+    fontWeight: '500',
+    textAlign: 'center',
+    width: '100%',
+    paddingHorizontal: 16,
+  },
+  sponsorFooterLogoShell: {
+    width: '100%',
+    overflow: 'hidden',
+    backgroundColor: colors.background,
+    justifyContent: 'center',
+  },
+  sponsorFooterLogoImg: {
+    width: '100%',
+    height: '100%',
+    backgroundColor: colors.background,
+  },
+  sponsorMenuName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: colors.text,
+    textAlign: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
   },
 });

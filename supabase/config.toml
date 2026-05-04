@@ -24,6 +24,18 @@ verify_jwt = false
 [functions.process-scheduled-announcements]
 verify_jwt = false
 
-# Admin JWT required (admin-setup / platform admin).
+# JWT validated inside the function; gateway verify_jwt can 401 on browser fetch / newer signing keys.
 [functions.bulk-create-users]
-verify_jwt = true
+verify_jwt = false
+
+[functions.delete-user]
+verify_jwt = false
+
+[functions.admin-reset-user-password]
+verify_jwt = false
+
+[functions.admin-download-post-photo]
+verify_jwt = false
+
+[functions.admin-zip-event-photos]
+verify_jwt = false

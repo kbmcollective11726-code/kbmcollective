@@ -197,6 +197,42 @@
   cursor: not-allowed;
 }
 
+.memberSearch {
+  margin-bottom: 8px;
+}
+
+.contactList {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  padding: 8px 10px;
+  margin-bottom: 16px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.contactRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 14px;
+  color: var(--color-text);
+  padding: 6px 2px;
+  cursor: pointer;
+}
+
+.contactRow input {
+  width: auto;
+  margin: 0;
+}
+
+.searchEmpty {
+  font-size: 13px;
+  color: var(--color-text-secondary, #94a3b8);
+  margin: 0 0 12px;
+  line-height: 1.4;
+}
+
 .repList {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);

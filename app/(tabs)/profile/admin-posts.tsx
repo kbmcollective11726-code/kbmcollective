@@ -111,7 +111,7 @@ export default function AdminPostsScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}><Text style={styles.subtitle}>Select an event first.</Text></View>
       </SafeAreaView>
     );
@@ -119,14 +119,14 @@ export default function AdminPostsScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}><ActivityIndicator size="large" color={colors.primary} /></View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <FlatList
         data={posts}
         keyExtractor={(item) => item.id}

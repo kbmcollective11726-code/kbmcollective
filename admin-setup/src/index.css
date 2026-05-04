@@ -1,28 +1,31 @@
-/* KBM Collective theme – dark background, gold accent (matches app) */
+@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* KBM modern classy theme */
 :root {
-  --color-primary: #0a0a0a;
-  --color-primary-light: #1a1a1a;
-  --color-background: #0a0a0a;
-  --color-surface: #1a1a1a;
-  --color-surface-hover: #262626;
-  --color-border: #334155;
-  --color-border-light: #475569;
-  --color-text: #f8fafc;
-  --color-text-secondary: #94a3b8;
-  --color-text-muted: #64748b;
-  --color-accent: #d4af37;
-  --color-accent-hover: #c5a227;
-  --color-accent-muted: rgba(212, 175, 55, 0.15);
+  --color-primary: #1a2332;
+  --color-primary-light: #252f42;
+  --color-background: #f1f3f5;
+  --color-surface: #ffffff;
+  --color-surface-hover: #f8f9fa;
+  --color-border: #e9ecef;
+  --color-border-light: #dee2e6;
+  --color-text: #1a2332;
+  --color-text-secondary: #495057;
+  --color-text-muted: #6c757d;
+  --color-accent: #c9a961;
+  --color-accent-hover: #b8954d;
+  --color-accent-muted: rgba(201, 169, 97, 0.14);
   --color-success: #22c55e;
   --color-danger: #ef4444;
   --color-danger-bg: rgba(239, 68, 68, 0.15);
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-display: 'Playfair Display', Georgia, serif;
   --radius: 12px;
   --radius-sm: 8px;
   --radius-lg: 16px;
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 4px 24px rgba(0, 0, 0, 0.4);
-  --shadow-card: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow: 0 2px 8px rgba(26, 35, 50, 0.08);
+  --shadow-lg: 0 8px 30px rgba(26, 35, 50, 0.12);
+  --shadow-card: 0 4px 12px rgba(26, 35, 50, 0.09);
   --transition: 0.2s ease;
 }
 
@@ -38,6 +41,11 @@ body {
   color: var(--color-text);
   background: var(--color-background);
   -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  color: var(--color-text);
 }
 
 a {
@@ -62,4 +70,64 @@ button {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+input, textarea, select {
+  border: 1px solid var(--color-border-light);
+  border-radius: 6px;
+  padding: 0.7rem 0.9rem;
+  transition: all 0.25s ease;
+}
+
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px rgba(201, 169, 97, 0.15);
+}
+
+button, .btn, [class*='btn'] {
+  border-radius: 6px;
+  transition: all 0.25s ease;
+}
+
+table thead {
+  background: var(--color-primary);
+}
+
+table th {
+  color: var(--color-accent);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+table tbody tr:hover {
+  background: #f8f9fa;
+}
+
+/* broad visual polish across existing module class names */
+[class*='card'], article, .panel {
+  border-left: 3px solid var(--color-accent);
+  box-shadow: var(--shadow-card);
+}
+
+[class*='card']:hover {
+  box-shadow: var(--shadow-lg);
+}
+
+[class*='btnPrimary'], button[type='submit'] {
+  background: var(--color-accent) !important;
+  color: #1a2332 !important;
+  border: none !important;
+}
+
+[class*='btnPrimary']:hover,
+button[type='submit']:hover {
+  background: var(--color-accent-hover) !important;
+}
+
+@media print {
+  body {
+    background: #fff !important;
+  }
 }

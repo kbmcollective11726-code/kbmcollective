@@ -1,10 +1,63 @@
 import { create } from 'zustand';
+import type { User as AuthUser } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
 import { supabase } from '../lib/supabase';
 import { getPasswordResetRedirectUrl } from '../lib/passwordResetRedirect';
 import { registerPushToken } from '../lib/pushNotifications';
 import { useEventStore } from './eventStore';
 import { User } from '../lib/types';
+
+/**
+ * Load public.users profile, or create it if missing (bulk/legacy accounts may have auth without a row).
+ * Falls back to a minimal in-memory profile if insert is not allowed so navigation still works.
+ */
+async function fetchOrCreatePublicUser(authUser: AuthUser): Promise<User> {
+  const { data: existing } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', authUser.id)
+    .maybeSingle();
+  if (existing) return existing as User;
+
+  const email = (authUser.email ?? '').trim().toLowerCase();
+  const meta = authUser.user_metadata as Record<string, unknown> | undefined;
+  const metaName = meta && typeof meta.full_name === 'string' ? meta.full_name.trim() : '';
+  const full_name = metaName || (email.includes('@') ? email.split('@')[0] : 'User');
+
+  const { data: inserted, error } = await supabase
+    .from('users')
+    .insert({
+      id: authUser.id,
+      email: email || `noreply+${authUser.id}@users.placeholder`,
+      full_name,
+    })
+    .select()
+    .maybeSingle();
+
+  if (inserted) return inserted as User;
+
+  const { data: afterRace } = await supabase.from('users').select('*').eq('id', authUser.id).maybeSingle();
+  if (afterRace) return afterRace as User;
+
+  const now = new Date().toISOString();
+  if (__DEV__ && error) console.warn('[auth] users row missing and insert failed; using session fallback:', error.message);
+  return {
+    id: authUser.id,
+    email: email || 'unknown@local',
+    full_name,
+    avatar_url: null,
+    title: null,
+    company: null,
+    linkedin_url: null,
+    bio: null,
+    phone: null,
+    push_token: null,
+    session_reminder_skip_same_room: true,
+    is_active: true,
+    created_at: now,
+    updated_at: now,
+  };
+}
 
 /** Single listener for login / logout / refresh (call once after session restore). */
 function bindSupabaseAuthListener(
@@ -26,15 +79,11 @@ function bindSupabaseAuthListener(
         set({ session, isAuthenticated: true });
         return;
       }
-      const { data: profile } = await supabase
-        .from('users')
-        .select('*')
-        .eq('id', session.user.id)
-        .maybeSingle();
+      const profile = await fetchOrCreatePublicUser(session.user);
 
       set({
         session,
-        user: profile ?? get().user,
+        user: profile,
         isAuthenticated: true,
       });
       if (Constants.appOwnership !== 'expo' && (event === 'SIGNED_IN' || event === 'INITIAL_SESSION')) {
@@ -78,16 +127,11 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       ]);
 
       if (session?.user) {
-        // Fetch the full user profile (maybeSingle avoids throw when row missing or duplicate)
-        const { data: profile } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', session.user.id)
-          .maybeSingle();
+        const profile = await fetchOrCreatePublicUser(session.user);
 
         set({
           session,
-          user: profile ?? null,
+          user: profile,
           isAuthenticated: true,
           isLoading: false,
         });
@@ -101,14 +145,10 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       try {
         const { data: { session: recovered } } = await supabase.auth.getSession();
         if (recovered?.user) {
-          const { data: profile } = await supabase
-            .from('users')
-            .select('*')
-            .eq('id', recovered.user.id)
-            .maybeSingle();
+          const profile = await fetchOrCreatePublicUser(recovered.user);
           set({
             session: recovered,
-            user: profile ?? null,
+            user: profile,
             isAuthenticated: true,
             isLoading: false,
           });
@@ -139,14 +179,10 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       });
       if (error) return { error: error.message };
       if (data?.session?.user) {
-        const { data: profile } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', data.session.user.id)
-          .maybeSingle();
+        const profile = await fetchOrCreatePublicUser(data.session.user);
         set({
           session: data.session,
-          user: profile ?? null,
+          user: profile,
           isAuthenticated: true,
         });
       }

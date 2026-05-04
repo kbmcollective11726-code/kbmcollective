@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,9 @@ import {
   Alert,
   Platform,
   KeyboardAvoidingView,
+  Dimensions,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
@@ -40,6 +41,20 @@ export default function AdminAnnouncementNewScreen() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [sending, setSending] = useState(false);
   const [memberOptions, setMemberOptions] = useState<EventMemberOption[]>([]);
+  const [userSearch, setUserSearch] = useState('');
+  const insets = useSafeAreaInsets();
+
+  const filteredMembers = useMemo(() => {
+    const q = userSearch.trim().toLowerCase();
+    if (!q) return memberOptions;
+    return memberOptions.filter(
+      (m) =>
+        m.full_name.toLowerCase().includes(q) ||
+        m.role.toLowerCase().includes(q)
+    );
+  }, [memberOptions, userSearch]);
+
+  const userListMaxHeight = Math.min(360, Dimensions.get('window').height * 0.42);
 
   useEffect(() => {
     if (!currentEvent?.id) return;
@@ -116,7 +131,12 @@ export default function AdminAnnouncementNewScreen() {
 
     setSending(true);
     try {
-      // Base columns only – work with default schema (no migration required for Send now)
+      const targetingFields = {
+        target_type: targetType,
+        target_audience: targetType === 'audience' ? audienceRoles : null,
+        target_user_ids: targetType === 'specific' ? selectedUserIds : null,
+      };
+
       const basePayload = {
         event_id: currentEvent.id,
         title: title.trim(),
@@ -124,6 +144,7 @@ export default function AdminAnnouncementNewScreen() {
         priority: 'normal',
         send_push: scheduleNow,
         sent_by: user.id,
+        ...targetingFields,
       };
 
       if (scheduleNow) {
@@ -134,9 +155,6 @@ export default function AdminAnnouncementNewScreen() {
         const { error } = await supabase.from('announcements').insert({
           ...basePayload,
           scheduled_at: scheduledAt,
-          target_type: targetType,
-          target_audience: targetType === 'audience' ? audienceRoles : null,
-          target_user_ids: targetType === 'specific' ? selectedUserIds : null,
         });
         if (error) {
           const columnMissing = /column .* does not exist/i.test(error.message) || /could not find.*scheduled_at/i.test(error.message);
@@ -187,16 +205,20 @@ export default function AdminAnnouncementNewScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}><Text style={styles.subtitle}>Select an event first.</Text></View>
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}>
-        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled" keyboardDismissMode="interactive">
+        <ScrollView
+          contentContainerStyle={[styles.content, { paddingBottom: insets.bottom + 100 }]}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="interactive"
+        >
         <Text style={styles.label}>Title</Text>
         <TextInput style={styles.input} value={title} onChangeText={setTitle} placeholder="Announcement title" placeholderTextColor={colors.textMuted} />
         <Text style={styles.label}>Message</Text>
@@ -206,13 +228,19 @@ export default function AdminAnnouncementNewScreen() {
         <View style={styles.targetRow}>
           <TouchableOpacity
             style={[styles.targetChip, targetType === 'all' && styles.targetChipActive]}
-            onPress={() => setTargetType('all')}
+            onPress={() => {
+              setTargetType('all');
+              setUserSearch('');
+            }}
           >
             <Text style={[styles.targetChipText, targetType === 'all' && styles.targetChipTextActive]}>All</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.targetChip, targetType === 'audience' && styles.targetChipActive]}
-            onPress={() => setTargetType('audience')}
+            onPress={() => {
+              setTargetType('audience');
+              setUserSearch('');
+            }}
           >
             <Text style={[styles.targetChipText, targetType === 'audience' && styles.targetChipTextActive]}>By role</Text>
           </TouchableOpacity>
@@ -241,18 +269,44 @@ export default function AdminAnnouncementNewScreen() {
         )}
 
         {targetType === 'specific' && (
-          <View style={styles.userList}>
-            {memberOptions.slice(0, 50).map((m) => (
-              <TouchableOpacity
-                key={m.user_id}
-                style={[styles.userRow, selectedUserIds.includes(m.user_id) && styles.userRowSelected]}
-                onPress={() => toggleUserSelection(m.user_id)}
-              >
-                <Text style={styles.userName}>{m.full_name}</Text>
-                <Text style={styles.userRole}>{m.role}</Text>
-              </TouchableOpacity>
-            ))}
-            {memberOptions.length > 50 && <Text style={styles.hint}>Showing first 50 members</Text>}
+          <View style={styles.userListSection}>
+            <TextInput
+              style={styles.searchInput}
+              value={userSearch}
+              onChangeText={setUserSearch}
+              placeholder="Search by name or role…"
+              placeholderTextColor={colors.textMuted}
+              autoCapitalize="none"
+              autoCorrect={false}
+              {...(Platform.OS === 'ios' ? { clearButtonMode: 'while-editing' as const } : {})}
+            />
+            <ScrollView
+              style={[styles.userListScroll, { maxHeight: userListMaxHeight }]}
+              nestedScrollEnabled
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator
+            >
+              {filteredMembers.map((m) => (
+                <TouchableOpacity
+                  key={m.user_id}
+                  style={[styles.userRow, selectedUserIds.includes(m.user_id) && styles.userRowSelected]}
+                  onPress={() => toggleUserSelection(m.user_id)}
+                >
+                  <Text style={styles.userName} numberOfLines={1}>
+                    {m.full_name}
+                  </Text>
+                  <Text style={styles.userRole} numberOfLines={1}>
+                    {m.role}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+            <Text style={styles.hint}>
+              {filteredMembers.length === memberOptions.length
+                ? `${memberOptions.length} member${memberOptions.length === 1 ? '' : 's'}`
+                : `${filteredMembers.length} of ${memberOptions.length} shown`}
+              {selectedUserIds.length > 0 ? ` · ${selectedUserIds.length} selected` : ''}
+            </Text>
           </View>
         )}
 
@@ -315,7 +369,7 @@ export default function AdminAnnouncementNewScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: 24, paddingBottom: 48 },
+  content: { padding: 24, paddingTop: 8 },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   subtitle: { fontSize: 14, color: colors.textSecondary },
   label: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 8, marginTop: 8 },
@@ -331,12 +385,38 @@ const styles = StyleSheet.create({
   roleChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },
   roleChipText: { fontSize: 13, color: colors.text },
   roleChipTextActive: { color: '#fff', fontWeight: '600' },
-  userList: { maxHeight: 180, marginBottom: 12 },
-  userRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 10, paddingHorizontal: 12, borderRadius: 8, marginBottom: 4, borderWidth: 1, borderColor: colors.border },
-  userRowSelected: { backgroundColor: colors.primaryFaded, borderColor: colors.primary },
-  userName: { fontSize: 14, color: colors.text },
-  userRole: { fontSize: 12, color: colors.textSecondary },
-  hint: { fontSize: 12, color: colors.textMuted, marginTop: 4 },
+  userListSection: { marginBottom: 16 },
+  searchInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: Platform.OS === 'ios' ? 12 : 10,
+    fontSize: 16,
+    color: colors.text,
+    marginBottom: 10,
+    backgroundColor: colors.background,
+  },
+  userListScroll: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  userRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  userRowSelected: { backgroundColor: colors.primaryFaded },
+  userName: { fontSize: 14, color: colors.text, flex: 1, marginRight: 8 },
+  userRole: { fontSize: 12, color: colors.textSecondary, textAlign: 'right', flexShrink: 0, maxWidth: 120 },
+  hint: { fontSize: 12, color: colors.textMuted, marginTop: 8 },
   scheduleRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   scheduleChip: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 8, borderWidth: 1, borderColor: colors.border },
   scheduleChipActive: { backgroundColor: colors.primary, borderColor: colors.primary },

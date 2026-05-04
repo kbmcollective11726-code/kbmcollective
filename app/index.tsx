@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useRootNavigationState } from 'expo-router';
 import { useAuthStore } from '../stores/authStore';
 import { colors } from '../constants/colors';
 
 export default function IndexScreen() {
   const router = useRouter();
+  const rootNavigationState = useRootNavigationState();
+  const navigationReady = !!rootNavigationState?.key;
   const { isAuthenticated, isLoading, user, session } = useAuthStore();
   const mustChangePassword = !!session?.user?.user_metadata?.must_change_password;
   const navigated = useRef(false);
@@ -18,6 +20,7 @@ export default function IndexScreen() {
 
   // Navigate as soon as auth state is known. Force password change first if required.
   useEffect(() => {
+    if (!navigationReady) return;
     if (isLoading) return;
     if (navigated.current) return;
     navigated.current = true;
@@ -33,11 +36,12 @@ export default function IndexScreen() {
     } else {
       router.replace('/(auth)/login');
     }
-  }, [isAuthenticated, isLoading, mustChangePassword, user?.is_platform_admin, router]);
+  }, [isAuthenticated, isLoading, mustChangePassword, user?.is_platform_admin, router, navigationReady]);
 
   // Safety: only after auth init finishes — never redirect while isLoading (slow getSession was
   // firing this at 1.5s and sending signed-in users to login = "random sign out" reports).
   useEffect(() => {
+    if (!navigationReady) return;
     const t = setTimeout(() => {
       if (navigated.current) return;
       const { isLoading: loading, isAuthenticated: authed } = useAuthStore.getState();
@@ -46,10 +50,11 @@ export default function IndexScreen() {
       router.replace(authed ? '/(tabs)/home' : '/(auth)/login');
     }, 4000);
     return () => clearTimeout(t);
-  }, [router]);
+  }, [router, navigationReady]);
 
   // Last resort if initialize() never clears isLoading (very rare)
   useEffect(() => {
+    if (!navigationReady) return;
     const t = setTimeout(() => {
       if (navigated.current) return;
       const { isLoading: loading } = useAuthStore.getState();
@@ -58,9 +63,10 @@ export default function IndexScreen() {
       router.replace('/(auth)/login');
     }, 25000);
     return () => clearTimeout(t);
-  }, [router]);
+  }, [router, navigationReady]);
 
   const goToLogin = () => {
+    if (!navigationReady) return;
     if (navigated.current) return;
     navigated.current = true;
     router.replace('/(auth)/login');

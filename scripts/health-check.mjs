@@ -13,7 +13,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '..');
 
 function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { cwd: root, shell: true, stdio: 'inherit', ...opts });
+  const r = spawnSync(cmd, args, { cwd: root, shell: true, stdio: 'inherit', env: process.env, ...opts });
   return r.status === 0;
 }
 
@@ -181,14 +181,20 @@ function runR2LiveCheck(done) {
 }
 
 runR2LiveCheck(() => {
-  // 7. Optional: Supabase tables (needs DATABASE_URL)
+  // 7. Optional: Supabase tables (needs DATABASE_URL in .env or env)
   section('7. Supabase tables (optional, needs DATABASE_URL)');
-  if (process.env.DATABASE_URL || process.env.SUPABASE_DB_URL) {
+  let hasDbUrl = !!(process.env.DATABASE_URL || process.env.SUPABASE_DB_URL);
+  if (!hasDbUrl && existsSync(envPath)) {
+    const envText = readFileSync(envPath, 'utf8');
+    hasDbUrl =
+      /^\s*DATABASE_URL\s*=\s*\S+/m.test(envText) || /^\s*SUPABASE_DB_URL\s*=\s*\S+/m.test(envText);
+  }
+  if (hasDbUrl) {
     const tablesOk = run('node', [resolve(__dirname, 'check-supabase-tables.mjs')]);
     if (!tablesOk) console.log('  (Tables check failed; see above. Ensure migrations are applied.)');
     else ok('Required tables present.');
   } else {
-    console.log('  Skip: DATABASE_URL not set. Run with DATABASE_URL in .env to verify tables.');
+    console.log('  Skip: DATABASE_URL / SUPABASE_DB_URL not in .env. Add direct DB URI to verify columns.');
   }
 
   // Summary + manual checklist reminder
@@ -196,11 +202,12 @@ runR2LiveCheck(() => {
   if (failed) {
     console.log('Some automated checks FAILED. Fix the issues above.');
     console.log('\nThen run the full manual checklist: HEALTH-CHECK.md');
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   console.log('All automated checks PASSED.');
   console.log('\n--- Next step: manual testing ---');
   console.log('Open HEALTH-CHECK.md and run through every section to test the full app.');
   console.log('  (Auth, every tab, every button/link, notifications, B2B, admin flows.)');
-  process.exit(0);
+  process.exitCode = 0;
 });

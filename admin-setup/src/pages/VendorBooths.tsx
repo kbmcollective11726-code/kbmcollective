@@ -56,9 +56,9 @@ export default function VendorBooths() {
         <Link to={`/events/${eventId}`} className={styles.back}>
           ← Event
         </Link>
-        <h1>Vendor booths (B2B)</h1>
+        <h1>Vendor booths (1:1 Meeting)</h1>
         <p className={styles.hint}>
-          Add booths here, then use <strong>Meetings</strong> to create time slots and assign attendees — same as in the mobile app.
+          Add booths here, then use <strong>Meetings</strong> to assign 1:1 Meetings (time per attendee) and notify them — aligned with the mobile app.
         </p>
         <Link to={`/events/${eventId}/vendor-booths/new`} className={styles.addBtn}>
           <span className={styles.addIcon}>+</span>
@@ -75,7 +75,7 @@ export default function VendorBooths() {
         <div className={styles.empty}>
           <p>No vendor booths yet.</p>
           <p className={styles.emptySub}>
-            Tap &quot;Add vendor booth&quot; to add one, then add meeting slots under Meetings so you can assign attendees.
+            Tap &quot;Add vendor booth&quot; to add one, then assign meetings under Meetings.
           </p>
         </div>
       ) : (

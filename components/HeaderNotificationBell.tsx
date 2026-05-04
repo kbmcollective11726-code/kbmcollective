@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, AppState } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, AppState, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
 import { Bell } from 'lucide-react-native';
@@ -12,9 +12,14 @@ import { colors } from '../constants/colors';
 
 const POLL_MS = 5000;
 
-type HeaderNotificationBellProps = { /** Use on Feed page to keep badge inside bounds and avoid header clipping */ compact?: boolean };
+type HeaderNotificationBellProps = {
+  /** Use on Feed page to keep badge inside bounds and avoid header clipping */
+  compact?: boolean;
+  /** Merged after base styles (e.g. `{ marginRight: 0 }` when paired with profile in a tight cluster). */
+  style?: StyleProp<ViewStyle>;
+};
 
-export default function HeaderNotificationBell({ compact }: HeaderNotificationBellProps = {}) {
+export default function HeaderNotificationBell({ compact, style }: HeaderNotificationBellProps = {}) {
   const router = useRouter();
   const pathname = usePathname();
   const { user } = useAuthStore();
@@ -94,8 +99,9 @@ export default function HeaderNotificationBell({ compact }: HeaderNotificationBe
           `/profile/notifications${pathname ? `?from=${encodeURIComponent(pathname)}` : ''}` as any
         )
       }
-      style={styles.bellBtn}
+      style={[styles.bellBtn, style]}
       hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+      activeOpacity={0.85}
     >
       <Bell
         size={24}
@@ -113,7 +119,7 @@ export default function HeaderNotificationBell({ compact }: HeaderNotificationBe
 
 const styles = StyleSheet.create({
   bellBtn: {
-    marginRight: 12,
+    marginRight: 8,
     padding: 4,
     justifyContent: 'center',
     alignItems: 'center',

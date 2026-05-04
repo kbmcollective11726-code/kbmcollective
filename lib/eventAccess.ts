@@ -1,11 +1,11 @@
 import type { Event } from './types';
 
-/** Number of days after event end_date that the event stays accessible (for non–platform admins). */
-export const EVENT_ACCESS_DAYS_AFTER_END = 5;
+/** Number of days after event end_date that the event stays accessible (for non-platform admins). */
+export const EVENT_ACCESS_DAYS_AFTER_END = 90;
 
 /**
  * True if the event is still accessible.
- * - Platform admins (super admins): can always access any event, including inactive or ended > 5 days ago.
+ * - Platform admins (super admins): can always access any event, including inactive or ended > 90 days ago.
  * - Disabled events (is_active = false): only accessible when isPlatformAdmin is true.
  * - Enabled events: accessible until EVENT_ACCESS_DAYS_AFTER_END days after end_date.
  */

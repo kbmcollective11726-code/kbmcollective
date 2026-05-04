@@ -3,5 +3,10 @@
   "outputDirectory": "dist",
   "installCommand": "npm install",
   "framework": "vite",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    {
+      "source": "/((?!auth-recovery\\.html$).*)",
+      "destination": "/index.html"
+    }
+  ]
 }

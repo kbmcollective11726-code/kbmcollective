@@ -1,0 +1,366 @@
+.page {
+  max-width: 960px;
+}
+
+.head {
+  margin-bottom: 16px;
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-accent);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-muted);
+  transition: background var(--transition), color var(--transition);
+}
+
+.back:hover {
+  text-decoration: none;
+  background: rgba(212, 175, 55, 0.25);
+  color: var(--color-accent-hover);
+}
+
+.sectionTitle {
+  margin: 28px 0 10px;
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.sectionHint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.cancelledSectionTitle {
+  margin: 24px 0 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--color-text-secondary);
+}
+
+.tableCancelled {
+  opacity: 0.92;
+}
+
+.rowCancelled td {
+  color: var(--color-text-secondary);
+}
+
+.page h1 {
+  margin: 0 0 8px;
+  font-size: 1.35rem;
+  color: var(--color-text);
+}
+
+.hint {
+  margin: 0 0 20px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.boothCallout {
+  margin: 0 0 20px;
+  padding: 12px 14px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--color-text);
+  background: var(--color-accent-muted);
+  border: 1px solid rgba(212, 175, 55, 0.35);
+  border-radius: var(--radius-sm);
+}
+
+.viewModeBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  margin-bottom: 16px;
+}
+
+.viewModeLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.viewModeButtons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.btnPressed {
+  border-color: var(--color-accent) !important;
+  background: rgba(212, 175, 55, 0.18) !important;
+  color: var(--color-text) !important;
+}
+
+.pastBadge {
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.rowPast td:not(.rowActions) {
+  color: var(--color-text-secondary);
+}
+
+.actionEnded {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.loading {
+  padding: 24px 0;
+}
+
+.fieldBlock {
+  margin-bottom: 20px;
+}
+
+.fieldBlock label {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.fieldBlock select {
+  padding: 10px 12px;
+  min-width: 280px;
+  max-width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.templateCard {
+  background: var(--color-surface-elevated, var(--color-card));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 24px;
+}
+
+.templateCard h2 {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--color-text);
+}
+
+.templateRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  align-items: flex-end;
+  margin-bottom: 12px;
+}
+
+.templateRow label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.templateRow input[type='datetime-local'] {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+  align-items: center;
+}
+
+.btn {
+  padding: 8px 14px;
+  border-radius: var(--radius);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+}
+
+.btnPrimary {
+  background: var(--color-accent);
+  color: white;
+}
+
+.btnPrimary:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.btnGhost {
+  background: transparent;
+  color: var(--color-accent);
+  border: 1px solid var(--color-border);
+}
+
+.btnGhost:hover:not(:disabled) {
+  background: var(--color-accent-muted);
+}
+
+.btnDanger {
+  background: transparent;
+  color: var(--color-danger, #dc2626);
+  border: 1px solid transparent;
+  font-size: 13px;
+}
+
+.btnDanger:hover:not(:disabled) {
+  text-decoration: underline;
+}
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.table th,
+.table td {
+  padding: 10px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.table th {
+  background: var(--color-surface-elevated, var(--color-card));
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.table select,
+.table input[type='datetime-local'] {
+  width: 100%;
+  min-width: 140px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 13px;
+}
+
+.table select {
+  max-width: 260px;
+}
+
+.rowActions {
+  white-space: nowrap;
+}
+
+.actionCluster {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.editWhenCell {
+  vertical-align: top;
+}
+
+.editWhenCell input[type='datetime-local'] {
+  min-width: 0;
+  max-width: min(220px, 100%);
+  flex: 1 1 160px;
+}
+
+.editTimeSep {
+  margin: 0 4px;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.error {
+  color: var(--color-danger, #dc2626);
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+
+.success {
+  color: var(--color-success, #15803d);
+  font-size: 14px;
+  margin: 0 0 12px;
+}
+
+.results {
+  background: var(--color-surface-elevated, var(--color-card));
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  font-size: 13px;
+  margin-top: 16px;
+}
+
+.results h3 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.results ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.results li {
+  margin-bottom: 6px;
+}
+
+.warn {
+  color: var(--color-warning, #b45309);
+}
+
+.mutedCell {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.inlineRefresh {
+  margin-left: 12px;
+  vertical-align: middle;
+}

@@ -9,19 +9,17 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../stores/authStore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
+import NotificationFeedbackListener from '../components/NotificationFeedbackListener';
 import { useDeepLink } from '../lib/useDeepLink';
 import { abortAllRequests, supabase, isSupabaseConfigured, startForegroundRefresh, awaitForegroundRefresh, testSupabaseConnection } from '../lib/supabase';
 import { notifyAfterSessionRefreshed } from '../lib/onSessionRefreshed';
 import { registerPushToken } from '../lib/pushNotifications';
+import { ensureAndroidNotificationChannel } from '../lib/notificationChannel';
 
 SplashScreen.preventAutoHideAsync();
 
-// Suppress known harmless Expo Go/Android error from expo-keep-awake (e.g. during camera/upload).
-LogBox.ignoreLogs(['Unable to activate keep awake']);
-
-// Channel ID must match Edge Functions (send-announcement-push, notify-event-starting-soon, process-scheduled-announcements).
-// Use _v2 so devices get a fresh channel with sound+vibration (Android doesn't allow changing these after first create).
-export const NOTIFICATION_CHANNEL_ID = 'collectivelive_notifications_v2';
+// Suppress known harmless Expo Go/Android noise (keep-awake during camera/media; Metro may still log promise rejections).
+LogBox.ignoreLogs(['Unable to activate keep awake', 'Uncaught (in promise']);
 
 function setupPushNotifications() {
   if (Constants.appOwnership === 'expo') return;
@@ -37,21 +35,7 @@ function setupPushNotifications() {
       priority: Notifications.AndroidNotificationPriority.MAX,
     }),
   });
-  if (Platform.OS === 'android') {
-    Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_ID, {
-      name: 'Notifications',
-      description: 'Likes, comments, and announcements',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 500, 250, 500],
-      enableVibrate: true,
-      sound: 'default',
-      enableLights: true,
-      lightColor: '#2563eb',
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      bypassDnd: false,
-      showBadge: true,
-    }).catch(() => {});
-  }
+  void ensureAndroidNotificationChannel();
 }
 
 setupPushNotifications();
@@ -104,23 +88,9 @@ export default function RootLayout() {
     return () => sub.remove();
   }, []);
 
-  // Ensure Android notification channel exists after mount (sound + vibration).
+  // Re-apply Android channel after mount (covers cold start ordering vs token registration).
   useEffect(() => {
-    if (Constants.appOwnership === 'expo' || Platform.OS !== 'android') return;
-    const Notifications = require('expo-notifications');
-    Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNEL_ID, {
-      name: 'Notifications',
-      description: 'Likes, comments, and announcements',
-      importance: Notifications.AndroidImportance.MAX,
-      vibrationPattern: [0, 500, 250, 500],
-      enableVibrate: true,
-      sound: 'default',
-      enableLights: true,
-      lightColor: '#2563eb',
-      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
-      bypassDnd: false,
-      showBadge: true,
-    }).catch(() => {});
+    void ensureAndroidNotificationChannel();
   }, []);
 
   // Hide splash quickly so we never get stuck on white/blue in Expo Go
@@ -166,6 +136,7 @@ export default function RootLayout() {
         <ErrorBoundary>
           <StatusBar style="dark" />
           <Toast />
+          <NotificationFeedbackListener />
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" />
             <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />

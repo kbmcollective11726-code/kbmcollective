@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useFocusEffect } from '@react-navigation/native';
 import {
   View,
@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { MessageCircle, ChevronRight, ChevronLeft, ExternalLink, Ban, Flag, Briefcase, Building2, FileText, Phone, Mic, Store, Users, UserPlus, UserMinus, Check, X } from 'lucide-react-native';
+import { MessageCircle, ChevronRight, ExternalLink, Ban, Flag, Briefcase, Building2, FileText, Phone, Mic, Store, Users, UserPlus, UserMinus, Check, X, User as UserIcon } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
@@ -25,6 +25,8 @@ import { awardPoints } from '../../../../lib/points';
 import { createNotificationAndPush } from '../../../../lib/notifications';
 import { colors } from '../../../../constants/colors';
 import Avatar from '../../../../components/Avatar';
+import HeaderNotificationBell from '../../../../components/HeaderNotificationBell';
+import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
 import type { User } from '../../../../lib/types';
 
 const ROLE_LABELS: Record<string, string> = {
@@ -41,7 +43,7 @@ export default function UserProfileScreen() {
   const navigation = useNavigation();
   const { user: currentUser } = useAuthStore();
   const { currentEvent } = useEventStore();
-  const { blockUser, unblockUser, isBlocked, fetchBlockedUsers } = useBlockStore();
+  const { blockUser, unblockUser, isBlocked, fetchBlockedUsers, isInteractionBlocked } = useBlockStore();
   const [profileUser, setProfileUser] = useState<User | null>(null);
   const [eventRoles, setEventRoles] = useState<string[]>([]);
   const [isConnected, setIsConnected] = useState(false);
@@ -68,22 +70,22 @@ export default function UserProfileScreen() {
     }
   };
 
-  useEffect(() => {
-    if (from && typeof from === 'string') {
-      navigation.setOptions({
-        headerBackVisible: false,
-        headerLeft: () => (
-          <TouchableOpacity
-            onPress={goBack}
-            style={{ padding: 8, marginLeft: 4 }}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <ChevronLeft size={24} color={colors.text} />
-          </TouchableOpacity>
-        ),
-      });
-    }
-  }, [from, navigation, goBack]);
+  const headerRight = useMemo(
+    () => (
+      <View style={styles.headerRightCluster}>
+        <HeaderNotificationBell compact />
+        <TouchableOpacity
+          onPress={() => router.push('/(tabs)/profile')}
+          style={styles.headerProfileTap}
+          hitSlop={12}
+          activeOpacity={0.85}
+        >
+          <UserIcon size={24} color={colors.primary} strokeWidth={2} />
+        </TouchableOpacity>
+      </View>
+    ),
+    [router]
+  );
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -202,7 +204,16 @@ export default function UserProfileScreen() {
   }, [userId, currentUser?.id, fetchUser]);
 
   const handleMessage = () => {
-    if (userId) router.push(`/profile/chat/${userId}?from=${encodeURIComponent(`/feed/user/${userId}`)}` as any);
+    if (!userId) return;
+    if (isInteractionBlocked(userId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Cannot message',
+        text2: 'Messaging is not available for this person.',
+      });
+      return;
+    }
+    router.push(`/profile/chat/${userId}?from=${encodeURIComponent(`/feed/user/${userId}`)}` as any);
   };
 
   const handleRemoveConnection = () => {
@@ -249,6 +260,14 @@ export default function UserProfileScreen() {
 
   const handleConnect = async () => {
     if (!currentUser?.id || !userId || !currentEvent?.id) return;
+    if (isInteractionBlocked(userId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Cannot connect',
+        text2: 'This person is unavailable for connections.',
+      });
+      return;
+    }
     setConnectingId(true);
     try {
       const { error } = await supabase.from('connection_requests').insert({
@@ -285,6 +304,14 @@ export default function UserProfileScreen() {
 
   const handleAccept = async () => {
     if (!currentUser?.id || !userId || !currentEvent?.id) return;
+    if (isInteractionBlocked(userId)) {
+      Toast.show({
+        type: 'info',
+        text1: 'Cannot accept',
+        text2: 'This person is unavailable for connections.',
+      });
+      return;
+    }
     setAcceptingId(true);
     try {
       const { data: req } = await supabase
@@ -430,7 +457,8 @@ export default function UserProfileScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Profile" onBack={goBack} right={headerRight} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.loadingText}>Loading profile…</Text>
@@ -441,7 +469,8 @@ export default function UserProfileScreen() {
 
   if (fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Profile" onBack={goBack} right={headerRight} />
         <View style={styles.centered}>
           <Text style={styles.errorText}>Error - page not loading</Text>
           <Text style={styles.errorSubtext}>Tap Try again or go back.</Text>
@@ -466,7 +495,8 @@ export default function UserProfileScreen() {
 
   if (!profileUser) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Profile" onBack={goBack} right={headerRight} />
         <View style={styles.centered}>
           <Text style={styles.errorText}>Profile not found.</Text>
           <TouchableOpacity style={styles.backBtn} onPress={goBack}>
@@ -478,8 +508,14 @@ export default function UserProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      <ScrollView contentContainerStyle={styles.scrollContent}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader
+        variant="back"
+        title={profileUser.full_name?.trim() || 'Profile'}
+        onBack={goBack}
+        right={headerRight}
+      />
+      <ScrollView style={styles.scrollFlex} contentContainerStyle={styles.scrollContent}>
         <View style={styles.hero}>
           <View style={styles.heroAvatarWrap}>
             <Avatar uri={profileUser.avatar_url} name={profileUser.full_name} size={108} />
@@ -688,6 +724,18 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: colors.background,
   },
+  headerRightCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 4,
+  },
+  headerProfileTap: {
+    marginHorizontal: 8,
+    padding: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scrollFlex: { flex: 1 },
   scrollContent: {
     paddingBottom: 32,
     flexGrow: 1,

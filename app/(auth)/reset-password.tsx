@@ -1,11 +1,30 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'react-native';
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../lib/supabase';
 import { consumePendingPasswordRecoveryUrl } from '../../lib/pendingRecoveryUrl';
+import { isPasswordRecoveryLaunchUrl } from '../../lib/passwordRecoveryLaunchUrl';
 import { colors } from '../../constants/colors';
+
+/**
+ * Cold start: RN getInitialURL() is often null after Expo consumes the link; getLinkingURL() + retries help.
+ */
+async function resolveRecoveryLaunchUrl(): Promise<string | null> {
+  const attempts = 22;
+  const gapMs = 100;
+  for (let i = 0; i < attempts; i++) {
+    if (i > 0) await new Promise<void>((r) => setTimeout(r, gapMs));
+    const fromExpo = Linking.getLinkingURL();
+    if (isPasswordRecoveryLaunchUrl(fromExpo ?? undefined)) return fromExpo as string;
+    const fromPending = consumePendingPasswordRecoveryUrl();
+    if (isPasswordRecoveryLaunchUrl(fromPending ?? undefined)) return fromPending as string;
+    const initial = await Linking.getInitialURL();
+    if (isPasswordRecoveryLaunchUrl(initial ?? undefined)) return initial as string;
+  }
+  return null;
+}
 
 /** Parse Supabase recovery redirect: tokens in hash (#) or query (?). */
 function parseAuthParamsFromUrl(url: string): Record<string, string> {
@@ -34,54 +53,89 @@ function parseAuthParamsFromUrl(url: string): Record<string, string> {
 
 export default function ResetPasswordDeepLinkScreen() {
   const router = useRouter();
+  const expoLinkingUrl = Linking.useLinkingURL();
+  const handleInFlight = useRef(false);
   const [message, setMessage] = useState('Opening reset link…');
   const [failed, setFailed] = useState(false);
+  const [hasAttempted, setHasAttempted] = useState(false);
 
   const handleUrl = useCallback(
     async (url: string | null) => {
       if (!url) return;
+      if (handleInFlight.current) return;
+      handleInFlight.current = true;
+      try {
+        const params = parseAuthParamsFromUrl(url);
+        const access_token = params.access_token;
+        const refresh_token = params.refresh_token;
+        const code = params.code;
 
-      const params = parseAuthParamsFromUrl(url);
-      const access_token = params.access_token;
-      const refresh_token = params.refresh_token;
-
-      if (access_token && refresh_token) {
-        setMessage('Signing you in…');
-        setFailed(false);
-        const { error } = await supabase.auth.setSession({
-          access_token,
-          refresh_token,
-        });
-        if (error) {
-          setFailed(true);
-          setMessage(`Could not complete reset: ${error.message}`);
+        if (access_token && refresh_token) {
+          setMessage('Signing you in…');
+          setFailed(false);
+          setHasAttempted(true);
+          const { error } = await supabase.auth.setSession({
+            access_token,
+            refresh_token,
+          });
+          if (error) {
+            setFailed(true);
+            setMessage(`Could not complete reset: ${error.message}`);
+            return;
+          }
+          router.replace('/(auth)/change-password');
           return;
         }
-        router.replace('/(auth)/change-password');
-        return;
-      }
 
-      if (params.error) {
+        if (code) {
+          setMessage('Verifying reset code…');
+          setFailed(false);
+          setHasAttempted(true);
+          const { error } = await supabase.auth.exchangeCodeForSession(code);
+          if (error) {
+            setFailed(true);
+            setMessage(`Could not complete reset: ${error.message}`);
+            return;
+          }
+          router.replace('/(auth)/change-password');
+          return;
+        }
+
+        if (params.error) {
+          setFailed(true);
+          setMessage(params.error_description || params.error || 'This reset link is invalid or expired.');
+          return;
+        }
+
         setFailed(true);
-        setMessage(params.error_description || params.error || 'This reset link is invalid or expired.');
-        return;
+        setMessage(
+          'No login tokens in this link. If you opened the email in a browser and saw localhost, add your app redirect URL in Supabase (see app docs: PASSWORD-RESET-SUPABASE.md).',
+        );
+        setHasAttempted(true);
+      } finally {
+        handleInFlight.current = false;
       }
-
-      setFailed(true);
-      setMessage(
-        'No login tokens in this link. If you opened the email in a browser and saw localhost, add your app redirect URL in Supabase (see app docs: PASSWORD-RESET-SUPABASE.md).',
-      );
     },
     [router],
   );
+
+  // Expo’s native linking URL can arrive shortly after mount (after getInitialURL was already null).
+  useEffect(() => {
+    if (!expoLinkingUrl || !isPasswordRecoveryLaunchUrl(expoLinkingUrl)) return;
+    void handleUrl(expoLinkingUrl);
+  }, [expoLinkingUrl, handleUrl]);
 
   useEffect(() => {
     let alive = true;
 
     (async () => {
-      const pending = consumePendingPasswordRecoveryUrl();
-      const initial = pending ?? (await Linking.getInitialURL());
-      if (alive && initial) await handleUrl(initial);
+      const launch = await resolveRecoveryLaunchUrl();
+      if (alive && launch) await handleUrl(launch);
+      if (alive && !launch) {
+        setHasAttempted(true);
+        setFailed(true);
+        setMessage('Reset link not found in app. Open the newest reset email link again from your mail app.');
+      }
     })();
 
     const sub = Linking.addEventListener('url', ({ url }) => {
@@ -93,6 +147,15 @@ export default function ResetPasswordDeepLinkScreen() {
       sub.remove();
     };
   }, [handleUrl]);
+
+  useEffect(() => {
+    if (failed || hasAttempted) return;
+    const t = setTimeout(() => {
+      setFailed(true);
+      setMessage('Reset link is taking too long. Go back to email and open the newest reset link again.');
+    }, 12000);
+    return () => clearTimeout(t);
+  }, [failed, hasAttempted]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>

@@ -49,7 +49,7 @@ const ACTION_LABELS: Record<string, string> = {
   checkin: 'Check in at event',
   share_linkedin: 'Share on LinkedIn',
   session_feedback: 'Leave feedback for a session',
-  b2b_feedback: 'Leave feedback for a B2B / vendor meeting',
+  b2b_feedback: 'Leave feedback for a 1:1 / vendor meeting',
 };
 
 type PointRuleRow = { id: string; action: string; points_value: number; max_per_day: number | null; description: string | null };
@@ -295,7 +295,7 @@ export default function AdminPointRulesScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Select an event first.</Text>
         </View>
@@ -305,7 +305,7 @@ export default function AdminPointRulesScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.subtitle}>Loading point rules…</Text>
@@ -315,7 +315,7 @@ export default function AdminPointRulesScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <KeyboardAvoidingView style={styles.flex1} behavior={Platform.OS === 'ios' ? 'padding' : undefined} keyboardVerticalOffset={80}>
         <ScrollView
           style={styles.scrollView}

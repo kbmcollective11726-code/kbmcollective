@@ -40,6 +40,18 @@
   line-height: 1.5;
 }
 
+.dashboardCrossLink {
+  margin: 0 0 24px;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.dashboardCrossLink a {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
 .error {
   color: var(--color-danger);
   margin-bottom: 16px;

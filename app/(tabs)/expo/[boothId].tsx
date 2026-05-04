@@ -14,6 +14,7 @@ import {
   Pressable,
   TextInput,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -41,6 +42,9 @@ export default function BoothDetailScreen() {
   const from = typeof params.from === 'string' ? params.from : Array.isArray(params.from) ? params.from[0] : undefined;
   const rateSlotId = typeof params.rate_slot_id === 'string' ? params.rate_slot_id : Array.isArray(params.rate_slot_id) ? params.rate_slot_id[0] : undefined;
   const router = useRouter();
+  const { height: windowHeight } = useWindowDimensions();
+  /** Fixed cap so the rate modal ScrollView always has a bounded height and scrolls reliably (avoids % + flex quirks). */
+  const rateModalMaxH = Math.round(windowHeight * 0.86);
   const rateModalOpenedFromParamRef = useRef(false);
 
   const goBack = useCallback(() => {
@@ -58,7 +62,8 @@ export default function BoothDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [bookingActionId, setBookingActionId] = useState<string | null>(null);
-  const [isVendorOrAdmin, setIsVendorOrAdmin] = useState(false);
+  /** Event admin, platform admin, or rep/contact for this booth only — not every member with a vendor role in the event. */
+  const [canViewAllMeetings, setCanViewAllMeetings] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
   const [assignModalVisible, setAssignModalVisible] = useState(false);
   const [eventMembers, setEventMembers] = useState<{ user_id: string; full_name: string }[]>([]);
@@ -94,6 +99,8 @@ export default function BoothDetailScreen() {
   const [editing, setEditing] = useState(false);
   const [cancelAlling, setCancelAlling] = useState(false);
   const [feedbackBookingIds, setFeedbackBookingIds] = useState<Set<string>>(new Set());
+  const [feedbackSlotIds, setFeedbackSlotIds] = useState<Set<string>>(new Set());
+  const [feedbackTimeKeys, setFeedbackTimeKeys] = useState<Set<string>>(new Set());
   const [rateModalBooking, setRateModalBooking] = useState<MeetingBooking | null>(null);
   const [rateModalSlot, setRateModalSlot] = useState<SlotWithBooking | null>(null);
   const [feedbackRating, setFeedbackRating] = useState<number>(0);
@@ -102,14 +109,15 @@ export default function BoothDetailScreen() {
   const [feedbackRecommend, setFeedbackRecommend] = useState<boolean | null>(null);
   const [feedbackWorkWith, setFeedbackWorkWith] = useState<number>(0);
   const [savingFeedback, setSavingFeedback] = useState(false);
+  /** Event / platform admin: all reps + primary contact for this booth (from `vendor_booth_reps` + `contact_user_id`). */
+  const [boothReps, setBoothReps] = useState<{ user_id: string; full_name: string }[]>([]);
 
   const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
     const repsRes = await client
       .from('vendor_booth_reps')
-      .select('booth_id, vendor_booths!inner(event_id, is_active)')
+      .select('booth_id, vendor_booths!inner(event_id)')
       .eq('user_id', uid)
-      .eq('vendor_booths.event_id', eventId)
-      .eq('vendor_booths.is_active', true);
+      .eq('vendor_booths.event_id', eventId);
     if (!repsRes.error) {
       return (repsRes.data ?? []).map((r: { booth_id: string }) => r.booth_id);
     }
@@ -117,7 +125,6 @@ export default function BoothDetailScreen() {
       .from('vendor_booths')
       .select('id')
       .eq('event_id', eventId)
-      .eq('is_active', true)
       .eq('contact_user_id', uid);
     return (legacy.data ?? []).map((b: { id: string }) => b.id);
   }, []);
@@ -126,6 +133,7 @@ export default function BoothDetailScreen() {
     if (!boothId || !currentEvent?.id) {
       setBooth(null);
       setSlots([]);
+      setBoothReps([]);
       setLoading(false);
       return;
     }
@@ -133,8 +141,9 @@ export default function BoothDetailScreen() {
     try {
       const [boothRes, slotsRes, roleRes, bookingsRes, myRepBoothIds] = await Promise.all([
         client.from('vendor_booths').select('*').eq('id', boothId).eq('is_active', true).maybeSingle(),
+        // Earliest-first ordering so the next/earliest meeting appears first.
         client.from('meeting_slots').select('id, booth_id, start_time, end_time, is_available, created_at').eq('booth_id', boothId).order('start_time', { ascending: true }),
-        user?.id ? client.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).single() : Promise.resolve({ data: null }),
+        user?.id ? client.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle() : Promise.resolve({ data: null }),
         user?.id ? client.from('meeting_bookings').select('id, slot_id, attendee_id, status, notes, created_at').eq('attendee_id', user.id) : Promise.resolve({ data: [] }),
         user?.id ? fetchRepBoothIds(currentEvent.id, user.id, client) : Promise.resolve([] as string[]),
       ]);
@@ -142,60 +151,100 @@ export default function BoothDetailScreen() {
       if (boothRes.error || !boothRes.data) {
         setBooth(null);
         setSlots([]);
+        setBoothReps([]);
         setLoading(false);
         return;
       }
       const boothData = boothRes.data as VendorBooth & { contact_user_id?: string | null };
-      const isVendorRepOfSomeBooth = myRepBoothIds.length > 0;
-      const isVendorRepOfThisBooth = myRepBoothIds.includes(boothData.id);
-      if (isVendorRepOfSomeBooth && !isVendorRepOfThisBooth) {
+      if (boothData.event_id !== currentEvent.id) {
         setBooth(null);
         setSlots([]);
+        setBoothReps([]);
         setLoading(false);
         router.replace('/(tabs)/expo' as any);
         return;
       }
-      setBooth(boothData);
 
       const roleRow = roleRes.data as { role?: string; roles?: string[] } | null;
       const roles = Array.isArray(roleRow?.roles) ? roleRow.roles : [];
       const role = roleRow?.role ?? roles[0];
-      const isVendorByRole =
-        user?.is_platform_admin === true ||
-        role === 'admin' ||
-        role === 'super_admin' ||
-        role === 'vendor' ||
-        roles.includes('admin') ||
-        roles.includes('super_admin') ||
-        roles.includes('vendor');
-      const isVendorRep = myRepBoothIds.includes(boothData.id);
-      const isVendor = isVendorByRole || isVendorRep;
       const isEventAdmin =
         user?.is_platform_admin === true ||
         role === 'admin' ||
         role === 'super_admin' ||
         roles.includes('admin') ||
         roles.includes('super_admin');
-      setIsVendorOrAdmin(isVendor);
+
+      const isVendorRepOfSomeBooth = myRepBoothIds.length > 0;
+      const isVendorRepOfThisBooth = myRepBoothIds.includes(boothData.id);
+      if (isVendorRepOfSomeBooth && !isVendorRepOfThisBooth && !isEventAdmin) {
+        setBooth(null);
+        setSlots([]);
+        setBoothReps([]);
+        setLoading(false);
+        router.replace('/(tabs)/expo' as any);
+        return;
+      }
+      setBooth(boothData);
+
+      const isVendorRep = myRepBoothIds.includes(boothData.id);
+      const canViewAllMeetingsThisBooth = isEventAdmin || isVendorRep;
+      setCanViewAllMeetings(canViewAllMeetingsThisBooth);
       setIsAdmin(isEventAdmin);
 
       const slotsData = (slotsRes.data ?? []) as MeetingSlot[];
       const myBookings = (bookingsRes.data ?? []) as MeetingBooking[];
       const myBySlot = new Map(myBookings.map((b) => [b.slot_id, b]));
 
-      if (user?.id && myBookings.length > 0) {
-        const bookingIds = myBookings.map((b) => b.id);
-        const { data: feedbackRows } = await client
+      if (user?.id && slotsData.length > 0) {
+        const slotIdsForBooth = slotsData.map((s) => s.id);
+        const { data: feedbackRows, error: feedbackErr } = await client
           .from('b2b_meeting_feedback')
-          .select('booking_id')
+          .select('booking_id, meeting_bookings!inner(slot_id, meeting_slots!inner(booth_id, start_time, end_time))')
           .eq('user_id', user.id)
-          .in('booking_id', bookingIds);
-        setFeedbackBookingIds(new Set((feedbackRows ?? []).map((r: { booking_id: string }) => r.booking_id)));
+          .in('meeting_bookings.slot_id', slotIdsForBooth);
+
+        if (feedbackErr) {
+          if (__DEV__) console.warn('B2B feedback lookup error:', feedbackErr.message);
+          setFeedbackBookingIds(new Set());
+          setFeedbackSlotIds(new Set());
+          setFeedbackTimeKeys(new Set());
+        } else {
+          const bookingIds = new Set<string>();
+          const ratedSlotIds = new Set<string>();
+          const ratedTimeKeys = new Set<string>();
+          for (const row of feedbackRows ?? []) {
+            const r = row as {
+              booking_id?: string | null;
+              meeting_bookings?: {
+                slot_id?: string | null;
+                meeting_slots?: {
+                  booth_id?: string | null;
+                  start_time?: string | null;
+                  end_time?: string | null;
+                } | null;
+              } | null;
+            };
+            const bookingId = r.booking_id ?? '';
+            if (bookingId) bookingIds.add(bookingId);
+            const slotId = r.meeting_bookings?.slot_id ?? '';
+            if (slotId) ratedSlotIds.add(slotId);
+            const ms = r.meeting_bookings?.meeting_slots;
+            if (ms?.booth_id === boothId && ms.start_time && ms.end_time) {
+              ratedTimeKeys.add(`${ms.start_time}|${ms.end_time}`);
+            }
+          }
+          setFeedbackBookingIds(bookingIds);
+          setFeedbackSlotIds(ratedSlotIds);
+          setFeedbackTimeKeys(ratedTimeKeys);
+        }
       } else {
         setFeedbackBookingIds(new Set());
+        setFeedbackSlotIds(new Set());
+        setFeedbackTimeKeys(new Set());
       }
 
-      if (isVendor && slotsData.length > 0) {
+      if (canViewAllMeetingsThisBooth && slotsData.length > 0) {
         const slotIds = slotsData.map((s) => s.id);
         const { data: allBookings } = await client.from('meeting_bookings').select('id, slot_id, attendee_id, status, notes, created_at').in('slot_id', slotIds);
         const bookingsList = (allBookings ?? []) as MeetingBooking[];
@@ -204,7 +253,6 @@ export default function BoothDetailScreen() {
         const nameByUserId = new Map((usersData ?? []).map((u: { id: string; full_name: string }) => [u.id, u.full_name ?? '']));
         const bySlot = new Map<string, (MeetingBooking & { attendee_name?: string })[]>();
         for (const b of bookingsList) {
-          if (b.status === 'cancelled') continue;
           const arr = bySlot.get(b.slot_id) ?? [];
           arr.push({ ...b, attendee_name: nameByUserId.get(b.attendee_id) ?? undefined });
           bySlot.set(b.slot_id, arr);
@@ -225,10 +273,30 @@ export default function BoothDetailScreen() {
           }))
         );
       }
+
+      if (isEventAdmin) {
+        const { data: repRows } = await client.from('vendor_booth_reps').select('user_id').eq('booth_id', boothData.id);
+        const idSet = new Set<string>((repRows ?? []).map((r: { user_id: string }) => r.user_id));
+        const contactId = boothData.contact_user_id;
+        if (contactId) idSet.add(contactId);
+        const ids = [...idSet];
+        if (ids.length === 0) {
+          setBoothReps([]);
+        } else {
+          const { data: usersData } = await client.from('users').select('id, full_name').in('id', ids);
+          const nameById = new Map(
+            (usersData ?? []).map((u: { id: string; full_name: string | null }) => [u.id, u.full_name ?? 'Unknown'])
+          );
+          setBoothReps(ids.map((uid) => ({ user_id: uid, full_name: nameById.get(uid) ?? 'Unknown' })));
+        }
+      } else {
+        setBoothReps([]);
+      }
     } catch (e) {
       console.error('Booth detail fetch error:', e);
       setBooth(null);
       setSlots([]);
+      setBoothReps([]);
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -240,14 +308,6 @@ export default function BoothDetailScreen() {
       router.replace('/(tabs)/expo' as any);
     }
   }, [boothId, router]);
-
-  const hasMyMeeting = booth ? slots.some((s) => s.myBooking && s.myBooking.status !== 'cancelled') : false;
-  useEffect(() => {
-    if (loading || !booth) return;
-    if (!isVendorOrAdmin && !hasMyMeeting) {
-      router.replace('/(tabs)/expo' as any);
-    }
-  }, [loading, booth, isVendorOrAdmin, hasMyMeeting, router]);
 
   useFocusEffect(
     useCallback(() => {
@@ -280,12 +340,12 @@ export default function BoothDetailScreen() {
   }, [isAdmin, currentEvent?.id]);
 
   useEffect(() => {
-    if (!boothId || !isVendorOrAdmin) return;
+    if (!boothId || !canViewAllMeetings) return;
     let cancelled = false;
     const refetch = () => { if (!cancelled) fetchBoothAndSlots(); };
     const t = setInterval(refetch, 15000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [boothId, isVendorOrAdmin, fetchBoothAndSlots]);
+  }, [boothId, canViewAllMeetings, fetchBoothAndSlots]);
 
   const onRefresh = () => {
     setRefreshing(true);
@@ -370,11 +430,25 @@ export default function BoothDetailScreen() {
     }
   };
 
-  const slotsToShow = isVendorOrAdmin ? slots : slots.filter((s) => s.myBooking && s.myBooking.status !== 'cancelled');
+  const slotsToShow = canViewAllMeetings ? slots : slots.filter((s) => s.myBooking && s.myBooking.status !== 'cancelled');
+
+  /** Vendor/admin: active or empty slots in main list; cancelled-only slots at bottom. */
+  const meetingsMainSlots = canViewAllMeetings
+    ? slotsToShow.filter((s) => {
+        const bs = s.bookings ?? [];
+        return bs.length === 0 || bs.some((b) => b.status !== 'cancelled');
+      })
+    : slotsToShow;
+  const meetingsCancelledOnlySlots = canViewAllMeetings
+    ? slotsToShow.filter((s) => {
+        const bs = s.bookings ?? [];
+        return bs.length > 0 && bs.every((b) => b.status === 'cancelled');
+      })
+    : [];
 
   // When opened from schedule "Tap to rate", open the rate modal for that slot if it's past and not yet rated.
   useEffect(() => {
-    if (!rateSlotId || loading || isVendorOrAdmin || rateModalOpenedFromParamRef.current) return;
+    if (!rateSlotId || loading || canViewAllMeetings || rateModalOpenedFromParamRef.current) return;
     const slot = slots.find((s) => s.id === rateSlotId);
     if (!slot?.myBooking || slot.myBooking.status === 'cancelled') return;
     try {
@@ -383,7 +457,13 @@ export default function BoothDetailScreen() {
     } catch {
       return;
     }
-    if (feedbackBookingIds.has(slot.myBooking.id)) return;
+    if (
+      feedbackBookingIds.has(slot.myBooking.id) ||
+      feedbackSlotIds.has(slot.id) ||
+      feedbackTimeKeys.has(`${slot.start_time}|${slot.end_time}`)
+    ) {
+      return;
+    }
     rateModalOpenedFromParamRef.current = true;
     setRateModalBooking(slot.myBooking);
     setRateModalSlot(slot);
@@ -392,7 +472,7 @@ export default function BoothDetailScreen() {
     setFeedbackMeetAgain(null);
     setFeedbackRecommend(null);
     setFeedbackWorkWith(0);
-  }, [rateSlotId, loading, slots, isVendorOrAdmin, feedbackBookingIds]);
+  }, [rateSlotId, loading, slots, canViewAllMeetings, feedbackBookingIds, feedbackSlotIds, feedbackTimeKeys]);
 
   // "Past" should mean the meeting already ended (now > end_time), not just that the start_time is earlier than now.
   // This fixes the "Live now" label being shown as "Past" once the clock passes the start.
@@ -477,6 +557,41 @@ export default function BoothDetailScreen() {
         },
       },
     ]);
+  };
+
+  const deleteSlotPermanently = (slotId: string) => {
+    Alert.alert(
+      'Delete time slot?',
+      'This permanently removes this time window and any booking on it (including cancelled). This cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            const client = Platform.OS === 'android' ? supabaseStorage : supabase;
+            try {
+              const { error } = await withAssignTimeout(
+                Promise.resolve(client.from('meeting_slots').delete().eq('id', slotId)),
+                'Delete time slot'
+              );
+              if (error) throw error;
+              await fetchBoothAndSlots();
+            } catch (e: unknown) {
+              const msg =
+                e && typeof e === 'object' && 'message' in e ? String((e as { message: unknown }).message) : 'Could not delete slot.';
+              const isPermission = /policy|permission|row-level security|RLS|42501|42502/i.test(msg);
+              Alert.alert(
+                'Error',
+                isPermission
+                  ? 'You may not have permission to remove this slot. Try signing out and back in, or ask an event admin.'
+                  : msg
+              );
+            }
+          },
+        },
+      ]
+    );
   };
 
   const cancelAllMeetings = () => {
@@ -622,7 +737,7 @@ export default function BoothDetailScreen() {
 
   if (loading && !booth) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.header}>
           <TouchableOpacity onPress={goBack} style={s.headerBack}>
             <ChevronLeft size={24} color={colors.text} />
@@ -638,7 +753,7 @@ export default function BoothDetailScreen() {
 
   if (!booth) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.header}>
           <TouchableOpacity onPress={goBack} style={s.headerBack}>
             <ChevronLeft size={24} color={colors.text} />
@@ -655,14 +770,10 @@ export default function BoothDetailScreen() {
     );
   }
 
-  if (!isVendorOrAdmin && !hasMyMeeting) {
-    return null;
-  }
-
-  const myMeetingSlot = !isVendorOrAdmin && slotsToShow.length > 0 ? slotsToShow[0] : null;
+  const myMeetingSlot = !canViewAllMeetings && slotsToShow.length > 0 ? slotsToShow[0] : null;
 
   return (
-    <SafeAreaView style={s.container} edges={['bottom']}>
+    <SafeAreaView style={s.container} edges={[]}>
       <View style={s.header}>
 <TouchableOpacity onPress={goBack} style={s.headerBack}>
         <ChevronLeft size={24} color={colors.text} />
@@ -709,6 +820,17 @@ export default function BoothDetailScreen() {
           ) : null}
         </View>
 
+        {isAdmin && boothReps.length > 0 ? (
+          <View style={s.detailCard}>
+            <Text style={s.detailSectionLabel}>Representatives</Text>
+            {boothReps.map((r) => (
+              <Text key={r.user_id} style={s.repRowName}>
+                {r.full_name}
+              </Text>
+            ))}
+          </View>
+        ) : null}
+
         {myMeetingSlot ? (
           <View style={s.yourMeetingCard}>
             <Text style={s.yourMeetingTitle}>Your meeting</Text>
@@ -728,10 +850,12 @@ export default function BoothDetailScreen() {
               </Text>
             ) : null}
             {slotInPast(myMeetingSlot.start_time, myMeetingSlot.end_time) && myMeetingSlot.myBooking ? (
-              feedbackBookingIds.has(myMeetingSlot.myBooking.id) ? (
+              feedbackBookingIds.has(myMeetingSlot.myBooking.id) ||
+              feedbackSlotIds.has(myMeetingSlot.id) ||
+              feedbackTimeKeys.has(`${myMeetingSlot.start_time}|${myMeetingSlot.end_time}`) ? (
                 <View style={s.ratedMeetingRow}>
                   <CheckCircle size={20} color={colors.primary} />
-                  <Text style={s.ratedMeetingText}>You've rated this meeting</Text>
+                  <Text style={s.ratedMeetingText}>Already rated</Text>
                 </View>
               ) : (
                 <TouchableOpacity
@@ -754,9 +878,9 @@ export default function BoothDetailScreen() {
           </View>
         ) : null}
 
-        {(isVendorOrAdmin || !myMeetingSlot) ? (
+        {(canViewAllMeetings || !myMeetingSlot) ? (
         <View style={s.sectionContent}>
-        <Text style={s.sectionTitle}>{isVendorOrAdmin ? 'Meetings' : 'Meeting details'}</Text>
+        <Text style={s.sectionTitle}>{canViewAllMeetings ? 'Meetings' : 'Meeting details'}</Text>
         {isAdmin && (
           <View style={s.adminActionsRow}>
             <TouchableOpacity
@@ -797,24 +921,35 @@ export default function BoothDetailScreen() {
         ) : (
           <>
             {(() => {
-              const upcoming = slotsToShow.filter((s) => !slotInPast(s.start_time, s.end_time));
-              const past = slotsToShow.filter((s) => slotInPast(s.start_time, s.end_time));
+              const upcoming = meetingsMainSlots.filter((s) => !slotInPast(s.start_time, s.end_time));
+              const past = meetingsMainSlots.filter((s) => slotInPast(s.start_time, s.end_time));
               const statusLabel: Record<MeetingBookingStatus, string> = {
                 requested: 'Requested',
                 confirmed: 'Confirmed',
                 declined: 'Declined',
                 cancelled: 'Cancelled',
               };
-              const renderSlot = (slot: typeof slotsToShow[0]) => {
+              const renderSlot = (slot: (typeof slotsToShow)[0], variant: 'default' | 'cancelledSection' = 'default') => {
+                const isCancelledSection = variant === 'cancelledSection';
                 const isPast = slotInPast(slot.start_time, slot.end_time);
-                const liveNow = isAdmin && slotIsLive(slot.start_time, slot.end_time);
+                const liveNow = isAdmin && !isCancelledSection && slotIsLive(slot.start_time, slot.end_time);
                 const myBooking = slot.myBooking;
+                const orderedBookings = [...(slot.bookings ?? [])].sort((a, b) => {
+                  const ca = a.status === 'cancelled' ? 1 : 0;
+                  const cb = b.status === 'cancelled' ? 1 : 0;
+                  return ca - cb;
+                });
                 return (
-                  <View key={slot.id} style={[s.slotCard, isPast && s.slotCardPast]}>
+                  <View
+                    key={slot.id}
+                    style={[s.slotCard, isPast && !isCancelledSection && s.slotCardPast, isCancelledSection && s.slotCardCancelled]}
+                  >
                     <View style={s.slotRow}>
-                      <Calendar size={18} color={isPast ? colors.textMuted : colors.primary} />
-                      <Text style={s.slotTime}>{formatSlotTime(slot.start_time, slot.end_time)}</Text>
-                      {isPast ? (
+                      <Calendar size={18} color={isPast || isCancelledSection ? colors.textMuted : colors.primary} />
+                      <Text style={[s.slotTime, isCancelledSection && s.slotTimeMuted]}>{formatSlotTime(slot.start_time, slot.end_time)}</Text>
+                      {isCancelledSection ? (
+                        <Text style={s.cancelledBadge}>Cancelled</Text>
+                      ) : isPast ? (
                         <Text style={s.pastBadge}>Past</Text>
                       ) : liveNow ? (
                         <Text style={s.liveBadge}>Live now</Text>
@@ -828,35 +963,45 @@ export default function BoothDetailScreen() {
                         <Text style={s.slotLocationText}>{booth.booth_location}</Text>
                       </View>
                     ) : null}
-                    {!isVendorOrAdmin && myBooking && myBooking.status !== 'cancelled' && (
+                    {!canViewAllMeetings && myBooking && myBooking.status !== 'cancelled' && (
                       <>
                         <Text style={s.statusText}>Your meeting: {statusLabel[myBooking.status]}</Text>
-                        {isPast && !feedbackBookingIds.has(myBooking.id) && (
-                          <TouchableOpacity
-                            style={s.rateMeetingBtn}
-                            onPress={() => {
-                              setRateModalBooking(myBooking);
-                              setRateModalSlot(slot);
-                              setFeedbackRating(0);
-                              setFeedbackComment('');
-                              setFeedbackMeetAgain(null);
-                              setFeedbackRecommend(null);
-                              setFeedbackWorkWith(0);
-                            }}
-                          >
-                            <Star size={18} color={colors.primary} />
-                            <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
-                          </TouchableOpacity>
-                        )}
+                        {isPast &&
+                          (feedbackBookingIds.has(myBooking.id) ||
+                          feedbackSlotIds.has(slot.id) ||
+                          feedbackTimeKeys.has(`${slot.start_time}|${slot.end_time}`) ? (
+                            <View style={s.ratedMeetingRow}>
+                              <CheckCircle size={18} color={colors.primary} />
+                              <Text style={s.ratedMeetingText}>Already rated</Text>
+                            </View>
+                          ) : (
+                            <TouchableOpacity
+                              style={s.rateMeetingBtn}
+                              onPress={() => {
+                                setRateModalBooking(myBooking);
+                                setRateModalSlot(slot);
+                                setFeedbackRating(0);
+                                setFeedbackComment('');
+                                setFeedbackMeetAgain(null);
+                                setFeedbackRecommend(null);
+                                setFeedbackWorkWith(0);
+                              }}
+                            >
+                              <Star size={18} color={colors.primary} />
+                              <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
+                            </TouchableOpacity>
+                          ))}
                       </>
                     )}
-                    {isVendorOrAdmin && (slot.bookings?.length ?? 0) > 0 && (
+                    {canViewAllMeetings && orderedBookings.length > 0 && (
                       <View style={s.bookingsList}>
-                        {(slot.bookings ?? []).map((b) => (
+                        {orderedBookings.map((b) => (
                           <View key={b.id} style={s.bookingRow}>
                             <View style={s.bookingRowLeft}>
-                              <Text style={s.bookingAttendee}>{b.attendee_name ?? `Attendee #${b.attendee_id.slice(0, 8)}…`}</Text>
-                              <Text style={s.bookingStatus}>{statusLabel[b.status]}</Text>
+                              <Text style={[s.bookingAttendee, b.status === 'cancelled' && s.bookingTextMuted]}>
+                                {b.attendee_name ?? `Attendee #${b.attendee_id.slice(0, 8)}…`}
+                              </Text>
+                              <Text style={[s.bookingStatus, b.status === 'cancelled' && s.bookingTextMuted]}>{statusLabel[b.status]}</Text>
                             </View>
                             {isAdmin && b.status !== 'cancelled' && (
                               <View style={s.bookingActions}>
@@ -872,6 +1017,16 @@ export default function BoothDetailScreen() {
                         ))}
                       </View>
                     )}
+                    {canViewAllMeetings && isCancelledSection && (
+                      <TouchableOpacity style={s.deleteSlotBtn} onPress={() => deleteSlotPermanently(slot.id)}>
+                        <Text style={s.deleteSlotBtnText}>Delete time slot</Text>
+                      </TouchableOpacity>
+                    )}
+                    {canViewAllMeetings && !isCancelledSection && orderedBookings.length === 0 && (
+                      <TouchableOpacity style={s.deleteSlotBtn} onPress={() => deleteSlotPermanently(slot.id)}>
+                        <Text style={s.deleteSlotBtnText}>Remove empty slot</Text>
+                      </TouchableOpacity>
+                    )}
                   </View>
                 );
               };
@@ -880,13 +1035,19 @@ export default function BoothDetailScreen() {
                   {upcoming.length > 0 && (
                     <>
                       <Text style={s.subsectionTitle}>Upcoming</Text>
-                      {upcoming.map(renderSlot)}
+                      {upcoming.map((sl) => renderSlot(sl, 'default'))}
                     </>
                   )}
                   {past.length > 0 && (
                     <>
                       <Text style={s.subsectionTitle}>Past</Text>
-                      {past.map(renderSlot)}
+                      {past.map((sl) => renderSlot(sl, 'default'))}
+                    </>
+                  )}
+                  {meetingsCancelledOnlySlots.length > 0 && (
+                    <>
+                      <Text style={[s.subsectionTitle, s.subsectionTitleCancelled]}>Cancelled meetings</Text>
+                      {meetingsCancelledOnlySlots.map((sl) => renderSlot(sl, 'cancelledSection'))}
                     </>
                   )}
                 </>
@@ -1218,10 +1379,19 @@ export default function BoothDetailScreen() {
       )}
 
       {/* Rate B2B meeting modal (attendee only; vendors cannot rate) */}
-      <Modal visible={!!rateModalBooking && !isVendorOrAdmin} animationType="slide" transparent onRequestClose={closeRateModal}>
-        <Pressable style={s.modalOverlay} onPress={closeRateModal}>
-          <Pressable style={s.modalContent} onPress={(e) => e.stopPropagation()}>
-            <ScrollView style={s.modalScroll} contentContainerStyle={s.modalScrollContent} keyboardShouldPersistTaps="handled">
+      <Modal visible={!!rateModalBooking && !canViewAllMeetings} animationType="slide" transparent onRequestClose={closeRateModal}>
+        <View style={s.modalOverlay}>
+          <Pressable style={s.modalBackdrop} onPress={closeRateModal} />
+          <Pressable style={[s.modalContent, { maxHeight: rateModalMaxH }]} onPress={(e) => e.stopPropagation()}>
+            <ScrollView
+              style={[s.modalScroll, { maxHeight: rateModalMaxH - 40 }]}
+              contentContainerStyle={s.rateModalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              keyboardDismissMode="on-drag"
+              nestedScrollEnabled
+              showsVerticalScrollIndicator
+              bounces={Platform.OS === 'ios'}
+            >
               <Text style={s.modalTitle}>Rate your meeting</Text>
               <Text style={s.modalSub}>How was your meeting with {booth?.vendor_name}?</Text>
 
@@ -1239,12 +1409,13 @@ export default function BoothDetailScreen() {
               <View style={s.modalSection}>
                 <Text style={s.modalSectionLabel}>Optional comment</Text>
                 <TextInput
-                  style={[s.modalInput, { minHeight: 80, textAlignVertical: 'top' }]}
+                  style={[s.modalInput, { minHeight: 88, textAlignVertical: 'top' }]}
                   placeholder="Share your experience..."
                   placeholderTextColor={colors.textMuted}
                   value={feedbackComment}
                   onChangeText={setFeedbackComment}
                   multiline
+                  scrollEnabled={false}
                   maxLength={500}
                 />
               </View>
@@ -1344,7 +1515,7 @@ export default function BoothDetailScreen() {
               </View>
             </ScrollView>
           </Pressable>
-        </Pressable>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -1389,6 +1560,7 @@ const s = StyleSheet.create({
   },
   detailSectionLabel: { fontSize: 12, fontWeight: '700', color: colors.textMuted, letterSpacing: 0.5, marginBottom: 6 },
   boothDetailDescription: { fontSize: 15, color: colors.textSecondary, lineHeight: 22 },
+  repRowName: { fontSize: 15, color: colors.text, marginTop: 8 },
   detailMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 14, gap: 8 },
   detailMetaText: { fontSize: 15, color: colors.text },
   yourMeetingCard: {
@@ -1418,6 +1590,7 @@ const s = StyleSheet.create({
   websiteText: { fontSize: 15, fontWeight: '600', color: colors.primary },
   sectionTitle: { fontSize: 18, fontWeight: '700', color: colors.text, marginBottom: 12 },
   subsectionTitle: { fontSize: 13, fontWeight: '600', color: colors.textMuted, marginBottom: 8, marginTop: 4 },
+  subsectionTitleCancelled: { marginTop: 16, color: colors.textMuted },
   noSlots: { fontSize: 15, color: colors.textMuted },
   slotCard: {
     backgroundColor: colors.card,
@@ -1428,6 +1601,18 @@ const s = StyleSheet.create({
     borderColor: colors.border,
   },
   slotCardPast: { opacity: 0.85 },
+  slotCardCancelled: { opacity: 0.88, backgroundColor: colors.surface },
+  slotTimeMuted: { color: colors.textMuted },
+  cancelledBadge: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: colors.textMuted,
+    backgroundColor: colors.surface,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  bookingTextMuted: { color: colors.textMuted },
   slotRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   slotTime: { flex: 1, fontSize: 15, fontWeight: '600', color: colors.text },
   slotLocationRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8 },
@@ -1449,6 +1634,16 @@ const s = StyleSheet.create({
   assignBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
   cancelAllBtn: { paddingVertical: 12, borderRadius: 10, alignItems: 'center', borderWidth: 1, borderColor: colors.danger },
   cancelAllBtnText: { fontSize: 16, fontWeight: '600', color: colors.danger },
+  deleteSlotBtn: {
+    marginTop: 12,
+    paddingVertical: 10,
+    borderRadius: 8,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.danger,
+    alignSelf: 'flex-start',
+  },
+  deleteSlotBtnText: { fontSize: 14, fontWeight: '600', color: colors.danger },
   bookingsList: { marginTop: 10, borderTopWidth: 1, borderTopColor: colors.border, paddingTop: 10 },
   bookingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 6 },
   bookingRowLeft: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
@@ -1459,9 +1654,14 @@ const s = StyleSheet.create({
   bookingActionEdit: { fontSize: 14, fontWeight: '600', color: colors.primary },
   bookingActionCancel: { fontSize: 14, fontWeight: '600', color: colors.danger },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 24 },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
   modalContent: { backgroundColor: colors.card, borderRadius: 16, padding: 20, maxHeight: '85%' },
   modalScroll: { flexGrow: 0, maxHeight: '100%' },
   modalScrollContent: { paddingBottom: 12 },
+  /** Rate-meeting modal: extra bottom padding so last controls stay above thumb / keyboard. */
+  rateModalScrollContent: { paddingBottom: 28, flexGrow: 0 },
   modalTitle: { fontSize: 20, fontWeight: '800', color: colors.text, marginBottom: 6 },
   modalSub: { fontSize: 14, color: colors.textSecondary, marginBottom: 20 },
   modalSection: { marginBottom: 20 },

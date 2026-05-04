@@ -234,22 +234,29 @@
 .modalOverlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: 1200;
   padding: 24px;
 }
 
 .modal {
-  background: var(--color-bg);
+  background: var(--color-background);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   max-width: 480px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.4);
+  opacity: 1;
+}
+
+.modalWide {
+  max-width: 560px;
 }
 
 .modalHead {
@@ -258,6 +265,10 @@
   align-items: center;
   padding: 16px 20px;
   border-bottom: 1px solid var(--color-border);
+  background: var(--color-background);
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .modalHead h2 {
@@ -275,6 +286,7 @@
 
 .modalBody {
   padding: 20px;
+  background: var(--color-background);
 }
 
 .modalBody label {
@@ -285,6 +297,7 @@
 }
 
 .modalBody input,
+.modalBody textarea,
 .modalBody select {
   width: 100%;
   padding: 8px 10px;
@@ -293,6 +306,14 @@
   margin-bottom: 12px;
   font-size: 14px;
   box-sizing: border-box;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.modalBody textarea {
+  resize: vertical;
+  min-height: 110px;
+  font-family: inherit;
 }
 
 .empty {
@@ -302,4 +323,156 @@
 
 .loading {
   padding: 24px 0;
+}
+
+.speakersBlock {
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface, rgba(255, 255, 255, 0.03));
+}
+
+.speakersBlockHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.speakersBlockTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.addSpeakerBtn {
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-accent);
+  cursor: pointer;
+}
+
+.addSpeakerBtn:hover {
+  background: var(--color-surface-hover);
+}
+
+.speakerCard {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.speakerCard:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+
+.speakerCardHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.speakerCardLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.removeSpeakerBtn {
+  padding: 4px 10px;
+  font-size: 12px;
+  border: none;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-danger, #dc2626);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.removeSpeakerBtn:hover {
+  text-decoration: underline;
+}
+
+.typeRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.typeChip {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-secondary);
+  border-radius: 10px;
+  padding: 7px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.typeChipActive {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: #fff;
+}
+
+.customTypeRow {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+.customTypeRow input {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.customTypeAddBtn {
+  border: none;
+  border-radius: var(--radius);
+  padding: 8px 14px;
+  background: var(--color-accent);
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.customTypeAddBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.checkboxLabel {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 4px 0 1rem;
+  cursor: pointer;
+  line-height: 1.45;
+  font-size: 14px;
+  color: var(--color-text, #1a1a1a);
+}
+
+.checkboxLabel input {
+  margin-top: 0.2rem;
+  flex-shrink: 0;
+  width: 1.1rem;
+  height: 1.1rem;
+  cursor: pointer;
+}
+
+.ratingsOffBadge {
+  color: var(--color-muted, #6b6b6b);
+  font-style: italic;
 }

@@ -26,19 +26,49 @@ export default function WallHome() {
       .finally(() => setLoading(false));
   }, []);
 
-  if (loading) return <div style={{ padding: 48, textAlign: 'center', color: '#e2e8f0', background: '#1e0a2e', minHeight: '100vh' }}>Loading events…</div>;
-  if (!events.length) return <div style={{ padding: 48, textAlign: 'center', color: '#e2e8f0', background: '#1e0a2e', minHeight: '100vh' }}>No active events. Add NEXT_PUBLIC_SUPABASE_* to .env.local.</div>;
+  const pageShell = {
+    padding: 48,
+    maxWidth: 800,
+    margin: '0 auto',
+    minHeight: '100vh',
+    color: '#f8f9fa',
+  } as const;
+
+  if (loading)
+    return (
+      <div style={{ ...pageShell, textAlign: 'center', color: 'rgba(248,249,250,0.72)' }}>Loading events…</div>
+    );
+  if (!events.length)
+    return (
+      <div style={{ ...pageShell, textAlign: 'center', color: 'rgba(248,249,250,0.72)' }}>
+        No active events. Add NEXT_PUBLIC_SUPABASE_* to .env.local.
+      </div>
+    );
 
   return (
-    <div style={{ padding: 48, maxWidth: 800, margin: '0 auto', background: '#1e0a2e', minHeight: '100vh', color: '#fff' }}>
-      <h1 style={{ fontSize: 32, marginBottom: 8 }}>KBM Connect Wall</h1>
-      <p style={{ color: '#e2e8f0', marginBottom: 32 }}>Select an event for the big screen.</p>
+    <div style={pageShell}>
+      <div style={{ width: 36, height: 4, background: '#c9a961', borderRadius: 2, marginBottom: 16 }} aria-hidden />
+      <h1 style={{ fontSize: 28, fontWeight: 700, margin: '0 0 8px', letterSpacing: '-0.02em' }}>KBM Connect Wall</h1>
+      <p style={{ color: 'rgba(248,249,250,0.72)', marginBottom: 32, fontSize: 15, letterSpacing: '0.02em' }}>
+        Select an event for the big screen.
+      </p>
       <ul style={{ listStyle: 'none', padding: 0 }}>
         {events.map((e) => (
           <li key={e.id} style={{ marginBottom: 12 }}>
             <Link
               href={`/wall?event=${e.id}`}
-              style={{ display: 'block', padding: 20, background: '#2d1b4e', borderRadius: 12, color: '#fff', textDecoration: 'none', fontSize: 18, border: '1px solid rgba(252,211,77,0.2)' }}
+              style={{
+                display: 'block',
+                padding: '18px 22px',
+                background: '#2d3e50',
+                borderRadius: 12,
+                color: '#f8f9fa',
+                textDecoration: 'none',
+                fontSize: 17,
+                fontWeight: 600,
+                border: '1px solid rgba(201, 169, 97, 0.35)',
+                boxShadow: '0 8px 24px rgba(0,0,0,0.25)',
+              }}
             >
               {e.name}
             </Link>

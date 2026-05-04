@@ -16,6 +16,8 @@ import {
   KeyboardAvoidingView,
   Platform,
   Linking,
+  Image,
+  Alert,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,6 +28,7 @@ import { colors } from '../constants/colors';
 import { LogOut, ChevronLeft } from 'lucide-react-native';
 import { theme } from '../constants/theme';
 import type { Event } from '../lib/types';
+import { isEventAccessible } from '../lib/eventAccess';
 
 const HERO_GRADIENT = [colors.primary, colors.primaryDark] as const;
 
@@ -57,6 +60,10 @@ function openMap(event: Event) {
   Linking.openURL(mapUrl).catch(() => {});
 }
 
+function formatDateRange(event: Event) {
+  return `${formatDate(event.start_date)} – ${formatDate(event.end_date)}`;
+}
+
 export default function JoinEventGate() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -78,6 +85,10 @@ export default function JoinEventGate() {
   const [searching, setSearching] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const recentEvents = memberships
+    .map((m) => (m as { events?: Event | null }).events ?? null)
+    .filter((e): e is Event => Boolean(e))
+    .slice(0, 3);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -139,6 +150,20 @@ export default function JoinEventGate() {
     if (route) router.replace(route as any);
   };
 
+  const openRecentEvent = async (event: Event) => {
+    if (!isEventAccessible(event, user?.is_platform_admin)) {
+      const isDisabled = event.is_active === false;
+      Alert.alert(
+        'Event unavailable',
+        isDisabled
+          ? 'This event is disabled right now. Please contact event admin if this looks incorrect.'
+          : 'This event is outside your access window.'
+      );
+      return;
+    }
+    await setCurrentEvent(event);
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
       <KeyboardAvoidingView
@@ -176,6 +201,35 @@ export default function JoinEventGate() {
             </View>
           ) : null}
 
+          {searchedEvent ? (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>Event found</Text>
+              {isAlreadyMember ? (
+                <Text style={styles.alreadyMemberHint}>You're already in this event.</Text>
+              ) : null}
+              <Text style={styles.eventFoundName}>{searchedEvent.name}</Text>
+              {(searchedEvent.location || searchedEvent.venue || searchedEvent.map_url) ? (
+                <TouchableOpacity onPress={() => openMap(searchedEvent)} activeOpacity={0.7}>
+                  <Text style={styles.cardTextLink}>📍 {[searchedEvent.location, searchedEvent.venue].filter(Boolean).join(' · ') || 'Tap to open map'}</Text>
+                </TouchableOpacity>
+              ) : null}
+              <Text style={styles.cardText}>
+                {formatDate(searchedEvent.start_date)} – {formatDate(searchedEvent.end_date)}
+              </Text>
+              <TouchableOpacity
+                style={[styles.primaryBtn, styles.joinBtn, searching && styles.btnDisabled]}
+                onPress={handleJoin}
+                disabled={searching}
+              >
+                {searching ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <Text style={styles.primaryBtnText}>{isAlreadyMember ? 'Open event' : 'Join this event'}</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          ) : null}
+
           <View style={styles.card}>
             <Text style={styles.cardTitle}>Event code</Text>
             <TextInput
@@ -206,32 +260,38 @@ export default function JoinEventGate() {
             {joinError ? <Text style={styles.inlineError}>{joinError}</Text> : null}
           </View>
 
-          {searchedEvent ? (
+          {recentEvents.length > 0 ? (
             <View style={styles.card}>
-              <Text style={styles.cardTitle}>Event found</Text>
-              {isAlreadyMember ? (
-                <Text style={styles.alreadyMemberHint}>You're already in this event.</Text>
-              ) : null}
-              <Text style={styles.eventFoundName}>{searchedEvent.name}</Text>
-              {(searchedEvent.location || searchedEvent.venue || searchedEvent.map_url) ? (
-                <TouchableOpacity onPress={() => openMap(searchedEvent)} activeOpacity={0.7}>
-                  <Text style={styles.cardTextLink}>📍 {[searchedEvent.location, searchedEvent.venue].filter(Boolean).join(' · ') || 'Tap to open map'}</Text>
-                </TouchableOpacity>
-              ) : null}
-              <Text style={styles.cardText}>
-                {formatDate(searchedEvent.start_date)} – {formatDate(searchedEvent.end_date)}
-              </Text>
-              <TouchableOpacity
-                style={[styles.primaryBtn, styles.joinBtn, searching && styles.btnDisabled]}
-                onPress={handleJoin}
-                disabled={searching}
-              >
-                {searching ? (
-                  <ActivityIndicator size="small" color="#fff" />
-                ) : (
-                  <Text style={styles.primaryBtnText}>{isAlreadyMember ? 'Open event' : 'Join this event'}</Text>
-                )}
-              </TouchableOpacity>
+              <Text style={styles.cardTitle}>Recent events</Text>
+              {recentEvents.map((event) => {
+                const accessible = isEventAccessible(event, user?.is_platform_admin);
+                const status = event.is_active === false ? 'Inactive' : 'Active';
+                return (
+                  <TouchableOpacity
+                    key={event.id}
+                    style={[styles.recentItem, !accessible && styles.recentItemMuted]}
+                    activeOpacity={0.8}
+                    onPress={() => void openRecentEvent(event)}
+                  >
+                    {event.logo_url ? (
+                      <Image source={{ uri: event.logo_url }} style={styles.recentLogo} />
+                    ) : (
+                      <View style={[styles.recentLogo, styles.recentLogoPlaceholder]}>
+                        <Text style={styles.recentLogoPlaceholderText}>
+                          {(event.name || 'E').slice(0, 1).toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                    <View style={styles.recentBody}>
+                      <Text numberOfLines={1} style={styles.recentName}>{event.name}</Text>
+                      <Text style={styles.recentDates}>{formatDateRange(event)}</Text>
+                    </View>
+                    <View style={[styles.statusChip, status === 'Active' ? styles.statusChipActive : styles.statusChipMuted]}>
+                      <Text style={styles.statusChipText}>{status}</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           ) : null}
 
@@ -369,4 +429,60 @@ const styles = StyleSheet.create({
   cardTextLink: { fontSize: 14, color: colors.primary, marginBottom: 6, fontWeight: '500' },
   linkBtn: { alignSelf: 'center', marginTop: 8 },
   linkBtnText: { fontSize: 14, color: colors.primary, fontWeight: '600' },
+  recentItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.borderLight,
+  },
+  recentItemMuted: {
+    opacity: 0.78,
+  },
+  recentLogo: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: colors.surfaceHover,
+  },
+  recentLogoPlaceholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recentLogoPlaceholderText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: colors.textSecondary,
+  },
+  recentBody: {
+    flex: 1,
+    minWidth: 0,
+  },
+  recentName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  recentDates: {
+    fontSize: 13,
+    color: colors.textSecondary,
+    marginTop: 2,
+  },
+  statusChip: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  statusChipActive: {
+    backgroundColor: '#DCFCE7',
+  },
+  statusChipMuted: {
+    backgroundColor: colors.surfaceHover,
+  },
+  statusChipText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
 });

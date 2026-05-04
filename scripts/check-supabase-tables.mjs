@@ -40,7 +40,14 @@ FROM (
     'schedule_sessions', 'user_schedule', 'point_rules', 'point_log',
     'connections', 'connection_requests', 'blocked_users', 'user_reports',
     'chat_groups', 'chat_group_members', 'group_messages',
-    'session_reminder_sent', 'vendor_booths', 'meeting_slots', 'meeting_bookings'
+    'session_reminder_sent', 'vendor_booths', 'meeting_slots', 'meeting_bookings',
+    'session_ratings',
+    'event_sponsors', 'event_badge_tokens', 'badge_scans', 'badge_scan_meeting_attendance',
+    'event_matchmaking_settings', 'event_registration_forms', 'event_registration_questions',
+    'event_registration_question_options', 'event_registration_submissions', 'event_registration_answers',
+    'event_meeting_interest_requests', 'event_match_reviews', 'event_match_scheduled_meetings',
+    'vendor_booth_reps', 'b2b_meeting_feedback', 'b2b_meeting_feedback_nudge_sent',
+    'b2b_meeting_reminder_sent', 'platform_test_guides'
   ]) AS table_name
 ) required
 LEFT JOIN information_schema.tables t
@@ -74,7 +81,11 @@ ORDER BY r.tname, r.cname;
 `;
 
 async function run() {
-  const client = new pg.Client({ connectionString: databaseUrl });
+  const isSupabaseHost = /supabase\.co|pooler\.supabase\.com/.test(databaseUrl);
+  const client = new pg.Client({
+    connectionString: databaseUrl,
+    ...(isSupabaseHost && { ssl: { rejectUnauthorized: false } }),
+  });
   try {
     await client.connect();
 
@@ -86,7 +97,7 @@ async function run() {
     if (missing.length) {
       console.log(`\n  ⚠ ${missing.length} table(s) MISSING: ${missing.map((r) => r.Table).join(', ')}`);
     } else {
-      console.log('\n  ✓ All 24 required tables exist.');
+      console.log('\n  ✓ All 43 required tables exist.');
     }
 
     console.log('\n--- Missing columns (empty = all good) ---');

@@ -70,14 +70,14 @@ export default function AdminVendorPerformanceScreen() {
   };
 
   return (
-    <SafeAreaView style={s.container} edges={['bottom']}>
+    <SafeAreaView style={s.container} edges={[]}>
       <View style={s.header}>
         <TouchableOpacity onPress={() => router.back()} style={s.backBtn} hitSlop={12}>
           <ChevronLeft size={24} color={colors.text} />
         </TouchableOpacity>
         <Text style={s.headerTitle}>Vendor performance</Text>
       </View>
-      <Text style={s.subtitle}>B2B meeting ratings by booth. Pull down to refresh.</Text>
+      <Text style={s.subtitle}>1:1 meeting ratings by booth. Pull down to refresh.</Text>
 
       {loading ? (
         <View style={s.centered}>

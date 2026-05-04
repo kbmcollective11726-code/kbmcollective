@@ -1,4 +1,4 @@
-// Send push notification when a B2B meeting is starting in ~5 minutes.
+// 5-minute B2B reminder: in-app notification for the attendee + push when a token exists.
 // Invoke via cron every 1–2 minutes (e.g. Supabase cron or external). Use x-cron-secret if set.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
@@ -7,11 +7,39 @@ const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const ANDROID_CHANNEL_ID = "collectivelive_notifications_v2";
 const REMIND_MINUTES = 5;
 
+const EXPO_BANNER_FIELDS = {
+  sound: "default",
+  priority: "high",
+  channelId: ANDROID_CHANNEL_ID,
+  badge: 1,
+  vibrate: true,
+} as const;
+
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
   "Access-Control-Allow-Headers": "Authorization, Content-Type, x-cron-secret",
 };
+
+function countExpoOkTickets(rawText: string): number {
+  try {
+    const parsed = JSON.parse(rawText) as {
+      data?: Array<{ status?: string; message?: string; details?: { error?: string } }>;
+    };
+    const items = Array.isArray(parsed?.data) ? parsed.data : [];
+    let ok = 0;
+    for (const item of items) {
+      if (item?.status === "ok") ok++;
+      else {
+        const msg = item?.message ?? item?.details?.error ?? JSON.stringify(item);
+        console.warn("Expo push ticket error (B2B reminder):", msg);
+      }
+    }
+    return ok;
+  } catch {
+    return 0;
+  }
+}
 
 type SlotRow = { id: string; booth_id: string; start_time: string };
 type BoothRow = { id: string; event_id: string; vendor_name: string };
@@ -38,9 +66,9 @@ Deno.serve(async (req: Request) => {
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
 
-  // Slots starting in ~4–6 minutes
-  const from = new Date(Date.now() + (REMIND_MINUTES - 1) * 60 * 1000).toISOString();
-  const to = new Date(Date.now() + (REMIND_MINUTES + 1) * 60 * 1000).toISOString();
+  // Slots starting in ~3–9 minutes (wide window for */2 cron + network delay)
+  const from = new Date(Date.now() + (REMIND_MINUTES - 2) * 60 * 1000).toISOString();
+  const to = new Date(Date.now() + (REMIND_MINUTES + 4) * 60 * 1000).toISOString();
 
   const { data: slots, error: slotsError } = await supabase
     .from("meeting_slots")
@@ -113,8 +141,7 @@ Deno.serve(async (req: Request) => {
   const { data: users, error: usersError } = await supabase
     .from("users")
     .select("id, push_token")
-    .in("id", attendeeIds)
-    .not("push_token", "is", null);
+    .in("id", attendeeIds);
 
   if (usersError) {
     console.error("Fetch users error:", usersError);
@@ -122,7 +149,7 @@ Deno.serve(async (req: Request) => {
   }
 
   const tokenByUser = new Map<string, string>();
-  for (const u of (users ?? []) as { id: string; push_token: string }[]) {
+  for (const u of (users ?? []) as { id: string; push_token: string | null }[]) {
     if (u.push_token) tokenByUser.set(u.id, u.push_token);
   }
 
@@ -130,57 +157,78 @@ Deno.serve(async (req: Request) => {
   const now = new Date().toISOString();
 
   for (const booking of toProcess) {
+    // Concurrency guard: reserve this booking before inserting notifications / pushing.
+    // Prevents overlapping cron invocations from sending duplicate reminders.
+    const { error: reserveErr } = await supabase
+      .from("b2b_meeting_reminder_sent")
+      .insert({ booking_id: booking.id, created_at: now });
+
+    if ((reserveErr as { code?: string } | null)?.code === "23505") {
+      continue;
+    }
+    if (reserveErr) {
+      console.warn("B2B reminder reserve failed:", reserveErr);
+      continue;
+    }
+
     const slot = slotMap.get(booking.slot_id);
     if (!slot) continue;
     const boothInfo = boothMap.get(slot.booth_id);
     const vendorName = boothInfo?.vendor_name ?? "Vendor";
     const eventId = boothInfo?.event_id ?? null;
-    const token = tokenByUser.get(booking.attendee_id);
-    if (!token) continue;
 
     const title = "Meeting starting soon";
-    const body = `Meeting with ${vendorName} starts in ${REMIND_MINUTES} minutes.`;
-    const messages = [{
-      to: token,
+    const body = `Meeting with ${vendorName} is starting soon.`;
+
+    // In-app first so the bell always has the reminder if push fails or there is no token.
+    const { error: notifErr } = await supabase.from("notifications").insert({
+      user_id: booking.attendee_id,
+      event_id: eventId,
+      type: "meeting",
       title,
       body,
-      data: {
-        type: "meeting_reminder",
-        boothId: slot.booth_id,
-        slotId: slot.id,
-        url: `collectivelive://expo/${slot.booth_id}`,
-      },
-      sound: "default",
-      priority: "high",
-      channelId: ANDROID_CHANNEL_ID,
-      badge: 1,
-    }];
+      data: { booth_id: slot.booth_id, slot_id: slot.id },
+    });
+    if (notifErr) {
+      console.error("B2B reminder notifications insert failed:", booking.id, notifErr);
+      // Allow future runs to retry if we couldn't even create the in-app notification.
+      await supabase.from("b2b_meeting_reminder_sent").delete().eq("booking_id", booking.id);
+      continue;
+    }
 
-    try {
-      const pushRes = await fetch(EXPO_PUSH_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(messages),
-      });
-      if (pushRes.ok) {
-        totalSent += 1;
-        await supabase.from("notifications").insert({
-          user_id: booking.attendee_id,
-          event_id: eventId,
-          type: "meeting",
-          title,
-          body,
-          data: { booth_id: slot.booth_id, slot_id: slot.id },
+    const token = tokenByUser.get(booking.attendee_id);
+    if (token) {
+      const messages = [{
+        to: token,
+        title,
+        body,
+        data: {
+          type: "meeting_reminder",
+          boothId: slot.booth_id,
+          slotId: slot.id,
+          url: `collectivelive://expo/${slot.booth_id}`,
+        },
+        ...EXPO_BANNER_FIELDS,
+      }];
+      try {
+        const pushRes = await fetch(EXPO_PUSH_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(messages),
         });
-        await supabase.from("b2b_meeting_reminder_sent").insert({
-          booking_id: booking.id,
-          created_at: now,
-        });
-      } else {
-        console.warn("Expo push error for booking", booking.id, await pushRes.text());
+        const rawText = await pushRes.text();
+        if (!pushRes.ok) {
+          console.warn("Expo push HTTP error for booking", booking.id, pushRes.status, rawText.slice(0, 500));
+        } else {
+          const okCount = countExpoOkTickets(rawText);
+          totalSent += okCount;
+          if (okCount === 0) {
+            console.warn("Expo rejected B2B reminder push for booking", booking.id);
+          }
+        }
+      } catch (e) {
+        console.error("Push request failed for booking", booking.id, e);
       }
-    } catch (e) {
-      console.error("Push request failed for booking", booking.id, e);
     }
   }
 

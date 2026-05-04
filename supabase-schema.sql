@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS public.users (
     push_token TEXT,
     is_active BOOLEAN DEFAULT true,
     is_platform_admin BOOLEAN NOT NULL DEFAULT false,
+    last_login_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
 );
@@ -182,7 +183,12 @@ CREATE TABLE IF NOT EXISTS public.announcements (
     priority TEXT DEFAULT 'normal' CHECK (priority IN ('low', 'normal', 'high', 'urgent')),
     send_push BOOLEAN DEFAULT false,
     sent_by UUID REFERENCES public.users(id),
-    created_at TIMESTAMPTZ DEFAULT now()
+    created_at TIMESTAMPTZ DEFAULT now(),
+    target_type TEXT DEFAULT 'all' CHECK (target_type IS NULL OR target_type IN ('all', 'audience', 'specific')),
+    target_audience TEXT[],
+    target_user_ids UUID[],
+    scheduled_at TIMESTAMPTZ,
+    sent_at TIMESTAMPTZ
 );
 
 -- ==================
@@ -329,6 +335,7 @@ DROP POLICY IF EXISTS "Events are viewable by everyone" ON public.events;
 DROP POLICY IF EXISTS "Authenticated users can create events" ON public.events;
 DROP POLICY IF EXISTS "Admins can update events" ON public.events;
 DROP POLICY IF EXISTS "Admins can delete events" ON public.events;
+DROP POLICY IF EXISTS "Super admins can delete events" ON public.events;
 DROP POLICY IF EXISTS "Members can view event members" ON public.event_members;
 DROP POLICY IF EXISTS "Users can join events" ON public.event_members;
 DROP POLICY IF EXISTS "Admins can manage members" ON public.event_members;
@@ -354,6 +361,7 @@ DROP POLICY IF EXISTS "Users can view own messages" ON public.messages;
 DROP POLICY IF EXISTS "Users can send messages" ON public.messages;
 DROP POLICY IF EXISTS "Receiver can mark as read" ON public.messages;
 DROP POLICY IF EXISTS "Announcements are viewable" ON public.announcements;
+DROP POLICY IF EXISTS "Announcements visible to targets" ON public.announcements;
 DROP POLICY IF EXISTS "Admins can create announcements" ON public.announcements;
 DROP POLICY IF EXISTS "Admins can update announcements" ON public.announcements;
 DROP POLICY IF EXISTS "Admins can delete announcements" ON public.announcements;
@@ -414,6 +422,41 @@ AS $$
   );
 $$;
 
+-- Announcement visibility: targeting (all / audience / specific); admins see all
+CREATE OR REPLACE FUNCTION public.user_can_view_announcement(
+  p_event_id UUID,
+  p_target_type TEXT,
+  p_target_audience TEXT[],
+  p_target_user_ids UUID[]
+)
+RETURNS BOOLEAN
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = public
+AS $$
+  SELECT
+    CASE
+      WHEN auth.uid() IS NULL THEN false
+      WHEN public.is_platform_admin(auth.uid()) THEN true
+      WHEN public.is_event_admin(p_event_id) THEN true
+      WHEN NOT EXISTS (
+        SELECT 1 FROM public.event_members em
+        WHERE em.event_id = p_event_id AND em.user_id = auth.uid()
+      ) THEN false
+      WHEN COALESCE(p_target_type, 'all') = 'all' THEN true
+      WHEN p_target_type = 'specific' THEN
+        auth.uid() = ANY (COALESCE(p_target_user_ids, ARRAY[]::uuid[]))
+      WHEN p_target_type = 'audience' THEN EXISTS (
+        SELECT 1 FROM public.event_members em
+        WHERE em.event_id = p_event_id
+          AND em.user_id = auth.uid()
+          AND em.role = ANY (COALESCE(p_target_audience, ARRAY[]::text[]))
+      )
+      ELSE false
+    END;
+$$;
+
 -- USERS: everyone can read, users can update their own profile
 CREATE POLICY "Users are viewable by everyone" ON public.users FOR SELECT USING (true);
 CREATE POLICY "Users can update own profile" ON public.users FOR UPDATE USING (auth.uid() = id);
@@ -430,9 +473,17 @@ CREATE POLICY "Admins can update events" ON public.events FOR UPDATE USING (
   public.is_platform_admin(auth.uid())
   OR EXISTS (SELECT 1 FROM public.event_members em WHERE em.event_id = events.id AND em.user_id = auth.uid() AND em.role IN ('admin', 'super_admin'))
 );
-CREATE POLICY "Admins can delete events" ON public.events FOR DELETE USING (
+CREATE POLICY "Super admins can delete events" ON public.events FOR DELETE USING (
   public.is_platform_admin(auth.uid())
-  OR EXISTS (SELECT 1 FROM public.event_members em WHERE em.event_id = events.id AND em.user_id = auth.uid() AND em.role IN ('admin', 'super_admin'))
+  OR EXISTS (
+    SELECT 1 FROM public.event_members em
+    WHERE em.event_id = events.id
+      AND em.user_id = auth.uid()
+      AND (
+        em.role = 'super_admin'
+        OR 'super_admin' = ANY (COALESCE(em.roles, ARRAY[]::text[]))
+      )
+  )
 );
 
 -- EVENT MEMBERS: viewable by members of the same event
@@ -483,7 +534,14 @@ CREATE POLICY "Users can send messages" ON public.messages FOR INSERT WITH CHECK
 CREATE POLICY "Receiver can mark as read" ON public.messages FOR UPDATE USING (auth.uid() = receiver_id);
 
 -- ANNOUNCEMENTS: event admins or platform admin can create/update/delete
-CREATE POLICY "Announcements are viewable" ON public.announcements FOR SELECT USING (true);
+CREATE POLICY "Announcements visible to targets" ON public.announcements FOR SELECT USING (
+  public.user_can_view_announcement(
+    event_id,
+    target_type,
+    target_audience,
+    target_user_ids
+  )
+);
 CREATE POLICY "Admins can create announcements" ON public.announcements FOR INSERT WITH CHECK (
     public.is_event_admin(announcements.event_id) OR public.is_platform_admin(auth.uid())
 );
@@ -586,6 +644,28 @@ CREATE TRIGGER on_auth_user_created
     AFTER INSERT ON auth.users
     FOR EACH ROW
     EXECUTE FUNCTION public.handle_new_user();
+
+-- Mirror auth.users.last_sign_in_at into public.users.last_login_at for admin reporting.
+CREATE OR REPLACE FUNCTION public.sync_last_login_at_from_auth()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.last_sign_in_at IS NULL THEN
+        RETURN NEW;
+    END IF;
+    UPDATE public.users
+    SET last_login_at = NEW.last_sign_in_at
+    WHERE id = NEW.id
+      AND (last_login_at IS NULL OR NEW.last_sign_in_at > last_login_at);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, auth;
+
+DROP TRIGGER IF EXISTS on_auth_user_last_sign_in_sync ON auth.users;
+CREATE TRIGGER on_auth_user_last_sign_in_sync
+    AFTER UPDATE OF last_sign_in_at ON auth.users
+    FOR EACH ROW
+    WHEN (NEW.last_sign_in_at IS DISTINCT FROM OLD.last_sign_in_at)
+    EXECUTE FUNCTION public.sync_last_login_at_from_auth();
 
 -- Soft-delete own post (bypasses RLS; only updates if auth.uid() = user_id)
 CREATE OR REPLACE FUNCTION public.delete_own_post(post_id uuid)

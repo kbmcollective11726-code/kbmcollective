@@ -55,6 +55,18 @@ export async function pickImage(
     }
   }
 
+  const libraryBase: ImagePicker.ImagePickerOptions = {
+    mediaTypes: ['images'],
+    quality: 1,
+    allowsEditing: false,
+  };
+  const libraryOpts: ImagePicker.ImagePickerOptions =
+    Platform.OS === 'ios'
+      ? {
+          ...libraryBase,
+          preferredAssetRepresentationMode: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        }
+      : libraryBase;
   const result =
     source === 'camera'
       ? await ImagePicker.launchCameraAsync({
@@ -62,11 +74,7 @@ export async function pickImage(
           quality: 1,
           allowsEditing: false,
         })
-      : await ImagePicker.launchImageLibraryAsync({
-          mediaTypes: ['images'],
-          quality: 1,
-          allowsEditing: false,
-        });
+      : await ImagePicker.launchImageLibraryAsync(libraryOpts);
 
   if (result.canceled || !result.assets?.[0]) return null;
 
@@ -74,25 +82,80 @@ export async function pickImage(
 }
 
 /**
+ * Copy picker/camera URI to app cache so `manipulateAsync` does not share the same asset as `<Image/>`.
+ * Fixes iOS "Calling renderAsync has failed" / "Image context has been lost" on screenshots and library picks.
+ */
+async function stableUriForImageManipulator(uri: string): Promise<string> {
+  const cacheDir = FileSystem.cacheDirectory;
+  if (!cacheDir) return uri;
+  const pathOnly = uri.split('?')[0] ?? uri;
+  const extMatch = pathOnly.match(/\.(jpe?g|png|heic|webp)$/i);
+  const ext = extMatch ? extMatch[1].toLowerCase().replace(/^jpeg$/i, 'jpg') : 'jpg';
+  const dest = `${cacheDir}img_manip_${Date.now()}_${Math.random().toString(36).slice(2, 10)}.${ext}`;
+  try {
+    await FileSystem.copyAsync({ from: uri, to: dest });
+    return dest;
+  } catch {
+    return uri;
+  }
+}
+
+/**
  * Compress an image to reduce file size before uploading.
+ * Never throws: if expo-image-manipulator fails (iOS "Image context has been lost"), returns a stable cache copy for upload.
  */
 export async function compressImage(
   uri: string,
   maxWidth: number = MAX_WIDTH,
   quality: number = COMPRESSION_QUALITY
 ): Promise<string> {
-  const manipulated = await ImageManipulator.manipulateAsync(
-    uri,
+  const saveOpts = {
+    compress: quality,
+    format: ImageManipulator.SaveFormat.JPEG,
+  } as const;
+
+  const tryManipulate = async (src: string, actions: ImageManipulator.Action[]) => {
+    const manipulated = await ImageManipulator.manipulateAsync(src, actions, saveOpts);
+    if (!manipulated?.uri) return null;
+    return manipulated.uri;
+  };
+
+  const smallWidth = Math.min(maxWidth, 1024);
+  const actionSets: ImageManipulator.Action[][] = [
     [{ resize: { width: maxWidth } }],
-    {
-      compress: quality,
-      format: ImageManipulator.SaveFormat.JPEG,
+    [{ resize: { width: smallWidth } }],
+    [],
+  ];
+
+  async function runAllOnSource(src: string): Promise<string | null> {
+    for (const actions of actionSets) {
+      try {
+        const out = await tryManipulate(src, actions);
+        if (out) return out;
+      } catch {
+        /* next */
+      }
     }
-  );
-  if (!manipulated?.uri) {
-    return uri;
+    return null;
   }
-  return manipulated.uri;
+
+  const primarySrc = await stableUriForImageManipulator(uri);
+  const fromPrimary = await runAllOnSource(primarySrc);
+  if (fromPrimary) return fromPrimary;
+
+  const cacheDir = FileSystem.cacheDirectory;
+  if (cacheDir) {
+    const dest = `${cacheDir}img_manip_retry_${Date.now()}_${Math.random().toString(36).slice(2, 10)}.jpg`;
+    try {
+      await FileSystem.copyAsync({ from: uri, to: dest });
+      const fromRetry = await runAllOnSource(dest);
+      if (fromRetry) return fromRetry;
+    } catch {
+      /* fall through */
+    }
+  }
+
+  return primarySrc;
 }
 
 /**

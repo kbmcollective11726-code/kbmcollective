@@ -24,7 +24,7 @@ Linked project (from MCP): **`https://noydhokbswedvltjyenr.supabase.co`**
 | `lib/passwordResetRedirect.ts` | Uses the HTTPS URL when set; otherwise Expo `Linking.createURL('reset-password')` |
 
 **EAS builds** already set `EXPO_PUBLIC_PASSWORD_RESET_WEB_URL` to  
-`https://admin-setup-omega.vercel.app/auth-recovery.html` in `eas.json` — change it if your Vercel domain is different.
+`https://cadmin.kbmcollective.org/auth-recovery.html` in `eas.json` — change it if your admin domain is different.
 
 **Local `.env`**: add the same variable and run `npx expo start --clear`.
 
@@ -38,7 +38,7 @@ Linked project (from MCP): **`https://noydhokbswedvltjyenr.supabase.co`**
 
 Add **exactly** (no typos, include `https`):
 
-- `https://admin-setup-omega.vercel.app/auth-recovery.html`  
+- `https://cadmin.kbmcollective.org/auth-recovery.html`  
   (or whatever matches `EXPO_PUBLIC_PASSWORD_RESET_WEB_URL` after you deploy)
 
 Also add (for dev / direct scheme):
@@ -81,6 +81,16 @@ Confirm in a browser:
 2. Vercel: `auth-recovery.html` deployed.  
 3. App: `.env` or EAS has `EXPO_PUBLIC_PASSWORD_RESET_WEB_URL` matching that file.  
 4. Send a **new** reset email and open the link on a phone with KBM Connect installed → app should open → **Change password** screen.
+
+---
+
+## Troubleshooting: “missing login data” or “Reset link not found in app”
+
+- **“Missing login data” in the browser** means `auth-recovery.html` loaded **without** Supabase tokens in the URL (no `#access_token=…`, `type=recovery`, or `code=`). Common causes:  
+  - **Corporate / Outlook “Safe Links”** or other scanners **open the link once** and burn the one-time token before you tap it. Try forwarding the email to Gmail/Apple Mail, or use “original URL” / disable link wrapping for that message.  
+  - **Opening the link twice** — recovery links are often single-use; request a **new** reset and open it **once**.  
+  - **Hosting** must serve the real **`/auth-recovery.html`** file from `admin-setup/public/` (Vite copies it to `dist/`). If the host uses a catch-all SPA rule that returns `index.html` for every path, fix routing so **`auth-recovery.html` is excluded** (see `admin-setup/vercel.json`: explicit rule before the SPA fallback).  
+- **“Reset link not found in app”** means the app opened the reset screen **without** a `collectivelive://reset-password?…` handoff. After a failed browser step, go back to email and tap the **newest** link once; do not open the app first and expect the session to appear.
 
 ---
 

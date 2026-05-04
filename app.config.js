@@ -48,29 +48,25 @@ function readEnv(key) {
   return '';
 }
 
-const appJson = require('./app.json');
 // Embed Supabase in extra so Expo Go gets it via Constants.expoConfig.extra (reliable in dev).
-module.exports = () => ({
-  ...appJson,
-  expo: {
-    ...appJson.expo,
-    extra: {
-      ...(appJson.expo?.extra || {}),
-      SUPABASE_URL: SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '',
-      SUPABASE_ANON_KEY: SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
-      ANDROID_USE_R2: ANDROID_USE_R2 || process.env.EXPO_PUBLIC_ANDROID_USE_R2 || readEnv('EXPO_PUBLIC_ANDROID_USE_R2') || '',
-      /** Public HTTPS URL of deployed Next.js live-wall (no trailing slash). EAS: set EXPO_PUBLIC_LIVE_WALL_URL in eas.json env or Expo dashboard. */
-      liveWallUrl:
-        LIVE_WALL_URL ||
-        (process.env.EXPO_PUBLIC_LIVE_WALL_URL || '').replace(/\/+$/, '') ||
-        readEnv('EXPO_PUBLIC_LIVE_WALL_URL').replace(/\/+$/, '') ||
-        '',
-      /** HTTPS auth recovery bridge; see admin-setup/public/auth-recovery.html */
-      PASSWORD_RESET_WEB_URL:
-        PASSWORD_RESET_WEB_URL ||
-        (process.env.EXPO_PUBLIC_PASSWORD_RESET_WEB_URL || '').trim().replace(/\/+$/, '') ||
-        readEnv('EXPO_PUBLIC_PASSWORD_RESET_WEB_URL').replace(/\/+$/, '') ||
-        '',
-    },
+module.exports = ({ config }) => ({
+  ...config,
+  extra: {
+    ...(config?.extra || {}),
+    SUPABASE_URL: SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '',
+    SUPABASE_ANON_KEY: SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
+    ANDROID_USE_R2: ANDROID_USE_R2 || process.env.EXPO_PUBLIC_ANDROID_USE_R2 || readEnv('EXPO_PUBLIC_ANDROID_USE_R2') || '',
+    /** Public HTTPS URL of deployed Next.js live-wall (no trailing slash). EAS: set EXPO_PUBLIC_LIVE_WALL_URL in eas.json env or Expo dashboard. */
+    liveWallUrl:
+      LIVE_WALL_URL ||
+      (process.env.EXPO_PUBLIC_LIVE_WALL_URL || '').replace(/\/+$/, '') ||
+      readEnv('EXPO_PUBLIC_LIVE_WALL_URL').replace(/\/+$/, '') ||
+      '',
+    /** HTTPS auth recovery bridge; see admin-setup/public/auth-recovery.html */
+    PASSWORD_RESET_WEB_URL:
+      PASSWORD_RESET_WEB_URL ||
+      (process.env.EXPO_PUBLIC_PASSWORD_RESET_WEB_URL || '').trim().replace(/\/+$/, '') ||
+      readEnv('EXPO_PUBLIC_PASSWORD_RESET_WEB_URL').replace(/\/+$/, '') ||
+      '',
   },
 });

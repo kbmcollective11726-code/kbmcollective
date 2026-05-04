@@ -208,7 +208,7 @@ export default function AdminScheduleScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Select an event on the Info tab first.</Text>
         </View>
@@ -217,7 +217,7 @@ export default function AdminScheduleScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <TouchableOpacity
         style={styles.addButton}
         onPress={() => router.push('/profile/admin-schedule-edit')}

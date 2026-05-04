@@ -13,8 +13,8 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useNavigation } from 'expo-router';
-import { ChevronLeft } from 'lucide-react-native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 import { useAuthStore } from '../../../stores/authStore';
 import { supabase } from '../../../lib/supabase';
 import { uploadAvatar } from '../../../lib/image';
@@ -25,7 +25,6 @@ import { Link2, Check, Pencil } from 'lucide-react-native';
 
 export default function EditProfileScreen() {
   const router = useRouter();
-  const navigation = useNavigation();
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user, updateProfile, refreshUser } = useAuthStore();
 
@@ -38,22 +37,6 @@ export default function EditProfileScreen() {
     }
   }, [from, router]);
 
-  useEffect(() => {
-    if (from && typeof from === 'string') {
-      navigation.setOptions({
-        headerBackVisible: false,
-        headerLeft: () => (
-          <TouchableOpacity
-            onPress={goBack}
-            style={{ marginLeft: 8, padding: 4 }}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <ChevronLeft size={24} color={colors.text} />
-          </TouchableOpacity>
-        ),
-      });
-    }
-  }, [from, goBack, navigation]);
   const [fullName, setFullName] = useState('');
   const [title, setTitle] = useState('');
   const [company, setCompany] = useState('');
@@ -135,7 +118,8 @@ export default function EditProfileScreen() {
   if (!user) return null;
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader variant="back" title="Edit Profile" onBack={goBack} />
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}

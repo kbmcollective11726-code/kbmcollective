@@ -85,7 +85,7 @@ export default function FeedCommentPostScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.centered} edges={['bottom']}>
+      <SafeAreaView style={styles.centered} edges={[]}>
         <ActivityIndicator size="large" color={colors.primary} />
         <Text style={styles.hint}>Opening post…</Text>
       </SafeAreaView>
@@ -94,7 +94,7 @@ export default function FeedCommentPostScreen() {
 
   if (error || !post) {
     return (
-      <SafeAreaView style={styles.centered} edges={['bottom']}>
+      <SafeAreaView style={styles.centered} edges={[]}>
         <Text style={styles.error}>{error ?? 'Could not load this post.'}</Text>
         <Pressable style={styles.btn} onPress={() => router.replace('/(tabs)/feed' as any)}>
           <Text style={styles.btnText}>Back to feed</Text>

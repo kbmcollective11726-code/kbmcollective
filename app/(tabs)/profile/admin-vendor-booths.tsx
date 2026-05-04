@@ -57,7 +57,7 @@ export default function AdminVendorBoothsScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={s.container} edges={['bottom']}>
+      <SafeAreaView style={s.container} edges={[]}>
         <View style={s.centered}>
           <Text style={s.emptyText}>Select an event first.</Text>
         </View>
@@ -66,7 +66,7 @@ export default function AdminVendorBoothsScreen() {
   }
 
   return (
-    <SafeAreaView style={s.container} edges={['bottom']}>
+    <SafeAreaView style={s.container} edges={[]}>
       <TouchableOpacity
         style={s.addBtn}
         onPress={() => router.push('/profile/admin-vendor-booth-edit')}

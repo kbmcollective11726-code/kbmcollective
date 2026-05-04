@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useParams, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
@@ -26,6 +26,29 @@ export default function VendorBoothForm() {
   const [formError, setFormError] = useState('');
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const logoInputRef = useRef<HTMLInputElement>(null);
+  const [contactSearch, setContactSearch] = useState('');
+  const [repSearch, setRepSearch] = useState('');
+
+  const membersSorted = useMemo(
+    () => [...members].sort((a, b) => a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })),
+    [members]
+  );
+
+  const filteredForContact = useMemo(() => {
+    const q = contactSearch.trim().toLowerCase();
+    if (!q) return membersSorted;
+    return membersSorted.filter(
+      (m) => m.full_name.toLowerCase().includes(q) || (contactUserId && m.user_id === contactUserId)
+    );
+  }, [membersSorted, contactSearch, contactUserId]);
+
+  const filteredForReps = useMemo(() => {
+    const q = repSearch.trim().toLowerCase();
+    if (!q) return membersSorted;
+    return membersSorted.filter(
+      (m) => m.full_name.toLowerCase().includes(q) || repUserIds.includes(m.user_id)
+    );
+  }, [membersSorted, repSearch, repUserIds]);
 
   const loadMembers = useCallback(async () => {
     if (!eventId) return;
@@ -74,7 +97,9 @@ export default function VendorBoothForm() {
   }, [boothId, eventId, isNew]);
 
   const syncBoothReps = useCallback(async (targetBoothId: string) => {
-    const uniqueRepIds = [...new Set(repUserIds.filter(Boolean))];
+    // Primary representative (`contact_user_id`) must always appear in `vendor_booth_reps`
+    // so mobile/admin B2B flows that query reps (not only the booth row) still work.
+    const uniqueRepIds = [...new Set([...repUserIds.filter(Boolean), ...(contactUserId ? [contactUserId] : [])])];
     const { error: delErr } = await supabase.from('vendor_booth_reps').delete().eq('booth_id', targetBoothId);
     if (delErr) throw delErr;
     if (uniqueRepIds.length > 0) {
@@ -82,7 +107,7 @@ export default function VendorBoothForm() {
       const { error: insErr } = await supabase.from('vendor_booth_reps').insert(rows);
       if (insErr) throw insErr;
     }
-  }, [repUserIds]);
+  }, [repUserIds, contactUserId]);
 
   useEffect(() => {
     loadMembers();
@@ -247,8 +272,16 @@ export default function VendorBoothForm() {
           placeholder="e.g. Hall A, Room 101"
         />
 
-        <label htmlFor="vb-web">Website</label>
-        <input id="vb-web" type="url" value={website} onChange={(ev) => setWebsite(ev.target.value)} placeholder="https://…" />
+        <label htmlFor="vb-web">Website (optional)</label>
+        <input
+          id="vb-web"
+          type="text"
+          inputMode="url"
+          autoComplete="url"
+          value={website}
+          onChange={(ev) => setWebsite(ev.target.value)}
+          placeholder="https://…"
+        />
 
         <span className={styles.labelRow}>Booth logo (optional)</span>
         <p className={styles.fieldHint}>Upload a square or wide logo — same storage as the mobile app (R2 or event-photos).</p>
@@ -285,19 +318,57 @@ export default function VendorBoothForm() {
           </div>
         </div>
 
-        <label htmlFor="vb-contact">Primary representative (event member)</label>
-        <select id="vb-contact" value={contactUserId} onChange={(ev) => setContactUserId(ev.target.value)}>
-          <option value="">— None —</option>
-          {members.map((m) => (
-            <option key={m.user_id} value={m.user_id}>
-              {m.full_name}
-            </option>
+        <label htmlFor="vb-contact-filter">Primary representative (event member)</label>
+        <p className={styles.fieldHint}>Type to filter names, then choose one row below (same idea as a searchable list — no separate dropdown).</p>
+        <input
+          id="vb-contact-filter"
+          type="search"
+          className={styles.memberSearch}
+          value={contactSearch}
+          onChange={(ev) => setContactSearch(ev.target.value)}
+          placeholder="Filter names…"
+          autoComplete="off"
+          aria-label="Filter primary representative list"
+        />
+        <div className={styles.contactList} role="radiogroup" aria-label="Primary representative">
+          <label className={styles.contactRow}>
+            <input
+              type="radio"
+              name="vb-primary-rep"
+              checked={contactUserId === ''}
+              onChange={() => setContactUserId('')}
+            />
+            <span>— None —</span>
+          </label>
+          {filteredForContact.map((m) => (
+            <label key={m.user_id} className={styles.contactRow}>
+              <input
+                type="radio"
+                name="vb-primary-rep"
+                checked={contactUserId === m.user_id}
+                onChange={() => setContactUserId(m.user_id)}
+              />
+              <span>{m.full_name}</span>
+            </label>
           ))}
-        </select>
+        </div>
+        {contactSearch.trim() && filteredForContact.length === 0 ? (
+          <p className={styles.searchEmpty}>No names match this filter. Clear the box to see everyone.</p>
+        ) : null}
 
-        <label>Additional representatives</label>
+        <label htmlFor="vb-reps-search">Additional representatives</label>
+        <input
+          id="vb-reps-search"
+          type="search"
+          className={styles.memberSearch}
+          value={repSearch}
+          onChange={(ev) => setRepSearch(ev.target.value)}
+          placeholder="Search by name…"
+          autoComplete="off"
+          aria-label="Filter additional representatives list"
+        />
         <div className={styles.repList}>
-          {members.map((m) => {
+          {filteredForReps.map((m) => {
             const checked = repUserIds.includes(m.user_id);
             return (
               <label key={m.user_id} className={styles.repRow}>
@@ -316,6 +387,9 @@ export default function VendorBoothForm() {
             );
           })}
           {members.length === 0 ? <p className={styles.fieldHint}>No event members found.</p> : null}
+          {members.length > 0 && filteredForReps.length === 0 ? (
+            <p className={styles.searchEmpty}>No names match this search.</p>
+          ) : null}
         </div>
 
         <div className={styles.actions}>

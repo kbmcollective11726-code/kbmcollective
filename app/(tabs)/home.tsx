@@ -20,7 +20,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
-import { supabase } from '../../lib/supabase';
+import { supabase, supabaseStorage } from '../../lib/supabase';
 import { useMemo } from 'react';
 import { format, parseISO } from 'date-fns';
 import { useRouter, usePathname } from 'expo-router';
@@ -28,7 +28,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Calendar, MapPin, X, ChevronDown, ChevronUp, Home, ImageIcon, Trophy, Users, User, Store } from 'lucide-react-native';
 import { colors } from '../../constants/colors';
 import { theme } from '../../constants/theme';
-import type { Event } from '../../lib/types';
+import type { Event, EventSponsor } from '../../lib/types';
 import { isEventAccessible } from '../../lib/eventAccess';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
@@ -38,6 +38,7 @@ import {
   formatB2BSlotTimeLocal,
   type SessionForNowNext,
 } from '../../lib/scheduleNowNext';
+import CompactSponsorStrip from '../../components/CompactSponsorStrip';
 
 type PointRuleDisplay = { action: string; points_value: number; description: string | null };
 const DISPLAY_ACTIONS = [
@@ -86,8 +87,10 @@ export default function HomeScreen() {
   const [announcements, setAnnouncements] = useState<{ id: string; title: string; content: string; created_at: string }[]>([]);
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<Set<string>>(new Set());
   const [announcementsSectionHidden, setAnnouncementsSectionHidden] = useState(false);
+  const [selectedAnnouncement, setSelectedAnnouncement] = useState<{ id: string; title: string; content: string; created_at: string } | null>(null);
   const [eventSwitcherVisible, setEventSwitcherVisible] = useState(false);
   const [nowNextTick, setNowNextTick] = useState(0);
+  const [sponsorsInfo, setSponsorsInfo] = useState<EventSponsor[]>([]);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -156,8 +159,13 @@ export default function HomeScreen() {
       setB2bHomeRows([]);
       return;
     }
+    if (currentEvent.menu_show_1on1 === false) {
+      setB2bHomeRows([]);
+      return;
+    }
     try {
-      const { data: myBookings } = await supabase
+      const db = Platform.OS === 'android' ? supabaseStorage : supabase;
+      const { data: myBookings } = await db
         .from('meeting_bookings')
         .select('slot_id, meeting_slots(booth_id, start_time, end_time)')
         .eq('attendee_id', user.id)
@@ -174,24 +182,27 @@ export default function HomeScreen() {
         return;
       }
       const boothIds = [...new Set(slots.map((s) => s.booth_id))];
-      const { data: boothData } = await supabase
+      const { data: boothData } = await db
         .from('vendor_booths')
         .select('id, vendor_name')
         .eq('event_id', currentEvent.id)
         .in('id', boothIds);
-      const nameByBooth = new Map((boothData ?? []).map((b: { id: string; vendor_name: string | null }) => [b.id, b.vendor_name ?? 'B2B meeting']));
+      const boothIdsInEvent = new Set((boothData ?? []).map((b: { id: string }) => b.id));
+      const nameByBooth = new Map((boothData ?? []).map((b: { id: string; vendor_name: string | null }) => [b.id, b.vendor_name ?? '1:1 meeting']));
       setB2bHomeRows(
-        slots.map((s) => ({
-          booth_id: s.booth_id,
-          start_time: s.start_time,
-          end_time: s.end_time,
-          vendor_name: nameByBooth.get(s.booth_id) ?? 'B2B meeting',
-        }))
+        slots
+          .filter((s) => boothIdsInEvent.has(s.booth_id))
+          .map((s) => ({
+            booth_id: s.booth_id,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            vendor_name: nameByBooth.get(s.booth_id) ?? '1:1 meeting',
+          }))
       );
     } catch {
       setB2bHomeRows([]);
     }
-  }, [currentEvent?.id, user?.id]);
+  }, [currentEvent?.id, currentEvent?.menu_show_1on1, user?.id]);
 
   useEffect(() => {
     fetchB2BHomeRows();
@@ -337,6 +348,33 @@ export default function HomeScreen() {
     };
   }, [b2bHomeRows, nowNextTick]);
 
+  const show1on1InInfo = currentEvent?.menu_show_1on1 !== false;
+
+  const loadSponsorsInfo = useCallback(async () => {
+    if (!currentEvent?.id) {
+      setSponsorsInfo([]);
+      return;
+    }
+    const { data, error } = await supabase
+      .from('event_sponsors')
+      .select(
+        'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_info_screen, show_in_hamburger, show_in_hamburger_header, show_in_hamburger_footer, show_on_schedule, show_on_feed, is_active'
+      )
+      .eq('event_id', currentEvent.id)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+    if (error) {
+      setSponsorsInfo([]);
+      return;
+    }
+    const rows = (data ?? []) as EventSponsor[];
+    setSponsorsInfo(rows.filter((r) => r.show_on_info_screen));
+  }, [currentEvent?.id]);
+
+  useEffect(() => {
+    void loadSponsorsInfo();
+  }, [loadSponsorsInfo]);
+
   const refetchInfoData = useCallback(async () => {
     if (!user?.id) return;
     await refresh(user.id, user?.is_platform_admin);
@@ -350,8 +388,11 @@ export default function HomeScreen() {
       setScheduleSessions((sessions ?? []) as SessionForNowNext[]);
       setAnnouncements((ann ?? []) as { id: string; title: string; content: string; created_at: string }[]);
       fetchB2BHomeRows();
+      await loadSponsorsInfo();
+    } else {
+      setSponsorsInfo([]);
     }
-  }, [user?.id, currentEvent?.id, refresh, fetchB2BHomeRows]);
+  }, [user?.id, currentEvent?.id, refresh, fetchB2BHomeRows, loadSponsorsInfo]);
 
   const refetchInfoDataRef = useRef(refetchInfoData);
   refetchInfoDataRef.current = refetchInfoData;
@@ -465,7 +506,7 @@ export default function HomeScreen() {
   // No current event or event ended > 5 days ago (or disabled for non–super admin): show join-by-code UI
   if (!currentEvent || !isEventAccessible(currentEvent, user?.is_platform_admin)) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <KeyboardAvoidingView
           style={styles.flex1}
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
@@ -578,7 +619,7 @@ export default function HomeScreen() {
     .replace(/\s{2,}/g, ' ')
     .trim();
   if (!welcomeTitle) welcomeTitle = `Welcome to ${e.name}!`;
-  const welcomeSubtitle = e.welcome_subtitle?.trim() || 'Join us for an incredible journey of learning, networking, and growth!';
+  const welcomeSubtitle = e.welcome_subtitle?.trim() || '';
   const heroStat1 = e.hero_stat_1?.trim() || `${e.start_date && e.end_date ? 'Multi-day' : '1 Day'} of Excellence`;
   const heroStat2 = e.hero_stat_2?.trim() || 'Sessions & Speakers';
   const heroStat3 = e.hero_stat_3?.trim() || 'Unlimited Networking';
@@ -594,7 +635,7 @@ export default function HomeScreen() {
   const pointsIntro = e.points_section_intro?.trim() || 'Participate actively and climb the leaderboard!';
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -626,6 +667,9 @@ export default function HomeScreen() {
         {/* Event title & location below banner (Guidebook-style) */}
         <View style={styles.eventIntro}>
           <Text style={styles.eventIntroTitle}>{String(welcomeTitle)}</Text>
+          {welcomeSubtitle ? (
+            <Text style={styles.eventIntroSubtitle}>{welcomeSubtitle}</Text>
+          ) : null}
           {(e.venue || e.map_url) ? (
             <>
               {e.venue ? (
@@ -658,8 +702,14 @@ export default function HomeScreen() {
           </View>
         </View>
 
+        {sponsorsInfo.length > 0 ? (
+          <View style={styles.sponsorStripBare}>
+            <CompactSponsorStrip sponsors={sponsorsInfo} title="Sponsored by" layout="bare" />
+          </View>
+        ) : null}
+
         {/* Now & next — compact, tappable to Agenda. Sessions only show for the current event. Next B2B shown when user has one. */}
-        {(nowSessions.length > 0 || nextSessions.length > 0 || nextB2B || liveB2BList.length > 0) ? (
+        {(nowSessions.length > 0 || nextSessions.length > 0 || (show1on1InInfo && (nextB2B || liveB2BList.length > 0))) ? (
           <View style={styles.nowNextCard}>
             <TouchableOpacity
               style={styles.nowNextCardTouchable}
@@ -687,40 +737,42 @@ export default function HomeScreen() {
                   ))
                 )
               ) : null}
-              {liveB2BList.map((b) => (
-                <TouchableOpacity
-                  key={`live-b2b-${b.booth_id}-${b.start_time}`}
-                  style={styles.nowNextRow}
-                  onPress={() =>
-                    router.push(`/(tabs)/expo/${b.booth_id}?from=${encodeURIComponent('/(tabs)/home')}` as any)
-                  }
-                  activeOpacity={0.7}
-                >
-                  <View style={styles.liveDot} />
-                  <Text style={styles.nowNextNowLabel}>Now:</Text>
-                  <Text style={styles.nowNextText} numberOfLines={1}>
-                    {b.vendor_name}
-                  </Text>
-                  <Text style={styles.nowNextB2bTag}>B2B</Text>
-                </TouchableOpacity>
-              ))}
+              {show1on1InInfo
+                ? liveB2BList.map((b) => (
+                    <TouchableOpacity
+                      key={`live-b2b-${b.booth_id}-${b.start_time}`}
+                      style={styles.nowNextRow}
+                      onPress={() =>
+                        router.push(`/(tabs)/expo/${b.booth_id}?from=${encodeURIComponent('/(tabs)/home')}` as any)
+                      }
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.liveDot} />
+                      <Text style={styles.nowNextNowLabel}>Now:</Text>
+                      <Text style={styles.nowNextText} numberOfLines={1}>
+                        {b.vendor_name}
+                      </Text>
+                      <Text style={styles.nowNextB2bTag}>1:1</Text>
+                    </TouchableOpacity>
+                  ))
+                : null}
               {nextSessions.length > 0 ? (
                 <View style={styles.nowNextRow}>
                   <Text style={styles.nowNextNextLabel}>Next:</Text>
                   <Text style={styles.nowNextText} numberOfLines={1}>{nextSessions[0].title}</Text>
                   <Text style={styles.nowNextTime}>{formatSessionTime(nextSessions[0].start_time)}</Text>
                 </View>
-              ) : nowSessions.length === 0 && liveB2BList.length === 0 && !nextB2B ? (
+              ) : nowSessions.length === 0 && (!show1on1InInfo || (liveB2BList.length === 0 && !nextB2B)) ? (
                 <Text style={styles.nowNextEmpty}>No more sessions today</Text>
               ) : null}
-              {nextB2B ? (
+              {show1on1InInfo && nextB2B ? (
                 <TouchableOpacity
                   style={styles.nowNextRow}
                   onPress={() => router.push(`/(tabs)/expo/${nextB2B.booth_id}?from=${encodeURIComponent('/(tabs)/home')}` as any)}
                   activeOpacity={0.7}
                 >
                   <Store size={14} color={colors.primary} style={{ marginRight: 6 }} />
-                  <Text style={styles.nowNextNextLabel}>Next B2B:</Text>
+                  <Text style={styles.nowNextNextLabel}>Next 1:1:</Text>
                   <Text style={styles.nowNextText} numberOfLines={1}>{nextB2B.vendor_name}</Text>
                   <Text style={styles.nowNextTime}>{formatB2BSlotTimeLocal(nextB2B.start_time)}</Text>
                 </TouchableOpacity>
@@ -773,7 +825,14 @@ export default function HomeScreen() {
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionTitle}>Announcements</Text>
                 <View style={styles.announcementsHeaderActions}>
-                  <TouchableOpacity onPress={() => router.push('/profile/announcements' as any)} hitSlop={12}>
+                  <TouchableOpacity
+                    onPress={() =>
+                      router.push(
+                        `/profile/announcements?from=${encodeURIComponent(pathname && pathname !== '/' ? pathname : '/(tabs)/home')}` as any
+                      )
+                    }
+                    hitSlop={12}
+                  >
                     <Text style={styles.seeAllLink}>See all</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={handleToggleAnnouncementsSection} hitSlop={12} style={styles.hideAnnouncementsBtn}>
@@ -782,16 +841,28 @@ export default function HomeScreen() {
                 </View>
               </View>
               {visibleAnnouncements.slice(0, 5).map((a) => (
-                <View key={a.id} style={styles.announcementCard}>
+                <TouchableOpacity
+                  key={a.id}
+                  style={styles.announcementCard}
+                  activeOpacity={0.85}
+                  onPress={() => setSelectedAnnouncement(a)}
+                >
                   <View style={styles.announcementCardHeader}>
                     <Text style={styles.announcementTitle}>{String(a.title)}</Text>
-                    <TouchableOpacity onPress={() => handleDismissAnnouncement(a.id)} hitSlop={12} style={styles.dismissAnnouncementBtn}>
+                    <TouchableOpacity
+                      onPress={(e) => {
+                        e.stopPropagation();
+                        handleDismissAnnouncement(a.id);
+                      }}
+                      hitSlop={12}
+                      style={styles.dismissAnnouncementBtn}
+                    >
                       <X size={18} color={colors.textMuted} />
                     </TouchableOpacity>
                   </View>
                   <Text style={styles.announcementContent} numberOfLines={2}>{String(a.content)}</Text>
                   <Text style={styles.announcementDate}>{format(new Date(a.created_at), 'MMM d, yyyy · h:mm a')}</Text>
-                </View>
+                </TouchableOpacity>
               ))}
               {visibleAnnouncements.length === 0 ? (
                 <Text style={styles.noAnnouncementsHint}>No announcements visible. Dismissed items are hidden.</Text>
@@ -884,6 +955,41 @@ export default function HomeScreen() {
       </ScrollView>
 
       {/* Event switcher modal: see all your events and switch, or join with code */}
+      <Modal
+        visible={!!selectedAnnouncement}
+        animationType="fade"
+        transparent
+        onRequestClose={() => setSelectedAnnouncement(null)}
+      >
+        <Pressable style={styles.announcementModalOverlay} onPress={() => setSelectedAnnouncement(null)}>
+          <Pressable style={styles.announcementModalCard} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.announcementModalHeader}>
+              <Text style={styles.announcementModalTitle}>
+                {selectedAnnouncement?.title ?? 'Announcement'}
+              </Text>
+              <TouchableOpacity onPress={() => setSelectedAnnouncement(null)} hitSlop={12}>
+                <X size={20} color={colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+            {selectedAnnouncement ? (
+              <Text style={styles.announcementModalDate}>
+                {format(new Date(selectedAnnouncement.created_at), 'MMM d, yyyy · h:mm a')}
+              </Text>
+            ) : null}
+            <ScrollView
+              style={styles.announcementModalBodyWrap}
+              contentContainerStyle={styles.announcementModalBodyContent}
+              showsVerticalScrollIndicator
+            >
+              <Text style={styles.announcementModalBody}>
+                {selectedAnnouncement?.content ?? ''}
+              </Text>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* Event switcher modal: see all your events and switch, or join with code */}
       <Modal visible={eventSwitcherVisible} animationType="slide" transparent onRequestClose={() => setEventSwitcherVisible(false)}>
         <Pressable style={styles.eventSwitcherOverlay} onPress={() => setEventSwitcherVisible(false)}>
           <Pressable style={styles.eventSwitcherSheet} onPress={(e) => e.stopPropagation()}>
@@ -961,6 +1067,15 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: theme.spacing.sm,
     letterSpacing: 0.2,
+  },
+  eventIntroSubtitle: {
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '400',
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
   },
   eventIntroVenue: {
     fontSize: 15,
@@ -1083,6 +1198,10 @@ const styles = StyleSheet.create({
   retryBtnText: { fontSize: 14, fontWeight: '600', color: '#fff' },
   linkBtn: { alignSelf: 'center', paddingVertical: 12 },
   linkBtnText: { fontSize: 14, color: colors.primary, fontWeight: '500' },
+  /** Sponsor block on Info sits in normal content padding; rounded logos only (`layout="bare"`). */
+  sponsorStripBare: {
+    marginBottom: 8,
+  },
   nowNextCard: {
     backgroundColor: theme.cardBackground,
     borderRadius: theme.sectionRadius,
@@ -1200,6 +1319,50 @@ const styles = StyleSheet.create({
   noAnnouncementsHint: { fontSize: 13, color: colors.textMuted, marginTop: 8 },
   announcementContent: { fontSize: 14, color: colors.textSecondary, lineHeight: 20 },
   announcementDate: { fontSize: 12, color: colors.textMuted, marginTop: 6 },
+  announcementModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  announcementModalCard: {
+    backgroundColor: colors.background,
+    borderRadius: 16,
+    padding: 16,
+    maxHeight: '75%',
+    borderWidth: 1,
+    borderColor: colors.border,
+    ...theme.cardShadow,
+  },
+  announcementModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 4,
+  },
+  announcementModalTitle: {
+    flex: 1,
+    fontSize: 18,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  announcementModalDate: {
+    fontSize: 12,
+    color: colors.textMuted,
+    marginBottom: 12,
+  },
+  announcementModalBodyWrap: {
+    maxHeight: 360,
+  },
+  announcementModalBodyContent: {
+    paddingBottom: 8,
+  },
+  announcementModalBody: {
+    fontSize: 15,
+    lineHeight: 22,
+    color: colors.textSecondary,
+  },
   detailRow: { fontSize: 14, color: colors.textSecondary, marginBottom: 6 },
   detailRowTouchable: { marginBottom: 6 },
   detailLabel: { fontWeight: '600', color: colors.text },

@@ -13,10 +13,181 @@ export interface Event {
   venue: string | null;
   start_date: string;
   end_date: string;
+  banner_url: string | null;
+  logo_url: string | null;
   theme_color: string;
+  welcome_message: string | null;
+  wifi_info: string | null;
+  map_url: string | null;
+  is_active: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at?: string;
   event_code: string | null;
+  welcome_title: string | null;
+  welcome_subtitle: string | null;
+  hero_stat_1: string | null;
+  hero_stat_2: string | null;
+  hero_stat_3: string | null;
+  arrival_day_text: string | null;
+  summit_days_text: string | null;
+  theme_text: string | null;
+  what_to_expect: string[] | null;
+  points_section_intro: string | null;
+  contact_phone: string | null;
+  /** In-app hamburger: show 1:1 Meetings (default true). */
+  menu_show_1on1?: boolean;
+  /** In-app hamburger: show Live wall link (default true). */
+  menu_show_live_wall?: boolean;
+  /** In-app hamburger: show Solution Provider (default true). */
+  menu_show_solution_providers?: boolean;
+  /** In-app hamburger: show Scan badge link (default true). */
+  menu_show_scan_badge?: boolean;
+  /** In-app hamburger: show Agenda link (default true). */
+  menu_show_agenda?: boolean;
+  /** In-app hamburger: show Notes for admins / vendor reps (default true). */
+  menu_show_notes?: boolean;
+  /** Printed on attendee badges (e.g. Hosted by …). */
+  badge_host_footer?: string | null;
+}
+
+/** Event sponsor: tier + placement flags (Info / hamburger). */
+export interface EventSponsor {
+  id: string;
+  event_id: string;
+  company_name: string;
+  logo_url: string | null;
+  website_url: string | null;
+  tier_label: string | null;
+  sort_order: number;
+  show_on_info_screen: boolean;
+  show_in_hamburger?: boolean;
+  show_in_hamburger_header?: boolean;
+  show_in_hamburger_footer?: boolean;
+  show_on_schedule: boolean;
+  show_on_feed: boolean;
+  /** Public live wall (browser); requires logo + migration RLS. */
+  show_on_live_wall?: boolean;
   is_active: boolean;
   created_at: string;
+  updated_at: string;
+}
+
+export type MatchmakingAudience = 'attendee' | 'vendor' | 'user';
+export type MatchmakingQuestionType =
+  | 'text'
+  | 'textarea'
+  | 'single_select'
+  | 'multi_select'
+  | 'boolean'
+  | 'number'
+  | 'email';
+
+export interface EventRegistrationForm {
+  id: string;
+  event_id: string;
+  name: string;
+  audience: MatchmakingAudience;
+  description: string | null;
+  is_active: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventRegistrationQuestion {
+  id: string;
+  form_id: string;
+  prompt: string;
+  is_base_question?: boolean;
+  is_hidden?: boolean;
+  section_label: string | null;
+  field_key: string | null;
+  help_text: string | null;
+  placeholder: string | null;
+  question_type: MatchmakingQuestionType;
+  is_required: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventRegistrationQuestionOption {
+  id: string;
+  question_id: string;
+  label: string;
+  value: string;
+  sort_order: number;
+  created_at: string;
+}
+
+export interface EventRegistrationSubmission {
+  id: string;
+  event_id: string;
+  form_id: string;
+  user_id: string | null;
+  attendee_type: MatchmakingAudience;
+  first_name: string | null;
+  last_name: string | null;
+  email: string | null;
+  company_name: string | null;
+  job_title: string | null;
+  status: 'draft' | 'submitted';
+  submitted_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventMeetingInterestRequest {
+  id: string;
+  event_id: string;
+  submission_id: string;
+  target_company_name: string | null;
+  target_person_name: string | null;
+  reason: string | null;
+  priority: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventRegistrationAnswer {
+  id: string;
+  submission_id: string;
+  question_id: string;
+  answer_text: string | null;
+  answer_number: number | null;
+  answer_boolean: boolean | null;
+  answer_json: unknown;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventMatchReview {
+  id: string;
+  event_id: string;
+  from_submission_id: string;
+  to_submission_id: string;
+  score: number;
+  status: 'pending' | 'approved' | 'rejected';
+  notes: string | null;
+  reviewed_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventMatchScheduledMeeting {
+  id: string;
+  event_id: string;
+  review_id: string | null;
+  submission_a_id: string;
+  submission_b_id: string;
+  start_time: string;
+  end_time: string;
+  location: string | null;
+  status: 'scheduled' | 'cancelled' | 'completed';
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 }
 
 export type EventRole = 'attendee' | 'speaker' | 'vendor' | 'admin' | 'super_admin';
@@ -48,6 +219,8 @@ export interface ScheduleSession {
   day_number: number;
   session_type: string;
   is_active: boolean;
+  /** When false, the app hides star rating / feedback for this session (set in web admin Schedule). */
+  ratings_enabled?: boolean;
 }
 
 export interface B2BFeedbackRow {

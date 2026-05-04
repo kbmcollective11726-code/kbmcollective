@@ -93,7 +93,7 @@ export default function AdminAllEventsScreen() {
 
   if (!user) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Sign in to continue.</Text>
         </View>
@@ -103,7 +103,7 @@ export default function AdminAllEventsScreen() {
 
   if (!isPlatformAdmin) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>You don’t have access to manage all events.</Text>
         </View>
@@ -112,7 +112,7 @@ export default function AdminAllEventsScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.title}>All events</Text>
         <Text style={styles.hint}>Tap an event to manage it. Toggle to enable or disable.</Text>

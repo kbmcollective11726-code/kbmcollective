@@ -49,7 +49,7 @@ const ACTION_LABELS: Record<string, string> = {
   checkin: 'Check in at event',
   share_linkedin: 'Share on LinkedIn',
   session_feedback: 'Leave feedback for a session',
-  b2b_feedback: 'Leave feedback for a B2B / vendor meeting',
+  b2b_feedback: 'Leave feedback for a 1:1 / vendor meeting',
 };
 
 export default function LeaderboardScreen() {
@@ -227,10 +227,10 @@ export default function LeaderboardScreen() {
     navigation.setOptions({
       headerRight: () => (
         <View style={styles.headerRight}>
-          <HeaderNotificationBell />
           <TouchableOpacity onPress={onRefresh} disabled={refreshing} style={styles.refreshBtn} hitSlop={12}>
             <RefreshCw size={22} color={colors.primary} />
           </TouchableOpacity>
+          <HeaderNotificationBell />
           <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={styles.profileBtn} hitSlop={12}>
             <User size={24} color={colors.primary} strokeWidth={2} />
           </TouchableOpacity>
@@ -293,7 +293,7 @@ export default function LeaderboardScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <View style={styles.placeholder}>
           <Trophy size={48} color={colors.textMuted} />
           <Text style={styles.title}>Leaderboard</Text>
@@ -306,7 +306,7 @@ export default function LeaderboardScreen() {
   // Show Rank layout immediately so the tab "loads"; content is loading/error + retry.
   if (loading || fetchError) {
     return (
-      <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24 }}
           refreshControl={
@@ -344,7 +344,7 @@ export default function LeaderboardScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={

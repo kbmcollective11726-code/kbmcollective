@@ -13,6 +13,7 @@ import {
   ScrollView,
   Linking,
 } from 'react-native';
+import Toast from 'react-native-toast-message';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
@@ -146,8 +147,21 @@ export default function LoginScreen() {
               setResetting(true);
               const { error } = await resetPassword(email.trim());
               setResetting(false);
-              if (error) Alert.alert('Reset failed', error);
-              else Alert.alert('Check your email', 'We sent a password reset link to ' + email.trim() + '. Open it to set a new password.');
+              if (error) {
+                const smtpHint =
+                  /sending recovery email|error sending recovery/i.test(String(error))
+                    ? '\n\nEmail can’t be sent from the server yet (mail settings). Ask your admin to fix Authentication > Email > SMTP in Supabase.'
+                    : '';
+                Alert.alert('Reset failed', String(error) + smtpHint);
+              } else {
+                // Toast (not a blocking Alert): switching to Mail to open the link won’t leave a modal that feels like it was “caused” by the link.
+                Toast.show({
+                  type: 'success',
+                  text1: 'Check your email',
+                  text2: 'We sent a password reset link to ' + email.trim() + '. Open it from your mail app to finish.',
+                  visibilityTime: 5500,
+                });
+              }
             }}
             disabled={loading || resetting}
           >

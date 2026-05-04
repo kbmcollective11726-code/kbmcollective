@@ -1,98 +1,110 @@
-.layout {
+.shell {
   min-height: 100vh;
   display: flex;
-  flex-direction: column;
   background: var(--color-background);
 }
 
-.header {
-  background: var(--color-primary);
-  color: var(--color-text);
-  padding: 16px 28px;
-  box-shadow: var(--shadow);
-  border-bottom: 1px solid var(--color-border);
-}
-
-.headerTop {
+.sidebar {
+  width: 250px;
+  border-right: 1px solid rgba(201, 169, 97, 0.18);
+  background: linear-gradient(180deg, #1a2332 0%, #0d1117 100%);
+  color: rgba(255, 255, 255, 0.92);
+  padding: 18px 14px;
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
+  flex-direction: column;
   gap: 16px;
-  width: 100%;
 }
 
-.logoWrap {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+.brand {
+  display: grid;
+  gap: 8px;
   text-decoration: none;
   color: inherit;
 }
 
-.logoWrap:hover {
-  text-decoration: none;
-  opacity: 0.95;
-}
-
 .logoImg {
-  height: 36px;
+  height: 42px;
   width: auto;
-  display: block;
   object-fit: contain;
 }
 
 .logoText {
-  font-weight: 700;
-  font-size: 1.15rem;
-  color: var(--color-accent);
-  letter-spacing: -0.02em;
-}
-
-.nav {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 12px 20px;
-}
-
-.navJoinWrap {
-  display: flex;
-  align-items: center;
-}
-
-.nav a {
-  color: var(--color-text-secondary);
-  text-decoration: none;
+  font-family: var(--font-display);
   font-weight: 500;
+  color: #fff;
+  line-height: 1.2;
 }
 
-.nav a:hover {
-  color: var(--color-accent);
+.sideNav {
+  display: grid;
+  gap: 8px;
+}
+
+.sideNav a {
   text-decoration: none;
+  color: rgba(255, 255, 255, 0.72);
+  border: 1px solid transparent;
+  border-left: 3px solid transparent;
+  background: transparent;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 600;
+}
+
+.sideNav a:hover {
+  color: var(--color-accent);
+  background: rgba(201, 169, 97, 0.13);
+  border-left-color: var(--color-accent);
+}
+
+.sideNavJoin {
+  margin-top: 4px;
+}
+
+.contentArea {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--color-border);
+  padding: 10px 18px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
 }
 
 .logout {
+  margin-left: auto;
   background: transparent;
   border: 1px solid var(--color-border-light);
-  color: var(--color-text-secondary);
-  padding: 8px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 14px;
+  color: var(--color-text-muted);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .logout:hover {
-  background: var(--color-surface-hover);
   border-color: var(--color-accent);
+  background: rgba(201, 169, 97, 0.08);
   color: var(--color-accent);
 }
 
 .main {
   flex: 1;
-  padding: 28px 24px 40px;
-  max-width: 1100px;
+  padding: 22px 20px 40px;
+  max-width: none;
   width: 100%;
-  margin: 0 auto;
+  margin: 0;
 }
 
 .footer {
@@ -105,4 +117,73 @@
 
 .footer a {
   color: var(--color-accent);
+}
+
+@media (max-width: 980px) {
+  .shell {
+    flex-direction: column;
+  }
+
+  .sidebar {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid #334155;
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .brand {
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logoImg {
+    height: 34px;
+  }
+
+  .sideNav {
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  }
+
+  .topbar {
+    padding: 10px 12px;
+  }
+
+  .main {
+    padding: 18px 12px 30px;
+  }
+}
+
+/* Keep legacy class names out of global cascade conflicts. */
+.nav,
+.navJoinWrap {
+  display: flex;
+  gap: 0;
+}
+
+@media print {
+  .sidebar,
+  .topbar,
+  .footer {
+    display: none !important;
+  }
+
+  .shell {
+    display: block !important;
+    min-height: 0 !important;
+    background: #fff !important;
+  }
+
+  .contentArea {
+    display: block !important;
+    min-height: 0 !important;
+  }
+
+  .main {
+    padding: 0 !important;
+    margin: 0 !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
 }

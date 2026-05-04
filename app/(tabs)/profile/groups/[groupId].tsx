@@ -17,7 +17,7 @@ import {
   ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Send, ImageIcon, Users, UserPlus, UserMinus } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
@@ -29,6 +29,7 @@ import { uploadImage } from '../../../../lib/image';
 import { colors } from '../../../../constants/colors';
 import { format } from 'date-fns';
 import Avatar from '../../../../components/Avatar';
+import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
 
 type GroupMessageRow = {
   id: string;
@@ -52,7 +53,6 @@ export default function GroupChatScreen() {
   const rawGroupId = typeof params.groupId === 'string' ? params.groupId : params.groupId?.[0] ?? '';
   const groupId = isValidGroupId(rawGroupId) ? rawGroupId : '';
   const router = useRouter();
-  const navigation = useNavigation();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
   const [groupName, setGroupName] = useState('');
@@ -176,24 +176,6 @@ export default function GroupChatScreen() {
     }, [groupId, user?.id, fetchGroupAndMembership, fetchMessages])
   );
 
-  useEffect(() => {
-    if (groupName) {
-      navigation.setOptions({ title: groupName });
-    }
-  }, [groupName, navigation]);
-
-  useEffect(() => {
-    navigation.setOptions({
-      headerRight: isEventAdmin && isMember
-        ? () => (
-            <TouchableOpacity onPress={() => setManageVisible(true)} style={{ padding: 8 }} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-              <Users size={22} color={colors.primary} />
-            </TouchableOpacity>
-          )
-        : undefined,
-    });
-  }, [isEventAdmin, isMember, navigation]);
-
   const fetchManageData = useCallback(async () => {
     if (!groupId || !currentEvent?.id || !user?.id) return;
     setManageLoading(true);
@@ -286,7 +268,7 @@ export default function GroupChatScreen() {
     try {
       let attachmentUrl: string | null = null;
       if (imageToSend) {
-        const url = await uploadImage(imageToSend, currentEvent.id, user.id, 'event-photos', { folder: 'chat' });
+        const url = await uploadImage(imageToSend, currentEvent.id, user.id, 'event-photos', { folder: 'group-chat' });
         attachmentUrl = url;
       }
       const { error } = await supabase.from('group_messages').insert({
@@ -327,9 +309,26 @@ export default function GroupChatScreen() {
     }
   };
 
-  const handlePickImage = async () => {
-    const uri = await pickImage('library');
-    if (uri) setImageUri(uri);
+  const handlePickImage = () => {
+    Alert.alert('Add photo', 'Choose how to add a photo', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Take photo',
+        onPress: () => {
+          pickImage('camera').then((uri) => {
+            if (uri) setImageUri(uri);
+          });
+        },
+      },
+      {
+        text: 'Photo library',
+        onPress: () => {
+          pickImage('library').then((uri) => {
+            if (uri) setImageUri(uri);
+          });
+        },
+      },
+    ]);
   };
 
   const renderItem = ({ item }: { item: GroupMessageRow }) => {
@@ -366,7 +365,8 @@ export default function GroupChatScreen() {
 
   if (!groupId || !user?.id) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="Group" onBack={() => router.back()} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Invalid group.</Text>
         </View>
@@ -376,7 +376,8 @@ export default function GroupChatScreen() {
 
   if (isMember === null || (isMember === true && loading && messages.length === 0)) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title={groupName || 'Group'} onBack={() => router.back()} />
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={styles.placeholderText}>Loading…</Text>
@@ -387,7 +388,8 @@ export default function GroupChatScreen() {
 
   if (isMember === false) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title={groupName || 'Group'} onBack={() => router.back()} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>You’re not a member of this group.</Text>
         </View>
@@ -396,7 +398,23 @@ export default function GroupChatScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader
+        variant="back"
+        title={groupName || 'Group'}
+        onBack={() => router.back()}
+        right={
+          isEventAdmin && isMember ? (
+            <TouchableOpacity
+              onPress={() => setManageVisible(true)}
+              style={{ padding: 8 }}
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Users size={22} color={colors.primary} />
+            </TouchableOpacity>
+          ) : undefined
+        }
+      />
       <Modal visible={!!expandedImageUrl} transparent animationType="fade">
         <Pressable style={styles.modalBackdrop} onPress={() => setExpandedImageUrl(null)}>
           {expandedImageUrl ? (
@@ -455,7 +473,7 @@ export default function GroupChatScreen() {
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        keyboardVerticalOffset={Platform.OS === 'ios' ? 100 : 0}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 52 : 0}
       >
         <FlatList
           data={messages}

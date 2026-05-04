@@ -2,12 +2,18 @@ import { View, TouchableOpacity, StyleSheet, Text } from 'react-native';
 import { Stack, useRouter } from 'expo-router';
 import { ChevronLeft, User } from 'lucide-react-native';
 import { colors } from '../../../constants/colors';
+import { flatNativeStackHeaderStyle } from '../../../constants/headerStyle';
 import HeaderNotificationBell from '../../../components/HeaderNotificationBell';
 
 function HeaderProfileButton() {
   const router = useRouter();
   return (
-    <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={headerStyles.iconBtn} hitSlop={12}>
+    <TouchableOpacity
+      onPress={() => router.push('/(tabs)/profile')}
+      style={headerStyles.iconBtn}
+      hitSlop={12}
+      activeOpacity={0.85}
+    >
       <User size={24} color={colors.primary} strokeWidth={2} />
     </TouchableOpacity>
   );
@@ -22,6 +28,7 @@ function HeaderFeedBackButton() {
       }}
       style={headerStyles.backBtn}
       hitSlop={12}
+      activeOpacity={0.85}
     >
       <ChevronLeft size={20} color={colors.primary} strokeWidth={2.25} />
       <Text style={headerStyles.backText}>Feed</Text>
@@ -40,7 +47,7 @@ export default function FeedLayout() {
   return (
     <Stack
       screenOptions={{
-        headerStyle: { backgroundColor: colors.background },
+        headerStyle: flatNativeStackHeaderStyle,
         headerShadowVisible: false,
         headerBackVisible: true,
         gestureEnabled: true,
@@ -58,13 +65,7 @@ export default function FeedLayout() {
         options={{
           title: 'Profile',
           headerBackTitle: 'Back',
-          headerShown: true,
-          headerRight: () => (
-            <View style={headerStyles.headerRight}>
-              <HeaderNotificationBell compact />
-              <HeaderProfileButton />
-            </View>
-          ),
+          headerShown: false,
         }}
       />
       <Stack.Screen

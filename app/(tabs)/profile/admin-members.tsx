@@ -119,6 +119,7 @@ export default function AdminMembersScreen() {
   };
 
   const toggleMemberRole = (member: Row, roleKey: string) => {
+    if (!canChangeRoles) return;
     const hasRole = member.roles.includes(roleKey);
     const newRoles = hasRole
       ? member.roles.filter((r) => r !== roleKey)
@@ -145,7 +146,7 @@ export default function AdminMembersScreen() {
     roles.includes('admin') ? 'admin' : roles.includes('vendor') ? 'vendor' : roles.includes('speaker') ? 'speaker' : roles[0] ?? 'attendee';
 
   const doSaveRoles = async (member: Row, newRoles: string[]) => {
-    if (!currentEvent?.id) return;
+    if (!currentEvent?.id || !canChangeRoles) return;
     setRoleSaving(true);
     try {
       const primary = primaryRole(newRoles);
@@ -265,7 +266,7 @@ export default function AdminMembersScreen() {
 
   if (!currentEvent) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}><Text style={styles.subtitle}>Select an event first.</Text></View>
       </SafeAreaView>
     );
@@ -273,7 +274,7 @@ export default function AdminMembersScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}><ActivityIndicator size="large" color={colors.primary} /></View>
       </SafeAreaView>
     );
@@ -284,7 +285,7 @@ export default function AdminMembersScreen() {
   const rolesLabel = (roles: string[]) => roles.map(roleLabel).join(', ') || 'Attendee';
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <FlatList
         data={rows}
         keyExtractor={(item) => item.user_id}
@@ -297,7 +298,7 @@ export default function AdminMembersScreen() {
               if (!canChangeRoles) {
                 Alert.alert(
                   'Change role',
-                  'Only event admins and super admins can change member roles.',
+                  'Only event admins, super admins, or platform admins can change member roles.',
                   [{ text: 'OK' }]
                 );
                 return;

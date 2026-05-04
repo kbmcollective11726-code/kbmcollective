@@ -163,7 +163,7 @@ export default function NewGroupScreen() {
 
   if (!user?.id || !currentEvent?.id) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Select an event first.</Text>
         </View>
@@ -173,7 +173,7 @@ export default function NewGroupScreen() {
 
   if (!loading && !isAdmin) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Only event admins can create groups.</Text>
         </View>
@@ -183,7 +183,7 @@ export default function NewGroupScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={styles.container} edges={['bottom']}>
+      <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -192,7 +192,7 @@ export default function NewGroupScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.label}>Group name</Text>
         <TextInput

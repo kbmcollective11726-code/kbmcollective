@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Session } from '@supabase/supabase-js';
 import { supabase, isConfigured } from './lib/supabase';
@@ -12,11 +12,25 @@ import Schedule from './pages/Schedule';
 import Members from './pages/Members';
 import B2BFeedback from './pages/B2BFeedback';
 import SessionFeedback from './pages/SessionFeedback';
-import Meetings from './pages/Meetings';
+import BulkB2BAssign from './pages/BulkB2BAssign';
+
+function RedirectBulkB2BToMeetings() {
+  const { eventId } = useParams<{ eventId: string }>();
+  return <Navigate to={`/events/${eventId}/meetings`} replace />;
+}
 import Announcements from './pages/Announcements';
 import Dashboard from './pages/Dashboard';
 import VendorBooths from './pages/VendorBooths';
 import VendorBoothForm from './pages/VendorBoothForm';
+import PlatformUsers from './pages/PlatformUsers';
+import TestGuide from './pages/TestGuide';
+import EventPhotos from './pages/EventPhotos';
+import EventSponsors from './pages/EventSponsors';
+import EventMatchmaking from './pages/EventMatchmaking';
+import EventBadges from './pages/EventBadges';
+import EventScanLog from './pages/EventScanLog';
+import EventSafety from './pages/EventSafety';
+import RegistrationPortal from './pages/RegistrationPortal';
 
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
@@ -51,6 +65,7 @@ export default function App() {
   if (!session) {
     return (
       <Routes>
+        <Route path="/register/:eventId/:audience" element={<RegistrationPortal />} />
         <Route path="/login" element={<Login />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
@@ -59,6 +74,7 @@ export default function App() {
 
   return (
     <Routes>
+      <Route path="/register/:eventId/:audience" element={<RegistrationPortal />} />
       <Route path="/" element={<Layout />}>
         <Route index element={<EventList />} />
         <Route path="events/new" element={<EventNew />} />
@@ -69,10 +85,19 @@ export default function App() {
         <Route path="events/:eventId/members" element={<Members />} />
         <Route path="events/:eventId/b2b-feedback" element={<B2BFeedback />} />
         <Route path="events/:eventId/session-feedback" element={<SessionFeedback />} />
-        <Route path="events/:eventId/meetings" element={<Meetings />} />
+        <Route path="events/:eventId/meetings" element={<BulkB2BAssign />} />
+        <Route path="events/:eventId/bulk-b2b-assign" element={<RedirectBulkB2BToMeetings />} />
         <Route path="events/:eventId/vendor-booths/:boothId" element={<VendorBoothForm />} />
         <Route path="events/:eventId/vendor-booths" element={<VendorBooths />} />
         <Route path="events/:eventId/announcements" element={<Announcements />} />
+        <Route path="events/:eventId/photos" element={<EventPhotos />} />
+        <Route path="events/:eventId/sponsors" element={<EventSponsors />} />
+        <Route path="events/:eventId/matchmaking" element={<EventMatchmaking />} />
+        <Route path="events/:eventId/badges" element={<EventBadges />} />
+        <Route path="events/:eventId/scan-log" element={<EventScanLog />} />
+        <Route path="events/:eventId/safety" element={<EventSafety />} />
+        <Route path="platform/users" element={<PlatformUsers />} />
+        <Route path="platform/test-guide" element={<TestGuide />} />
       </Route>
       <Route path="/login" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />

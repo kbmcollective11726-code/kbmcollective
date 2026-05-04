@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useMatch, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Event } from '../lib/types';
-import { fetchEventsForSwitcher } from '../lib/fetchAdminEvents';
+import { fetchEventsForSwitcher, isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
+import { liveWallUrlForEvent } from '../lib/liveWallUrl';
 import styles from './EventContextBar.module.css';
 
 export const ADMIN_EVENTS_REFRESH = 'kbm-admin-events-refresh';
@@ -14,6 +15,12 @@ export default function EventContextBar() {
 
   const [events, setEvents] = useState<Event[]>([]);
   const [currentName, setCurrentName] = useState<string>('');
+  /** Live wall in admin top bar: platform admins always (URL/config); event admins only if menu_show_live_wall is on. */
+  const [wallGate, setWallGate] = useState<{
+    loaded: boolean;
+    platformAdmin: boolean;
+    menuLiveWall: boolean;
+  }>({ loaded: false, platformAdmin: false, menuLiveWall: true });
   const loadEvents = useCallback(async () => {
     try {
       const list = await fetchEventsForSwitcher();
@@ -55,6 +62,27 @@ export default function EventContextBar() {
     return () => { cancelled = true; };
   }, [eventId, events]);
 
+  useEffect(() => {
+    if (!eventId) {
+      setWallGate({ loaded: false, platformAdmin: false, menuLiveWall: true });
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const [pa, evRes] = await Promise.all([
+        isCurrentUserPlatformAdmin(),
+        supabase.from('events').select('menu_show_live_wall').eq('id', eventId).maybeSingle(),
+      ]);
+      if (cancelled) return;
+      const menuLiveWall =
+        (evRes.data as { menu_show_live_wall?: boolean } | null)?.menu_show_live_wall !== false;
+      setWallGate({ loaded: true, platformAdmin: pa, menuLiveWall });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId]);
+
   const handleSwitch = (nextId: string) => {
     if (!nextId || nextId === eventId) return;
     navigate(`/events/${nextId}`);
@@ -71,15 +99,38 @@ export default function EventContextBar() {
       venue: null,
       start_date: '',
       end_date: '',
+      banner_url: null,
+      logo_url: null,
       theme_color: '',
-      event_code: null,
+      welcome_message: null,
+      wifi_info: null,
+      map_url: null,
       is_active: true,
+      created_by: null,
       created_at: '',
+      event_code: null,
+      welcome_title: null,
+      welcome_subtitle: null,
+      hero_stat_1: null,
+      hero_stat_2: null,
+      hero_stat_3: null,
+      arrival_day_text: null,
+      summit_days_text: null,
+      theme_text: null,
+      what_to_expect: null,
+      points_section_intro: null,
+      contact_phone: null,
     };
     return [stub, ...events];
   }, [events, eventId, currentName]);
 
   if (!eventId) return null;
+
+  const liveWallHref = liveWallUrlForEvent(eventId);
+  const { loaded: wallGateLoaded, platformAdmin, menuLiveWall } = wallGate;
+  const showLiveWallLink =
+    wallGateLoaded && !!liveWallHref && (platformAdmin || menuLiveWall);
+  const showLiveWallConfigHint = wallGateLoaded && !liveWallHref && platformAdmin;
 
   return (
     <>
@@ -98,6 +149,25 @@ export default function EventContextBar() {
             </option>
           ))}
         </select>
+        {showLiveWallLink ? (
+          <a
+            href={liveWallHref!}
+            className={styles.liveWallLink}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open live wall for this event (new tab)"
+          >
+            Live wall
+          </a>
+        ) : null}
+        {showLiveWallConfigHint ? (
+          <span
+            className={styles.liveWallConfigHint}
+            title="Same URL as EXPO_PUBLIC_LIVE_WALL_URL in the app. Vercel → admin project → VITE_LIVE_WALL_URL, then redeploy."
+          >
+            Live wall (set VITE_LIVE_WALL_URL)
+          </span>
+        ) : null}
       </div>
     </>
   );
