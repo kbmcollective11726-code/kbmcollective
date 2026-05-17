@@ -9,6 +9,7 @@ import EventNew from './pages/EventNew';
 import EventDetail from './pages/EventDetail';
 import EventEdit from './pages/EventEdit';
 import Schedule from './pages/Schedule';
+import AgendaPrint from './pages/AgendaPrint';
 import Members from './pages/Members';
 import B2BFeedback from './pages/B2BFeedback';
 import SessionFeedback from './pages/SessionFeedback';
@@ -30,6 +31,7 @@ import EventMatchmaking from './pages/EventMatchmaking';
 import EventBadges from './pages/EventBadges';
 import EventScanLog from './pages/EventScanLog';
 import EventSafety from './pages/EventSafety';
+import EventAdminTiles from './pages/EventAdminTiles';
 import RegistrationPortal from './pages/RegistrationPortal';
 
 export default function App() {
@@ -81,7 +83,9 @@ export default function App() {
         <Route path="events/:eventId" element={<EventDetail />} />
         <Route path="events/:eventId/dashboard" element={<Dashboard />} />
         <Route path="events/:eventId/edit" element={<EventEdit />} />
+        <Route path="events/:eventId/event-admin-tiles" element={<EventAdminTiles />} />
         <Route path="events/:eventId/schedule" element={<Schedule />} />
+        <Route path="events/:eventId/agenda-print" element={<AgendaPrint />} />
         <Route path="events/:eventId/members" element={<Members />} />
         <Route path="events/:eventId/b2b-feedback" element={<B2BFeedback />} />
         <Route path="events/:eventId/session-feedback" element={<SessionFeedback />} />

@@ -3,6 +3,7 @@ import { Outlet, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import EventContextBar, { JoinEventButton } from './EventContextBar';
+import EventAdminTileGuard from './EventAdminTileGuard';
 import styles from './Layout.module.css';
 
 export default function Layout() {
@@ -48,7 +49,9 @@ export default function Layout() {
         </header>
 
         <main className={styles.main}>
-          <Outlet />
+          <EventAdminTileGuard>
+            <Outlet />
+          </EventAdminTileGuard>
         </main>
 
         <footer className={styles.footer}>
