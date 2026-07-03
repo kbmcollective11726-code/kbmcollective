@@ -13,7 +13,12 @@ import { flatNativeStackHeaderStyle } from '../../constants/headerStyle';
 import PostFAB from '../../components/PostFAB';
 import HamburgerMenu from '../../components/HamburgerMenu';
 import AnnouncementBanner from '../../components/AnnouncementBanner';
+import RolePreviewBanner from '../../components/RolePreviewBanner';
+import { useRolePreviewStore } from '../../stores/rolePreviewStore';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
+import { isAppMenuItemVisible } from '../../lib/effectiveEventMenu';
+import DeepLinkHandler from '../../components/DeepLinkHandler';
+import { safeRouterReplace } from '../../lib/safeNavigate';
 
 function HeaderProfileButton() {
   const router = useRouter();
@@ -64,7 +69,7 @@ const tabTitles: Record<string, string> = {
   profile: 'Profile',
   'photo-book': 'Photo book',
   expo: '1:1 Meetings',
-  'solution-providers': 'Solution Provider',
+  'solution-providers': 'Solution Providers',
 };
 
 const tabBarLabels: Record<string, string> = {
@@ -105,11 +110,17 @@ export default function TabsLayout() {
   const insets = useSafeAreaInsets();
   const { user, isLoading: authLoading, isAuthenticated, session, refreshUser } = useAuthStore();
   const { currentEvent, memberships, fetchMyMemberships } = useEventStore();
+  const hydrateRolePreview = useRolePreviewStore((s) => s.hydrate);
+  const rolePreviewHydrated = useRolePreviewStore((s) => s.hydrated);
   const [eventCheckDone, setEventCheckDone] = useState(false);
   const lastMembershipRefreshAt = useRef(0);
   const MEMBERSHIP_REFRESH_DEBOUNCE_MS = 5000;
 
-  // When app comes back from background: refresh session, then re-fetch memberships and notify screens to refetch.
+  useEffect(() => {
+    if (!rolePreviewHydrated) void hydrateRolePreview();
+  }, [rolePreviewHydrated, hydrateRolePreview]);
+
+  // When app comes back from background:
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
       if (state !== 'active' || !user?.id) return;
@@ -130,7 +141,7 @@ export default function TabsLayout() {
   useEffect(() => {
     if (!navigationReady || authLoading) return;
     if (!isAuthenticated) {
-      router.replace('/(auth)/login');
+      safeRouterReplace(router, '/(auth)/login');
     }
   }, [isAuthenticated, router, navigationReady, authLoading]);
 
@@ -159,13 +170,13 @@ export default function TabsLayout() {
     };
   }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
 
-  const hideAgendaTab = currentEvent?.menu_show_agenda === false;
+  const hideAgendaTab = !isAppMenuItemVisible(currentEvent, 'menu_show_agenda');
 
   // If Agenda is disabled for this event, leave the tab screen (same flag as hamburger).
   useEffect(() => {
-    if (!hideAgendaTab || !isMainAgendaRoute(pathname)) return;
-    router.replace('/(tabs)/home' as any);
-  }, [hideAgendaTab, pathname, router]);
+    if (!navigationReady || !hideAgendaTab || !isMainAgendaRoute(pathname)) return;
+    safeRouterReplace(router, '/(tabs)/home' as any);
+  }, [hideAgendaTab, pathname, router, navigationReady]);
 
   const tabBarPaddingBottom = Math.max(insets.bottom, 8);
   const topPadding = 0;
@@ -179,18 +190,28 @@ export default function TabsLayout() {
 
   if (user && !eventCheckDone) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background }}>
-        <ActivityIndicator size="large" color={colors.primary} />
-        <Text style={{ marginTop: 12, fontSize: 16, color: colors.textSecondary }}>Loading…</Text>
-      </View>
+      <>
+        <DeepLinkHandler />
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background }}>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={{ marginTop: 12, fontSize: 16, color: colors.textSecondary }}>Loading…</Text>
+        </View>
+      </>
     );
   }
 
   if (needsEventCode) {
-    return <JoinEventGate />;
+    return (
+      <>
+        <DeepLinkHandler />
+        <JoinEventGate />
+      </>
+    );
   }
 
   return (
+    <>
+    <DeepLinkHandler />
     <View style={{ flex: 1, paddingTop: topPadding, backgroundColor: colors.background }}>
       <Tabs
         screenOptions={({ route }) => {
@@ -246,7 +267,7 @@ export default function TabsLayout() {
               listeners: {
                 tabPress: (e: { preventDefault: () => void }) => {
                   e.preventDefault();
-                  router.replace('/(tabs)/feed' as any);
+                  safeRouterReplace(router, '/(tabs)/feed' as any);
                 },
               },
             }),
@@ -269,8 +290,10 @@ export default function TabsLayout() {
         <Tabs.Screen name="solution-provider/[boothId]" options={{ href: null }} />
       </Tabs>
       {showPostFAB ? <PostFAB /> : null}
+      <RolePreviewBanner />
       {/* After Tabs/FAB so Android draws on top (zIndex + elevation); same blue banner as iOS */}
       <AnnouncementBanner />
     </View>
+    </>
   );
 }

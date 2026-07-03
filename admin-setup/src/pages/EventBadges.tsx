@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Link, useParams, useLocation, useNavigate } from 'react-router-dom';
 import QRCode from 'qrcode';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import type { Event } from '../lib/types';
+import { badgeHeroMedia, badgeHeroSourceLabel } from '../lib/badgeHeroMedia';
+import { BADGE_BANNER_FILE_ACCEPT, BADGE_BANNER_HINT, BADGE_BANNER_SIZE_LABEL } from '../lib/badgeBannerHints';
+import { uploadEventImage } from '../lib/uploadEventImage';
 import styles from './EventBadges.module.css';
 
 type MemberRow = {
@@ -11,22 +14,55 @@ type MemberRow = {
   role: string;
   full_name: string;
   email: string;
+  title: string | null;
   company: string | null;
   token: string | null;
 };
 
-function qrPayload(token: string): string {
-  return `collectivelive://badge?t=${encodeURIComponent(token)}`;
-}
+import { badgeQrPayload } from '../lib/badgeQrUrl';
 
-/** Use contain for logos, cover for banners. */
-function eventHeroMedia(ev: Event | null): { src: string; fit: 'contain' | 'cover' } | null {
-  if (!ev) return null;
-  const logo = (ev.logo_url ?? '').trim();
-  if (logo) return { src: logo, fit: 'contain' };
-  const banner = (ev.banner_url ?? '').trim();
-  if (banner) return { src: banner, fit: 'cover' };
-  return null;
+type BadgePrintLayout = '1up' | '2up' | '4up';
+const BadgePrintLayoutContext = createContext<BadgePrintLayout>('1up');
+
+/** Badge header: badge_banner_url → banner_url → logo_url. */
+function BadgeHero({ event }: { event: Event | null }) {
+  const mode = useContext(BadgePrintLayoutContext);
+  const hero = badgeHeroMedia(event);
+  const is4up = mode === '4up';
+
+  if (!hero) {
+    return <div className={styles.badgeHeroPlaceholder}>Upload a badge header image below (or set banner/logo on event)</div>;
+  }
+
+  const isBanner = hero.kind === 'badge-banner' || hero.kind === 'banner';
+
+  if (isBanner) {
+    const imgClass =
+      hero.kind === 'badge-banner'
+        ? `${styles.badgeHeroImgBanner} ${styles.badgeHeroImgBadgeBanner}`
+        : hero.kind === 'banner'
+          ? `${styles.badgeHeroImgBanner} ${styles.badgeHeroImgAppBannerFallback}`
+          : styles.badgeHeroImgBanner;
+    const heroWrapClass =
+      hero.kind === 'badge-banner'
+        ? `${styles.badgeHero} ${styles.badgeHeroBanner} ${styles.badgeHeroBannerDedicated}${is4up ? ` ${styles.badgeHeroBanner4up}` : ''}`
+        : hero.kind === 'banner'
+          ? `${styles.badgeHero} ${styles.badgeHeroBanner} ${styles.badgeHeroBannerAppFallback}${is4up ? ` ${styles.badgeHeroBanner4up}` : ''}`
+          : is4up
+            ? `${styles.badgeHero} ${styles.badgeHeroBanner} ${styles.badgeHeroBanner4up}`
+            : `${styles.badgeHero} ${styles.badgeHeroBanner}`;
+    return (
+      <div className={heroWrapClass}>
+        <img src={hero.src} alt="" className={imgClass} />
+      </div>
+    );
+  }
+
+  return (
+    <div className={`${styles.badgeHero} ${styles.badgeHeroLogoWrap}`}>
+      <img src={hero.src} alt="" className={styles.badgeHeroImgContain} />
+    </div>
+  );
 }
 
 function formatEventDates(ev: Event | null): string {
@@ -60,35 +96,27 @@ function padChunkToSize<T>(chunk: T[], size: number): (T | null)[] {
 function BadgeFace({
   m,
   event,
+  showEventName,
   footerLine,
   qrMap,
 }: {
   m: MemberRow;
   event: Event | null;
+  showEventName: boolean;
   footerLine: string;
   qrMap: Record<string, string>;
 }) {
-  const hero = eventHeroMedia(event);
   return (
     <div className={styles.badgeInner}>
-      {hero ? (
-        <div className={styles.badgeBanner}>
-          <img
-            src={hero.src}
-            alt=""
-            className={`${styles.badgeBannerImg} ${hero.fit === 'contain' ? styles.badgeBannerImgContain : styles.badgeBannerImgCover}`}
-          />
-        </div>
-      ) : (
-        <div className={styles.badgeBannerPlaceholder}>Event image (set banner or logo on event)</div>
-      )}
+      <BadgeHero event={event} />
       <div className={styles.badgeBody}>
-        <div className={styles.badgeTitle}>{event?.name ?? 'Event'}</div>
+        {showEventName ? <div className={styles.badgeTitle}>{event?.name ?? 'Event'}</div> : null}
         <div className={styles.name}>{m.full_name}</div>
+        {m.title?.trim() ? <div className={styles.memberTitle}>{m.title.trim()}</div> : null}
         <div className={styles.company}>{m.company?.trim() || '—'}</div>
         <div className={styles.qrWrap}>
           {m.token && qrMap[m.user_id] ? (
-            <img src={qrMap[m.user_id]} alt="" width={176} height={176} />
+            <img src={qrMap[m.user_id]} alt="" width={148} height={148} />
           ) : (
             <div className={styles.noQr}>Generate tokens first</div>
           )}
@@ -104,29 +132,20 @@ function BadgeFace({
 function BadgeBack({
   m,
   event,
+  showEventName,
   footerLine,
 }: {
   m: MemberRow;
   event: Event | null;
+  showEventName: boolean;
   footerLine: string;
 }) {
-  const hero = eventHeroMedia(event);
   const dates = formatEventDates(event);
   return (
     <div className={`${styles.badgeInner} ${styles.badgeInnerBack}`}>
-      {hero ? (
-        <div className={styles.badgeBanner}>
-          <img
-            src={hero.src}
-            alt=""
-            className={`${styles.badgeBannerImg} ${hero.fit === 'contain' ? styles.badgeBannerImgContain : styles.badgeBannerImgCover}`}
-          />
-        </div>
-      ) : (
-        <div className={styles.badgeBannerPlaceholder}>Event image (set banner or logo on event)</div>
-      )}
+      <BadgeHero event={event} />
       <div className={styles.badgeBody}>
-        <div className={styles.badgeTitle}>{event?.name ?? 'Event'}</div>
+        {showEventName ? <div className={styles.badgeTitle}>{event?.name ?? 'Event'}</div> : null}
         <div className={styles.backAttendeeName}>{m.full_name}</div>
         {dates ? <div className={styles.backDates}>{dates}</div> : null}
         <div className={styles.company}>{event?.venue?.trim() || '—'}</div>
@@ -150,11 +169,14 @@ export default function EventBadges() {
   const [loading, setLoading] = useState(true);
   const [generating, setGenerating] = useState(false);
   const [savingFooter, setSavingFooter] = useState(false);
+  const [showEventName, setShowEventName] = useState(true);
   const [error, setError] = useState('');
   /** 1up = one 3.75″×5.5″ per page; 2up = two on Letter; 4up = four on Letter (2×2). */
   const [printLayout, setPrintLayout] = useState<'1up' | '2up' | '4up'>('4up');
   /** Print a second sheet per attendee with event + name (duplex or separate print pass). */
   const [includeBack, setIncludeBack] = useState(false);
+  const [uploadingBadgeBanner, setUploadingBadgeBanner] = useState(false);
+  const badgeBannerInputRef = useRef<HTMLInputElement>(null);
 
   useLayoutEffect(() => {
     if (!eventId || location.hash !== '#scan-log') return;
@@ -172,17 +194,18 @@ export default function EventBadges() {
     try {
       const { data: ev, error: evErr } = await supabase
         .from('events')
-        .select('id, name, venue, logo_url, banner_url, badge_host_footer, start_date, end_date')
+        .select('id, name, venue, logo_url, banner_url, badge_banner_url, badge_host_footer, badge_show_event_name, start_date, end_date')
         .eq('id', eventId)
         .single();
       if (evErr) throw evErr;
       const e = ev as Event & { badge_host_footer?: string | null };
       setEvent(e as Event);
       setFooterLine(e.badge_host_footer ?? '');
+      setShowEventName(e.badge_show_event_name !== false);
 
       const { data: memRaw, error: memErr } = await supabase
         .from('event_members')
-        .select('user_id, role, users!inner(full_name, email, company)')
+        .select('user_id, role, users!inner(full_name, email, title, company)')
         .eq('event_id', eventId);
       if (memErr) throw memErr;
 
@@ -195,13 +218,14 @@ export default function EventBadges() {
       const byUser = new Map((tokRows ?? []).map((r: { user_id: string; token: string }) => [r.user_id, r.token]));
 
       const rows: MemberRow[] = (memRaw ?? []).map((r: Record<string, unknown>) => {
-        const u = r.users as { full_name?: string; email?: string; company?: string | null };
+        const u = r.users as { full_name?: string; email?: string; title?: string | null; company?: string | null };
         const uid = r.user_id as string;
         return {
           user_id: uid,
           role: String(r.role ?? 'attendee'),
           full_name: u?.full_name ?? '—',
           email: u?.email ?? '',
+          title: u?.title ?? null,
           company: u?.company ?? null,
           token: byUser.get(uid) ?? null,
         };
@@ -212,7 +236,7 @@ export default function EventBadges() {
       const nextQr: Record<string, string> = {};
       for (const m of rows) {
         if (m.token) {
-          nextQr[m.user_id] = await QRCode.toDataURL(qrPayload(m.token), {
+          nextQr[m.user_id] = await QRCode.toDataURL(badgeQrPayload(m.token), {
             width: 220,
             margin: 1,
             color: { dark: '#111111', light: '#ffffffff' },
@@ -254,7 +278,11 @@ export default function EventBadges() {
     try {
       const { error: err } = await supabase
         .from('events')
-        .update({ badge_host_footer: footerLine.trim() || null, updated_at: new Date().toISOString() })
+        .update({
+          badge_host_footer: footerLine.trim() || null,
+          badge_show_event_name: showEventName,
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', eventId);
       if (err) throw err;
       await load();
@@ -265,7 +293,52 @@ export default function EventBadges() {
     }
   };
 
+  const persistBadgeBanner = async (badge_banner_url: string | null) => {
+    if (!eventId) return;
+    const { error: err } = await supabase
+      .from('events')
+      .update({ badge_banner_url, updated_at: new Date().toISOString() })
+      .eq('id', eventId);
+    if (err) throw err;
+  };
+
+  const onBadgeBannerFile = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = '';
+    if (!file || !eventId) return;
+    setError('');
+    setUploadingBadgeBanner(true);
+    try {
+      const url = await uploadEventImage(file, eventId, 'badge-banner');
+      await persistBadgeBanner(url);
+      setEvent((prev) => (prev ? { ...prev, badge_banner_url: url } : prev));
+      await load();
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setUploadingBadgeBanner(false);
+    }
+  };
+
+  const onClearBadgeBanner = async () => {
+    if (!eventId) return;
+    setError('');
+    setUploadingBadgeBanner(true);
+    try {
+      await persistBadgeBanner(null);
+      setEvent((prev) => (prev ? { ...prev, badge_banner_url: null } : prev));
+      await load();
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setUploadingBadgeBanner(false);
+    }
+  };
+
   if (loading) return <div className={styles.loading}>Loading…</div>;
+
+  const heroPreview = badgeHeroMedia(event);
+  const headerSourceLabel = badgeHeroSourceLabel(event);
 
   return (
     <div className={styles.page}>
@@ -276,15 +349,61 @@ export default function EventBadges() {
       </div>
       <h1 className={styles.pageTitle}>Badges — {event?.name ?? 'Event'}</h1>
       <p className={styles.hint}>
-        3.75″×5.5″ printable badges (sleeve-friendly) for every member. QR opens in KBM Connect — use <strong>Scan log</strong>{' '}
+        3.75″×5.5″ printable badges (sleeve-friendly) for every member. QR opens in KBM Connect — use <strong>Notes log</strong>{' '}
         on the event hub for app capture history (who scanned whom, notes, meetings).
       </p>
 
       {error ? <p className={styles.error}>{error}</p> : null}
 
       <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>Footer line</h2>
-        <p className={styles.sectionHint}>Printed at the bottom (e.g. &quot;Hosted by Opal Group&quot;).</p>
+        <h2 className={styles.sectionTitle}>Badge header image</h2>
+        <p className={styles.sectionHint}>
+          {BADGE_BANNER_HINT} Recommended size: <strong>{BADGE_BANNER_SIZE_LABEL}</strong>. The app Info banner is unchanged.
+        </p>
+        <p className={styles.badgeHeaderSource}>{headerSourceLabel}</p>
+        <input
+          ref={badgeBannerInputRef}
+          type="file"
+          accept={BADGE_BANNER_FILE_ACCEPT}
+          className={styles.hiddenFileInput}
+          onChange={onBadgeBannerFile}
+        />
+        {heroPreview ? (
+          <div className={styles.badgeHeaderPreviewWrap}>
+            <img src={heroPreview.src} alt="" className={styles.badgeHeaderPreview} />
+          </div>
+        ) : (
+          <div className={styles.badgeHeaderPreviewPlaceholder}>No header image yet</div>
+        )}
+        <div className={styles.badgeHeaderActions}>
+          <button
+            type="button"
+            className={styles.btnPrimary}
+            disabled={uploadingBadgeBanner}
+            onClick={() => badgeBannerInputRef.current?.click()}
+          >
+            {uploadingBadgeBanner
+              ? 'Uploading…'
+              : event?.badge_banner_url
+                ? 'Replace badge header'
+                : 'Upload badge header'}
+          </button>
+          {event?.badge_banner_url ? (
+            <button
+              type="button"
+              className={styles.btnGhost}
+              disabled={uploadingBadgeBanner}
+              onClick={onClearBadgeBanner}
+            >
+              Remove badge header
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2 className={styles.sectionTitle}>Badge text settings</h2>
+        <p className={styles.sectionHint}>Control text shown on badges and printed footer line.</p>
         <div className={styles.footerRow}>
           <input
             type="text"
@@ -293,8 +412,12 @@ export default function EventBadges() {
             onChange={(e) => setFooterLine(e.target.value)}
             placeholder='e.g. Hosted by Opal Group — The HR Executive Summits Series'
           />
+          <label className={styles.layoutOpt}>
+            <input type="checkbox" checked={showEventName} onChange={(e) => setShowEventName(e.target.checked)} />
+            Show event name on badge
+          </label>
           <button type="button" className={styles.btnPrimary} onClick={saveFooter} disabled={savingFooter}>
-            {savingFooter ? 'Saving…' : 'Save footer'}
+            {savingFooter ? 'Saving…' : 'Save settings'}
           </button>
         </div>
       </section>
@@ -312,9 +435,8 @@ export default function EventBadges() {
       <section className={styles.section}>
         <h2 className={styles.sectionTitle}>Print badges</h2>
         <p className={styles.sectionHint}>
-          Use <strong>Print</strong> → <strong>Letter</strong> for multi-up. <strong>2 per page</strong> is one row of two large badges; <strong>4 per page</strong> is
-          a 2×2 grid of four smaller badges (same info, tighter type and QR). For 1-up, use paper <strong>3.75″×5.5″</strong> or trim. Turn off{' '}
-          <strong>Headers and footers</strong> in the print dialog. The event image uses <strong>Logo</strong> if set, otherwise <strong>Banner</strong>.
+          Use <strong>Print</strong> → <strong>Letter</strong> for multi-up. QR opens in KBM Connect — use <strong>Profile → Scan badge</strong> or your phone camera if it offers to open the app. Turn off{' '}
+          <strong>Headers and footers</strong> in the print dialog. Header uses the <strong>badge header image</strong> when set, otherwise the app <strong>Info banner</strong>, then <strong>logo</strong>.
         </p>
         <div className={styles.layoutRow}>
           <span className={styles.layoutLabel}>Layout:</span>
@@ -347,6 +469,7 @@ export default function EventBadges() {
           Print all badges
         </button>
 
+        <BadgePrintLayoutContext.Provider value={printLayout}>
         <div className={styles.printRoot} data-print-layout={printLayout} data-duplex={includeBack ? '1' : '0'}>
           {printLayout === '1up' &&
             members.map((m, i) => {
@@ -356,11 +479,11 @@ export default function EventBadges() {
                   <div
                     className={`${styles.badgePage} ${!includeBack && last ? styles.printLastInJob : ''}`}
                   >
-                    <BadgeFace m={m} event={event} footerLine={footerLine} qrMap={qrMap} />
+                    <BadgeFace m={m} event={event} showEventName={showEventName} footerLine={footerLine} qrMap={qrMap} />
                   </div>
                   {includeBack && (
                     <div className={`${styles.badgePage} ${last ? styles.printLastInJob : ''}`}>
-                      <BadgeBack m={m} event={event} footerLine={footerLine} />
+                      <BadgeBack m={m} event={event} showEventName={showEventName} footerLine={footerLine} />
                     </div>
                   )}
                 </div>
@@ -381,7 +504,7 @@ export default function EventBadges() {
                     >
                       {pair.map((m) => (
                         <div key={m.user_id} className={styles.badgeSlot2up}>
-                          <BadgeFace m={m} event={event} footerLine={footerLine} qrMap={qrMap} />
+                          <BadgeFace m={m} event={event} showEventName={showEventName} footerLine={footerLine} qrMap={qrMap} />
                         </div>
                       ))}
                     </div>
@@ -394,7 +517,7 @@ export default function EventBadges() {
                         >
                           {pair.map((m) => (
                             <div key={m.user_id} className={styles.badgeSlot2up}>
-                              <BadgeBack m={m} event={event} footerLine={footerLine} />
+                              <BadgeBack m={m} event={event} showEventName={showEventName} footerLine={footerLine} />
                             </div>
                           ))}
                         </div>
@@ -419,7 +542,7 @@ export default function EventBadges() {
                       {padChunkToSize(quad, 4).map((m, cellIdx) => (
                         <div key={m?.user_id ?? `f4-${sheetIdx}-e${cellIdx}`} className={styles.badgeSlot4up}>
                           {m ? (
-                            <BadgeFace m={m} event={event} footerLine={footerLine} qrMap={qrMap} />
+                            <BadgeFace m={m} event={event} showEventName={showEventName} footerLine={footerLine} qrMap={qrMap} />
                           ) : (
                             <div className={styles.badgeSlot4upEmpty} aria-hidden />
                           )}
@@ -436,7 +559,7 @@ export default function EventBadges() {
                           {padChunkToSize(quad, 4).map((m, cellIdx) => (
                             <div key={m?.user_id ?? `b4-${sheetIdx}-e${cellIdx}`} className={styles.badgeSlot4up}>
                               {m ? (
-                                <BadgeBack m={m} event={event} footerLine={footerLine} />
+                                <BadgeBack m={m} event={event} showEventName={showEventName} footerLine={footerLine} />
                               ) : (
                                 <div className={styles.badgeSlot4upEmpty} aria-hidden />
                               )}
@@ -449,6 +572,7 @@ export default function EventBadges() {
               );
             })()}
         </div>
+        </BadgePrintLayoutContext.Provider>
       </section>
     </div>
   );

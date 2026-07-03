@@ -410,7 +410,14 @@ export default function FeedScreen() {
         windowSize={6}
         removeClippedSubviews={true}
         ListHeaderComponent={
-          feedSponsors.length > 0 ? <CompactSponsorStrip sponsors={feedSponsors} /> : null
+          feedSponsors.length > 0 ? (
+            <CompactSponsorStrip
+              sponsors={feedSponsors}
+              title="Mobile app sponsored by"
+              eventId={currentEvent?.id}
+              placement="feed"
+            />
+          ) : null
         }
         ListEmptyComponent={
           <View style={styles.placeholder}>

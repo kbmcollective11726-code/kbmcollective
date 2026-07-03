@@ -1,5 +1,6 @@
 .page {
-  max-width: 720px;
+  max-width: var(--page-max-content);
+  width: 100%;
 }
 
 .back {
@@ -68,6 +69,45 @@
 .tileCheckLabel input {
   margin-top: 3px;
   flex-shrink: 0;
+}
+
+.tileCheckTitleRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.tagRow {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.tagWeb,
+.tagApp {
+  display: inline-block;
+  padding: 1px 7px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  border-radius: 4px;
+}
+
+.tagWeb {
+  color: #1e40af;
+  background: #dbeafe;
+}
+
+.tagApp {
+  color: #5b21b6;
+  background: #ede9fe;
+}
+
+.intro .tagWeb,
+.intro .tagApp {
+  vertical-align: middle;
 }
 
 .tileCheckDesc {

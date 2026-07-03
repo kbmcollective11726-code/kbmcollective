@@ -1,7 +1,7 @@
 -- Per-event admin console hub tiles visible to event admins (platform admins always see all).
 ALTER TABLE public.events
   ADD COLUMN IF NOT EXISTS admin_console_tiles text[] NOT NULL
-  DEFAULT ARRAY['members', 'schedule', 'agenda_print', 'photos']::text[];
+  DEFAULT ARRAY['members', 'schedule', 'agenda_print', 'photos', 'announcements']::text[];
 
 COMMENT ON COLUMN public.events.admin_console_tiles IS
   'Admin console hub tile keys shown to event admins. Platform admins always see every tile and are the only role that may change this list.';

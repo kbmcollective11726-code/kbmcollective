@@ -42,6 +42,23 @@ Deno.serve(async (req: Request) => {
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
+  const pausedEventIds = new Set<string>();
+  const pausedCheck = async (eventId: string): Promise<boolean> => {
+    if (pausedEventIds.has(eventId)) return true;
+    const { data, error } = await supabase
+      .from("events")
+      .select("notifications_paused, notifications_paused_until")
+      .eq("id", eventId)
+      .maybeSingle();
+    if (error) throw error;
+    const row = data as { notifications_paused?: boolean; notifications_paused_until?: string | null } | null;
+    const untilMs = row?.notifications_paused_until ? Date.parse(row.notifications_paused_until) : NaN;
+    const paused =
+      row?.notifications_paused === true &&
+      (!Number.isFinite(untilMs) || untilMs > Date.now());
+    if (paused) pausedEventIds.add(eventId);
+    return paused;
+  };
 
   const now = new Date().toISOString();
   const { data: rows, error: fetchError } = await supabase
@@ -64,6 +81,11 @@ Deno.serve(async (req: Request) => {
   let processed = 0;
   for (const row of announcements) {
     try {
+      if (await pausedCheck(row.event_id)) {
+        await supabase.from("announcements").update({ sent_at: now }).eq("id", row.id);
+        processed++;
+        continue;
+      }
       const recipientIds = await getRecipientIds(supabase, row);
       if (recipientIds.length === 0) {
         await supabase.from("announcements").update({ sent_at: now }).eq("id", row.id);

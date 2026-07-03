@@ -27,6 +27,9 @@
   --shadow-lg: 0 8px 30px rgba(26, 35, 50, 0.12);
   --shadow-card: 0 4px 12px rgba(26, 35, 50, 0.09);
   --transition: 0.2s ease;
+  /* Admin page width: forms stay readable; tables/filters use the full main column */
+  --page-max-form: 640px;
+  --page-max-content: none;
 }
 
 * {
@@ -105,13 +108,15 @@ table tbody tr:hover {
   background: #f8f9fa;
 }
 
-/* broad visual polish across existing module class names */
-[class*='card'], article, .panel {
+/* Card containers only — avoid matching nested classes like *Actions */
+[class*='_card_'],
+article,
+.panel {
   border-left: 3px solid var(--color-accent);
   box-shadow: var(--shadow-card);
 }
 
-[class*='card']:hover {
+[class*='_card_']:hover {
   box-shadow: var(--shadow-lg);
 }
 

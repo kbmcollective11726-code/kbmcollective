@@ -1,5 +1,6 @@
 .page {
-  max-width: 960px;
+  max-width: var(--page-max-content);
+  width: 100%;
 }
 
 .head {
@@ -59,6 +60,66 @@
   margin: 0 0 12px;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+.hiddenFileInput {
+  position: absolute;
+  width: 0;
+  height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.badgeHeaderSource {
+  margin: 0 0 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.badgeHeaderPreviewWrap {
+  width: 100%;
+  max-width: 22.5rem;
+  aspect-ratio: 1125 / 456;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: #fff;
+  margin-bottom: 12px;
+}
+
+.badgeHeaderPreview {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center center;
+}
+
+.badgeHeaderPreviewPlaceholder {
+  width: 100%;
+  max-width: 22.5rem;
+  aspect-ratio: 1125 / 456;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  margin-bottom: 12px;
+  background: #f8f8f8;
+}
+
+.badgeHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.badgeHeaderActions .btnGhost {
+  margin-bottom: 0;
 }
 
 .footerRow {
@@ -154,7 +215,9 @@
 
 /* Screen preview: stacked cards */
 .badgePage {
-  border: 1px dashed var(--color-border);
+  width: fit-content;
+  margin-left: auto;
+  margin-right: auto;
   margin-bottom: 16px;
   background: var(--color-surface);
 }
@@ -162,6 +225,7 @@
 .badgeInner {
   width: 3.75in;
   min-height: 5.5in;
+  height: 5.5in;
   margin: 0 auto;
   padding: 0;
   box-sizing: border-box;
@@ -170,35 +234,80 @@
   align-items: stretch;
   text-align: center;
   overflow: hidden;
-}
-
-.badgeBanner {
-  width: 100%;
-  flex: 0 0 auto;
-  max-height: 1.2in;
-  min-height: 0.55in;
-  background: #e8e8e8;
-  overflow: hidden;
-}
-
-.badgeBannerImg {
-  display: block;
-  width: 100%;
-  height: 1.05in;
-  object-position: center;
-}
-
-.badgeBannerImgCover {
-  /* Event banner: fill full width of strip; may crop top/bottom of artwork */
-  object-fit: cover;
-}
-
-.badgeBannerImgContain {
-  object-fit: contain;
   background: #ffffff;
 }
 
-.badgeBannerPlaceholder {
+.badgeHero {
+  width: 100%;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+  overflow: hidden;
+  box-sizing: border-box;
+  line-height: 0;
+}
+
+/*
+ * Banner: 100% badge width always. Height tuned to artwork (not full 16:10 frame).
+ * Uploaded banners have ~20% empty navy below the logos; cover+top crops that only.
+ */
+.badgeHeroBanner {
+  width: 100%;
+  height: 1.52in;
+  flex: 0 0 1.52in;
+}
+
+/* App Info banner + uploaded badge header: letterbox (full artwork visible). */
+.badgeHeroBannerAppFallback,
+.badgeHeroBannerDedicated {
+  background: #ffffff;
+}
+
+.badgeHeroBanner4up {
+  height: 1.52in;
+  flex: 0 0 1.52in;
+}
+
+.badgeHeroImgBanner {
+  display: block;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  object-fit: cover;
+  object-position: center 40%;
+}
+
+/* Uploaded badge header + app Info fallback: always edge-to-edge badge width. */
+.badgeHeroImgBanner.badgeHeroImgBadgeBanner,
+.badgeHeroImgBanner.badgeHeroImgAppBannerFallback {
+  object-fit: cover;
+  object-position: center center;
+}
+
+.badgeHeroImgBanner.badgeHeroImgAppBannerFallback {
+  /* App banner is 16:10 with empty band below logos — bias crop upward. */
+  object-position: center 38%;
+}
+
+.badgeHeroLogoWrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0.62in;
+  background: #ffffff;
+}
+
+.badgeHeroImgContain {
+  display: block;
+  max-height: 0.55in;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+.badgeHeroPlaceholder {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -209,13 +318,14 @@
 }
 
 .badgeBody {
-  padding: 0.26in 0.26in 0.3in;
-  flex: 1;
+  padding: 0.1in 0.16in 0.1in;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
   min-height: 0;
+  justify-content: flex-start;
 }
 
 /* Back side: small header logo (optional) — still use banner on back for consistency */
@@ -239,37 +349,57 @@
 }
 
 .badgeTitle {
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  margin-bottom: 0.16in;
+  margin-top: 0.1in;
+  margin-bottom: 0.1in;
   color: var(--color-text-secondary);
-  line-height: 1.35;
+  line-height: 1.3;
+  max-width: 100%;
+  word-wrap: break-word;
+  overflow-wrap: anywhere;
 }
 
 .name {
-  font-size: 22px;
+  font-size: 34px;
   font-weight: 800;
-  line-height: 1.2;
+  line-height: 1.08;
   color: var(--color-text);
-  margin-top: 0.1in;
-  margin-bottom: 8px;
+  margin-top: 0.06in;
+  margin-bottom: 0.08in;
+}
+
+.memberTitle {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  margin-bottom: 0.06in;
+  line-height: 1.25;
 }
 
 .company {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 500;
   color: var(--color-text-secondary);
-  margin-bottom: 14px;
+  margin-bottom: 0.1in;
+  line-height: 1.25;
 }
 
 .qrWrap {
-  flex: 1;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 188px;
+  margin: 0.06in 0 0.04in;
+}
+
+.qrWrap img {
+  width: 148px;
+  height: 148px;
+  max-width: 100%;
+  object-fit: contain;
 }
 
 .noQr {
@@ -278,8 +408,10 @@
 }
 
 .footer {
+  flex-shrink: 0;
+  width: 100%;
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 0.06in;
   font-size: 10px;
   font-weight: 600;
   color: var(--color-text-secondary);
@@ -411,23 +543,37 @@
 
   .printSheet4up {
     max-width: 100%;
-    width: 100%;
+    width: 8.5in;
     margin-left: auto;
     margin-right: auto;
     height: 11in;
     min-height: 11in;
     max-height: 11in;
     overflow: hidden;
+    padding: 0;
+    box-sizing: border-box;
   }
 
   .badgeInner {
     border: none;
+    min-height: 5.5in;
+    height: 5.5in;
   }
 
-  /* Printable cut lines (replace screen outline). */
+  .badgeSlot4up .badgeInner {
+    min-height: 5.42in;
+    height: 5.42in;
+    max-height: 5.42in;
+  }
+
+  .badgeBody {
+    flex: 1 1 auto;
+  }
+
+  .badgeSlot2up,
   .badgeSlot4up {
     outline: none;
-    border: 0.35pt dashed rgba(45, 45, 45, 0.38);
+    border: none;
   }
 }
 
@@ -442,7 +588,7 @@
   margin: 0.08in;
 }
 
-/* Four 3.75″ × 5.5″ on one Letter sheet (2×2); zero page margin so two rows equal 11″. */
+/* Four 3.75″ badges on Letter — two exact 5.44″ rows (11″ total, no drift). */
 @page letter4up {
   size: letter;
   margin: 0;
@@ -456,13 +602,13 @@
   flex-wrap: nowrap;
   justify-content: center;
   align-items: flex-start;
-  /* 3.75in + gap + 3.75in + horizontal padding within 8.5in (Letter). */
-  gap: 0.12in;
+  /* Two 3.75″ badges touching — no center gutter; outer margin only on Letter. */
+  gap: 0;
   min-height: 5.65in;
   max-width: 8.5in;
+  width: 8.5in;
   margin: 0 auto 20px;
-  padding: 0.2in 0.1in;
-  border: 1px dashed var(--color-border);
+  padding: 0.2in 0;
   background: var(--color-surface);
   box-sizing: border-box;
 }
@@ -471,39 +617,37 @@
   flex: 0 0 auto;
 }
 
-/* Four badges on Letter 8.5×11 (2×2). Row/column gaps separate rows visually; each cell ~5.45″ tall (fits sleeve). */
+/* Four badges on Letter 8.5×11 (2×2). Fixed row heights — badges top-aligned, no row drift. */
 .printSheet4up {
   display: grid;
   grid-template-columns: 3.75in 3.75in;
-  grid-template-rows: 1fr 1fr;
+  grid-template-rows: 5.42in 5.42in;
   width: 8.5in;
   height: 11in;
   max-width: 100%;
   min-height: 11in;
   margin: 0 auto 20px;
-  padding: 0;
-  column-gap: 0.14in;
-  row-gap: 0.12in;
-  border: 1px dashed var(--color-border);
+  padding: 0.06in 0 0;
+  column-gap: 0;
+  row-gap: 0.1in;
   background: var(--color-surface);
   box-sizing: border-box;
-  align-items: stretch;
-  justify-items: center;
+  align-content: start;
+  align-items: start;
+  justify-items: stretch;
   justify-content: center;
 }
 
 .badgeSlot4up {
   display: flex;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: center;
   width: 3.75in;
-  height: 100%;
-  min-height: 0;
+  height: 5.42in;
+  min-height: 5.42in;
+  max-height: 5.42in;
   overflow: hidden;
   box-sizing: border-box;
-  /* Faint cut guide on screen */
-  outline: 1px dashed rgba(0, 0, 0, 0.14);
-  outline-offset: -1px;
 }
 
 /* Placeholder cell when a 4-up sheet has fewer than four members (keeps a true 2×2 cut grid). */
@@ -514,43 +658,59 @@
   background: #fff;
 }
 
-/* 4-up Letter: cell height comes from grid row (~5.45″ with gutter); larger name, smaller QR & header. */
+/* 4-up Letter: fixed badge height; banner shows full artwork (no crop). */
 .badgeSlot4up .badgeInner {
-  height: 100%;
-  min-height: 0;
-  max-height: 100%;
+  height: 5.42in;
+  min-height: 5.42in;
+  max-height: 5.42in;
   width: 100%;
   margin: 0;
 }
 
-.badgeSlot4up .badgeBanner {
-  max-height: 0.92in;
-  min-height: 0.52in;
+.badgeSlot4up .badgeHeroBanner,
+.badgeSlot4up .badgeHeroBanner4up {
+  height: 1.38in;
+  flex: 0 0 1.38in;
+  background: #ffffff;
 }
 
-.badgeSlot4up .badgeBannerImg {
-  height: 0.85in;
+.badgeSlot4up .badgeHeroImgBanner {
+  object-fit: cover;
+  object-position: center 40%;
+  width: 100%;
+  height: 100%;
 }
 
-.badgeSlot4up .badgeBannerPlaceholder {
-  min-height: 0.52in;
-  font-size: 9px;
+.badgeSlot4up .badgeHeroImgAppBannerFallback {
+  object-fit: cover;
+  object-position: center 38%;
+}
+
+.badgeSlot4up .badgeHeroImgBadgeBanner {
+  object-fit: cover;
+  object-position: center center;
+}
+
+.badgeSlot4up .badgeHeroPlaceholder {
+  min-height: 1.38in;
+  font-size: 11px;
 }
 
 .badgeSlot4up .badgeBody {
-  padding: 0.14in 0.14in 0.1in;
+  padding: 0.06in 0.14in 0.08in;
   min-height: 0;
   flex: 1 1 0;
-  /* Top-down: event line → name → company → QR fills middle/lower band → venue/footer at bottom (matches reference layout). */
   display: flex;
   flex-direction: column;
   justify-content: flex-start;
+  gap: 0;
+  overflow: hidden;
 }
 
 .badgeSlot4up .badgeTitle {
-  font-size: 12.5px;
-  margin-bottom: 0.22in;
-  line-height: 1.3;
+  flex-shrink: 0;
+  margin: 0 0 0.05in;
+  font-size: 11px;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
@@ -559,55 +719,53 @@
 
 .badgeSlot4up .name,
 .badgeSlot4up .backAttendeeName {
-  font-size: 34px;
-  font-weight: 800;
-  line-height: 1.08;
-  margin-top: 0.14in;
-  margin-bottom: 0.1in;
+  flex-shrink: 0;
+  margin: 0 0 0.03in;
+  font-size: 28px;
+  line-height: 1.06;
+}
+
+.badgeSlot4up .memberTitle {
+  flex-shrink: 0;
+  margin: 0 0 0.04in;
+  font-size: 15px;
 }
 
 .badgeSlot4up .company {
-  font-size: 19px;
-  font-weight: 700;
-  margin-bottom: 0.12in;
-  line-height: 1.25;
+  flex-shrink: 0;
+  margin: 0 0 0.05in;
+  font-size: 14px;
 }
 
-/* Front only: grows so QR sits in the lower band with air above it */
+/* QR in middle band; venue footer pinned to badge bottom. */
 .badgeSlot4up .qrWrap {
   flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 1in;
-  margin-top: 0;
+  margin: 0;
 }
 
+/* Keep QR large enough to scan from phone camera when printed 4-up (~1.3″+). */
 .badgeSlot4up .qrWrap img {
-  width: 118px !important;
-  height: 118px !important;
+  width: 1.35in;
+  height: 1.35in;
+  min-width: 1.2in;
+  min-height: 1.2in;
   max-width: 100%;
   object-fit: contain;
 }
 
 .badgeSlot4up .footer {
   flex-shrink: 0;
-  margin-top: 0.08in;
-  padding-top: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-
-.badgeSlot4up .backDates {
-  font-size: 11px;
-  margin-bottom: 0.06in;
+  width: 100%;
+  margin-top: auto;
+  padding-top: 2px;
 }
 
 .badgeSlot4up .backBody {
   flex: 1 1 auto;
-  font-size: 10px;
-  line-height: 1.35;
   padding: 6px 0 8px;
   min-height: 0;
 }
@@ -644,4 +802,47 @@
   color: var(--color-text-secondary);
   text-align: center;
   padding: 8px 0;
+}
+
+.linkList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.linkList li {
+  margin-bottom: 10px;
+}
+
+.sessionLink {
+  display: block;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: inherit;
+}
+
+.sessionLink:hover {
+  border-color: var(--color-accent);
+}
+
+.sessionLink strong {
+  display: block;
+  font-size: 15px;
+  margin-bottom: 4px;
+}
+
+.sessionMeta,
+.sessionCount {
+  display: block;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.sessionCount {
+  margin-top: 6px;
+  font-weight: 600;
+  color: var(--color-accent);
 }

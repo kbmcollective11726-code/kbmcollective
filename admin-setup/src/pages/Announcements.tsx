@@ -33,6 +33,35 @@ function toDatetimeLocalValue(d: Date): string {
   return `${y}-${m}-${day}T${h}:${min}`;
 }
 
+/** Parse datetime-local input as browser local time (avoids UTC mis-read). */
+function parseDatetimeLocal(value: string): Date | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) return null;
+  const date = new Date(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    0,
+    0
+  );
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function formatScheduleWhen(iso: string) {
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+}
+
+const timezoneLabel = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
 export default function Announcements() {
   const { eventId } = useParams<{ eventId: string }>();
   const [event, setEvent] = useState<Event | null>(null);
@@ -40,7 +69,6 @@ export default function Announcements() {
   const [loading, setLoading] = useState(true);
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
-  const [priority, setPriority] = useState<string>('normal');
   const [sendPush, setSendPush] = useState(true);
   const [targetType, setTargetType] = useState<TargetType>('all');
   const [audienceRoles, setAudienceRoles] = useState<AudienceRole[]>([]);
@@ -52,6 +80,10 @@ export default function Announcements() {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+
+  const notificationsPausedActive =
+    event?.notifications_paused === true &&
+    (!event.notifications_paused_until || new Date(event.notifications_paused_until).getTime() > Date.now());
 
   const loadList = useCallback(async () => {
     if (!eventId) return;
@@ -70,7 +102,11 @@ export default function Announcements() {
     let cancelled = false;
     (async () => {
       try {
-        const { data: eventData } = await supabase.from('events').select('id, name').eq('id', eventId).single();
+        const { data: eventData } = await supabase
+          .from('events')
+          .select('id, name, notifications_paused, notifications_paused_until')
+          .eq('id', eventId)
+          .single();
         if (eventData && !cancelled) setEvent(eventData as Event);
         await loadList();
       } catch {
@@ -163,8 +199,8 @@ export default function Announcements() {
       return;
     }
 
-    const scheduledDate = new Date(scheduledLocal);
-    if (!scheduleNow && scheduledDate <= new Date()) {
+    const scheduledDate = parseDatetimeLocal(scheduledLocal);
+    if (!scheduleNow && (!scheduledDate || scheduledDate <= new Date())) {
       setError('Scheduled time must be in the future.');
       return;
     }
@@ -186,7 +222,7 @@ export default function Announcements() {
         event_id: eventId,
         title: title.trim(),
         content: content.trim(),
-        priority: priority || 'normal',
+        priority: 'normal',
         send_push: scheduleNow ? sendPush : false,
         sent_by: session.user.id,
         ...targetMeta,
@@ -197,18 +233,22 @@ export default function Announcements() {
         if (insertErr) throw insertErr;
 
         const recipientIds = await getRecipientIds();
-        for (const uid of recipientIds) {
-          await supabase.from('notifications').insert({
-            user_id: uid,
-            event_id: eventId,
-            type: 'announcement',
-            title: title.trim(),
-            body: content.trim(),
-            data: {},
-          });
+        if (!notificationsPausedActive) {
+          for (const uid of recipientIds) {
+            await supabase.from('notifications').insert({
+              user_id: uid,
+              event_id: eventId,
+              type: 'announcement',
+              title: title.trim(),
+              body: content.trim(),
+              data: {},
+            });
+          }
         }
         let pushNote = '';
-        if (sendPush && recipientIds.length > 0 && session.access_token) {
+        if (notificationsPausedActive) {
+          pushNote = ' Notifications are currently paused for this event.';
+        } else if (sendPush && recipientIds.length > 0 && session.access_token) {
           const pushBody = {
             event_id: eventId,
             title: title.trim(),
@@ -263,7 +303,7 @@ export default function Announcements() {
           `In-app notification to ${recipientIds.length} recipient(s).${sendPush ? pushNote : ''}`
         );
       } else {
-        const scheduledAt = scheduledDate.toISOString();
+        const scheduledAt = scheduledDate!.toISOString();
         const { error: insertErr } = await supabase.from('announcements').insert({
           ...basePayload,
           scheduled_at: scheduledAt,
@@ -282,7 +322,7 @@ export default function Announcements() {
           throw insertErr;
         }
         setSuccess(
-          `Scheduled for ${scheduledDate.toLocaleString()}. Ensure process-scheduled-announcements + cron are set up (ANNOUNCEMENTS-SETUP.md).`
+          `Scheduled for ${formatScheduleWhen(scheduledAt)}. It will send automatically at that time (usually within 1 minute).`
         );
       }
 
@@ -306,6 +346,12 @@ export default function Announcements() {
         </Link>
       </div>
       <h1>Announcements — {event?.name ?? 'Event'}</h1>
+      {notificationsPausedActive ? (
+        <p className={styles.mutedBanner}>
+          Notifications are paused for this event. Sends here will be recorded, but attendee alerts are muted until
+          unmuted.
+        </p>
+      ) : null}
       <p className={styles.hint}>
         Match the mobile app: choose who receives it, send now or schedule. Scheduled sends require the backend job in
         ANNOUNCEMENTS-SETUP.md.
@@ -333,14 +379,6 @@ export default function Announcements() {
           placeholder="Message content..."
           required
         />
-
-        <label className={styles.label}>Priority</label>
-        <select className={styles.select} value={priority} onChange={(e) => setPriority(e.target.value)}>
-          <option value="low">Low</option>
-          <option value="normal">Normal</option>
-          <option value="high">High</option>
-          <option value="urgent">Urgent</option>
-        </select>
 
         <label className={styles.label}>Send to</label>
         <div className={styles.chipRow}>
@@ -437,13 +475,19 @@ export default function Announcements() {
 
         {!scheduleNow && (
           <>
-            <label className={styles.label}>Send at (local time)</label>
+            <label className={styles.label}>Send at ({timezoneLabel})</label>
             <input
               type="datetime-local"
               className={styles.input}
               value={scheduledLocal}
               onChange={(e) => setScheduledLocal(e.target.value)}
             />
+            {scheduledLocal && parseDatetimeLocal(scheduledLocal) ? (
+              <p className={styles.schedulePreview}>
+                Will send:{' '}
+                <strong>{formatScheduleWhen(parseDatetimeLocal(scheduledLocal)!.toISOString())}</strong>
+              </p>
+            ) : null}
           </>
         )}
 
@@ -467,14 +511,22 @@ export default function Announcements() {
           {list.map((a) => (
             <li key={a.id} className={styles.item}>
               <span className={styles.itemTitle}>{a.title}</span>
+              {a.content?.trim() ? <p className={styles.itemBody}>{a.content}</p> : null}
               <span className={styles.itemMeta}>
-                {new Date(a.created_at).toLocaleString()} · {a.priority}
-                {a.scheduled_at && !a.sent_at && (
-                  <> · Scheduled {new Date(a.scheduled_at).toLocaleString()}</>
+                {a.sent_at ? (
+                  <>
+                    <span className={styles.statusSent}>Sent</span> {formatScheduleWhen(a.sent_at)}
+                  </>
+                ) : a.scheduled_at ? (
+                  <>
+                    <span className={styles.statusPending}>Pending</span> — sends{' '}
+                    {formatScheduleWhen(a.scheduled_at)}
+                  </>
+                ) : (
+                  <>Sent {formatScheduleWhen(a.created_at)}</>
                 )}
-                {a.sent_at && <> · Sent {new Date(a.sent_at).toLocaleString()}</>}
-                {!a.scheduled_at && a.send_push && <> · Push</>}
-                {a.target_type && a.target_type !== 'all' && <> · To: {a.target_type}</>}
+                {!a.scheduled_at && a.send_push ? <> · Push</> : null}
+                {a.target_type && a.target_type !== 'all' ? <> · To: {a.target_type}</> : null}
               </span>
             </li>
           ))}

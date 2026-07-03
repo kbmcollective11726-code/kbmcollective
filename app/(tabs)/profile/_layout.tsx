@@ -53,6 +53,8 @@ export default function ProfileStackLayout() {
       <Stack.Screen name="admin-delete-user" options={{ title: 'Delete user account', headerBackTitle: 'Back' }} />
       <Stack.Screen name="delete-account" options={{ title: 'Delete account', headerBackTitle: 'Back' }} />
       <Stack.Screen name="badge-scan" options={{ title: 'Scan badge', headerShown: false, headerBackTitle: 'Back' }} />
+      <Stack.Screen name="session-check-in" options={{ title: 'Session check-in', headerShown: false, headerBackTitle: 'Back' }} />
+      <Stack.Screen name="session-check-in-scan" options={{ title: 'Scan session', headerShown: false, headerBackTitle: 'Back' }} />
       <Stack.Screen name="badge-notes" options={{ title: 'Notes', headerShown: false, headerBackTitle: 'Back' }} />
     </Stack>
   );

@@ -228,7 +228,7 @@ export default function Dashboard() {
           className={activeTab === 'b2b' ? `${styles.tab} ${styles.tabActive}` : styles.tab}
           onClick={() => setActiveTab('b2b')}
         >
-          1:1 Meetings / Vendors
+          1:1 Meetings / Solution Providers
         </button>
       </div>
 

@@ -82,26 +82,33 @@ function csvEscape(s: string): string {
   return s;
 }
 
-/** Parse a single CSV row (handles quoted fields). */
+/** Parse a single CSV row (handles quoted fields, including commas inside quotes). */
 function parseCsvRow(line: string): string[] {
   const out: string[] = [];
+  const n = line.length;
   let i = 0;
-  while (i < line.length) {
+  // Parse one field per iteration, then consume the trailing delimiter comma so that
+  // quoted fields containing commas (e.g. "Director, Talent") stay in a single column.
+  for (;;) {
+    let val = '';
     if (line[i] === '"') {
-      let val = '';
       i++;
-      while (i < line.length) {
+      while (i < n) {
         if (line[i] === '"') {
           if (line[i + 1] === '"') { val += '"'; i += 2; } else { i++; break; }
         } else { val += line[i]; i++; }
       }
-      out.push(val);
+      // Ignore any stray characters (e.g. whitespace) between the closing quote and the next comma.
+      while (i < n && line[i] !== ',') i++;
     } else {
       const comma = line.indexOf(',', i);
-      const end = comma === -1 ? line.length : comma;
-      out.push(line.slice(i, end).trim());
-      i = comma === -1 ? line.length : comma + 1;
+      const end = comma === -1 ? n : comma;
+      val = line.slice(i, end).trim();
+      i = end;
     }
+    out.push(val);
+    if (i >= n) break;
+    i++;
   }
   return out;
 }

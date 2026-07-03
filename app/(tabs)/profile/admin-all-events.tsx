@@ -15,6 +15,7 @@ import { useRouter } from 'expo-router';
 import { ChevronRight, Trash2 } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import type { Event } from '../../../lib/types';
@@ -26,6 +27,7 @@ export default function AdminAllEventsScreen() {
   const [togglingId, setTogglingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  const { showPlatformAdminTools } = useRolePreviewContext();
   const isPlatformAdmin = user?.is_platform_admin === true;
 
   useEffect(() => {
@@ -96,6 +98,16 @@ export default function AdminAllEventsScreen() {
       <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Sign in to continue.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!showPlatformAdminTools) {
+    return (
+      <SafeAreaView style={styles.container} edges={[]}>
+        <View style={styles.placeholder}>
+          <Text style={styles.subtitle}>Exit role preview to use platform admin tools.</Text>
         </View>
       </SafeAreaView>
     );

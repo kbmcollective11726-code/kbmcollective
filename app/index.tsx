@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { View, ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
 import { useRouter, useRootNavigationState } from 'expo-router';
+import * as SplashScreen from 'expo-splash-screen';
 import { useAuthStore } from '../stores/authStore';
 import { colors } from '../constants/colors';
+import { safeRouterReplace } from '../lib/safeNavigate';
+import { peekPendingBadgeToken } from '../lib/pendingBadgeUrl';
+import DeepLinkHandler from '../components/DeepLinkHandler';
 
 export default function IndexScreen() {
   const router = useRouter();
@@ -14,6 +18,10 @@ export default function IndexScreen() {
   const [showSkip, setShowSkip] = useState(false);
 
   useEffect(() => {
+    void SplashScreen.hideAsync().catch(() => {});
+  }, []);
+
+  useEffect(() => {
     const t = setTimeout(() => setShowSkip(true), 1000);
     return () => clearTimeout(t);
   }, []);
@@ -23,18 +31,21 @@ export default function IndexScreen() {
     if (!navigationReady) return;
     if (isLoading) return;
     if (navigated.current) return;
+    // Badge QR cold start — DeepLinkHandler opens badge-scan once auth is ready.
+    if (peekPendingBadgeToken()) return;
+
     navigated.current = true;
 
     if (isAuthenticated) {
       if (mustChangePassword) {
-        router.replace('/(auth)/change-password');
+        safeRouterReplace(router, '/(auth)/change-password');
       } else if (user?.is_platform_admin) {
-        router.replace('/profile/admin-all-events');
+        safeRouterReplace(router, '/profile/admin-all-events');
       } else {
-        router.replace('/(tabs)/home');
+        safeRouterReplace(router, '/(tabs)/home');
       }
     } else {
-      router.replace('/(auth)/login');
+      safeRouterReplace(router, '/(auth)/login');
     }
   }, [isAuthenticated, isLoading, mustChangePassword, user?.is_platform_admin, router, navigationReady]);
 
@@ -44,10 +55,11 @@ export default function IndexScreen() {
     if (!navigationReady) return;
     const t = setTimeout(() => {
       if (navigated.current) return;
+      if (peekPendingBadgeToken()) return;
       const { isLoading: loading, isAuthenticated: authed } = useAuthStore.getState();
       if (loading) return;
       navigated.current = true;
-      router.replace(authed ? '/(tabs)/home' : '/(auth)/login');
+      safeRouterReplace(router, authed ? '/(tabs)/home' : '/(auth)/login');
     }, 4000);
     return () => clearTimeout(t);
   }, [router, navigationReady]);
@@ -60,7 +72,7 @@ export default function IndexScreen() {
       const { isLoading: loading } = useAuthStore.getState();
       if (!loading) return;
       navigated.current = true;
-      router.replace('/(auth)/login');
+      safeRouterReplace(router, '/(auth)/login');
     }, 25000);
     return () => clearTimeout(t);
   }, [router, navigationReady]);
@@ -69,10 +81,12 @@ export default function IndexScreen() {
     if (!navigationReady) return;
     if (navigated.current) return;
     navigated.current = true;
-    router.replace('/(auth)/login');
+    safeRouterReplace(router, '/(auth)/login');
   };
 
   return (
+    <>
+    <DeepLinkHandler />
     <View style={styles.container}>
       <ActivityIndicator size="large" color={colors.primary} />
       <Text style={styles.label}>Loading…</Text>
@@ -82,6 +96,7 @@ export default function IndexScreen() {
         </TouchableOpacity>
       )}
     </View>
+    </>
   );
 }
 

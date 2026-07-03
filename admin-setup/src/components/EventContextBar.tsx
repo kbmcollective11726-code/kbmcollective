@@ -3,6 +3,7 @@ import { useMatch, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Event } from '../lib/types';
 import { fetchEventsForSwitcher, isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
+import { isAppMenuItemVisible } from '../lib/effectiveEventMenu';
 import { liveWallUrlForEvent } from '../lib/liveWallUrl';
 import styles from './EventContextBar.module.css';
 
@@ -71,11 +72,14 @@ export default function EventContextBar() {
     (async () => {
       const [pa, evRes] = await Promise.all([
         isCurrentUserPlatformAdmin(),
-        supabase.from('events').select('menu_show_live_wall').eq('id', eventId).maybeSingle(),
+        supabase
+          .from('events')
+          .select('menu_show_live_wall, platform_menu_show_live_wall')
+          .eq('id', eventId)
+          .maybeSingle(),
       ]);
       if (cancelled) return;
-      const menuLiveWall =
-        (evRes.data as { menu_show_live_wall?: boolean } | null)?.menu_show_live_wall !== false;
+      const menuLiveWall = isAppMenuItemVisible(evRes.data as Event | null, 'menu_show_live_wall');
       setWallGate({ loaded: true, platformAdmin: pa, menuLiveWall });
     })();
     return () => {

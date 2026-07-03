@@ -12,10 +12,12 @@ import {
   KeyboardAvoidingView,
   Platform,
   Linking,
-  ImageBackground,
   Modal,
   Pressable,
+  useWindowDimensions,
 } from 'react-native';
+import EventBannerHero from '../../components/EventBannerHero';
+import { eventBannerHeightForWidth } from '../../lib/eventBanner';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
@@ -30,12 +32,23 @@ import { colors } from '../../constants/colors';
 import { theme } from '../../constants/theme';
 import type { Event, EventSponsor } from '../../lib/types';
 import { isEventAccessible } from '../../lib/eventAccess';
+import { isAppMenuItemVisible } from '../../lib/effectiveEventMenu';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
+import {
+  PUBLISHED_ANNOUNCEMENT_OR_FILTER,
+  announcementDisplayTime,
+  sortAnnouncementsNewestFirst,
+  type AnnouncementListRow,
+} from '../../lib/announcementVisibility';
 import {
   getNowNextSessions,
   formatSessionTime,
   formatB2BSlotTimeLocal,
+  getSessionDateKeyFromIso,
+  parseSessionDate,
+  sessionInstantOnEventDayLocal,
+  isSessionLiveWallClockOnEventDay,
   type SessionForNowNext,
 } from '../../lib/scheduleNowNext';
 import CompactSponsorStrip from '../../components/CompactSponsorStrip';
@@ -84,13 +97,15 @@ export default function HomeScreen() {
   const [b2bHomeRows, setB2bHomeRows] = useState<
     { booth_id: string; start_time: string; end_time: string; vendor_name: string }[]
   >([]);
-  const [announcements, setAnnouncements] = useState<{ id: string; title: string; content: string; created_at: string }[]>([]);
+  const [announcements, setAnnouncements] = useState<AnnouncementListRow[]>([]);
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<Set<string>>(new Set());
   const [announcementsSectionHidden, setAnnouncementsSectionHidden] = useState(false);
-  const [selectedAnnouncement, setSelectedAnnouncement] = useState<{ id: string; title: string; content: string; created_at: string } | null>(null);
+  const [selectedAnnouncement, setSelectedAnnouncement] = useState<AnnouncementListRow | null>(null);
   const [eventSwitcherVisible, setEventSwitcherVisible] = useState(false);
   const [nowNextTick, setNowNextTick] = useState(0);
   const [sponsorsInfo, setSponsorsInfo] = useState<EventSponsor[]>([]);
+  const { width: windowWidth } = useWindowDimensions();
+  const fallbackBannerHeight = eventBannerHeightForWidth(windowWidth);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -110,56 +125,13 @@ export default function HomeScreen() {
     }
   }, [currentEvent?.id, currentEvent?.end_date, currentEvent?.is_active, user?.is_platform_admin]);
 
-  // Fetch point rules for current event so Info page shows actual values
-  useEffect(() => {
-    if (!currentEvent?.id) {
-      setPointRules([]);
-      return;
-    }
-    let cancelled = false;
-    fetchPointRules(currentEvent.id)
-      .then((rules) => {
-        if (!cancelled) setPointRules(rules ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setPointRules([]);
-      });
-    return () => { cancelled = true; };
-  }, [currentEvent?.id]);
-
-  // Fetch schedule for current event only — sessions only show for the event they belong to
-  useEffect(() => {
-    if (!currentEvent?.id) {
-      setScheduleSessions([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data, error } = await supabase
-          .from('schedule_sessions')
-          .select('id, title, start_time, end_time, day_number')
-          .eq('event_id', currentEvent.id)
-          .eq('is_active', true)
-          .order('day_number', { ascending: true })
-          .order('start_time', { ascending: true });
-        if (cancelled) return;
-        if (error) throw error;
-        setScheduleSessions((data ?? []) as SessionForNowNext[]);
-      } catch {
-        if (!cancelled) setScheduleSessions([]);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [currentEvent?.id]);
-
   // Fetch user's B2B slots for this event; live + next lines are derived in useMemo (updates every minute).
   const fetchB2BHomeRows = useCallback(async () => {
     if (!currentEvent?.id || !user?.id) {
       setB2bHomeRows([]);
       return;
     }
-    if (currentEvent.menu_show_1on1 === false) {
+    if (!isAppMenuItemVisible(currentEvent, 'menu_show_1on1')) {
       setB2bHomeRows([]);
       return;
     }
@@ -203,29 +175,6 @@ export default function HomeScreen() {
       setB2bHomeRows([]);
     }
   }, [currentEvent?.id, currentEvent?.menu_show_1on1, user?.id]);
-
-  useEffect(() => {
-    fetchB2BHomeRows();
-  }, [fetchB2BHomeRows]);
-
-  // Fetch announcements for current event
-  useEffect(() => {
-    if (!currentEvent?.id) {
-      setAnnouncements([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      const { data, error } = await supabase
-        .from('announcements')
-        .select('id, title, content, created_at')
-        .eq('event_id', currentEvent.id)
-        .order('created_at', { ascending: false })
-        .limit(20);
-      if (!cancelled && !error) setAnnouncements((data ?? []) as { id: string; title: string; content: string; created_at: string }[]);
-    })();
-    return () => { cancelled = true; };
-  }, [currentEvent?.id]);
 
   // Load dismissed announcements & section hidden from AsyncStorage (per user, per event)
   useEffect(() => {
@@ -280,7 +229,7 @@ export default function HomeScreen() {
     [announcements, dismissedAnnouncementIds]
   );
 
-  const fetchPointRules = async (eventId: string) => {
+  const fetchPointRules = useCallback(async (eventId: string) => {
     const { data, error } = await supabase
       .from('point_rules')
       .select('action, points_value, description')
@@ -297,43 +246,104 @@ export default function HomeScreen() {
       points_value: 0,
       description: a.label,
     }));
-  };
+  }, []);
+
+  const loadSponsorsInfo = useCallback(async (eventId: string) => {
+    const { data, error } = await supabase
+      .from('event_sponsors')
+      .select(
+        'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_info_screen, show_in_hamburger, show_in_hamburger_header, show_in_hamburger_footer, show_on_schedule, show_on_feed, is_active'
+      )
+      .eq('event_id', eventId)
+      .eq('is_active', true)
+      .order('sort_order', { ascending: true });
+    if (error) {
+      setSponsorsInfo([]);
+      return;
+    }
+    const rows = (data ?? []) as EventSponsor[];
+    setSponsorsInfo(rows.filter((r) => r.show_on_info_screen));
+  }, []);
+
+  const loadInfoScreenData = useCallback(async (eventId: string) => {
+    const [rules, { data: sessions }, { data: ann }] = await Promise.all([
+      fetchPointRules(eventId),
+      supabase
+        .from('schedule_sessions')
+        .select('id, title, start_time, end_time, day_number')
+        .eq('event_id', eventId)
+        .eq('is_active', true)
+        .order('day_number')
+        .order('start_time'),
+      supabase
+        .from('announcements')
+        .select('id, title, content, created_at, sent_at, scheduled_at')
+        .eq('event_id', eventId)
+        .or(PUBLISHED_ANNOUNCEMENT_OR_FILTER)
+        .order('created_at', { ascending: false })
+        .limit(20),
+    ]);
+    setPointRules(rules);
+    setScheduleSessions((sessions ?? []) as SessionForNowNext[]);
+    setAnnouncements(sortAnnouncementsNewestFirst((ann ?? []) as AnnouncementListRow[]));
+    await fetchB2BHomeRows();
+    await loadSponsorsInfo(eventId);
+  }, [fetchPointRules, fetchB2BHomeRows, loadSponsorsInfo]);
+
+  const prevEventIdRef = useRef<string | null>(null);
+
+  // When the user switches events while on Info, reload (useFocusEffect won't re-fire).
+  useEffect(() => {
+    const eventId = currentEvent?.id ?? null;
+    if (eventId === prevEventIdRef.current) return;
+    const previousEventId = prevEventIdRef.current;
+    prevEventIdRef.current = eventId;
+    if (!eventId) {
+      setPointRules([]);
+      setScheduleSessions([]);
+      setAnnouncements([]);
+      setB2bHomeRows([]);
+      setSponsorsInfo([]);
+      return;
+    }
+    if (previousEventId === null) return;
+    void loadInfoScreenData(eventId);
+  }, [currentEvent?.id, loadInfoScreenData]);
 
   const { nowSessions, nextSessions } = useMemo(
     () =>
       getNowNextSessions(
         scheduleSessions,
         currentEvent?.start_date ?? null,
-        currentEvent?.end_date ?? null
+        currentEvent?.end_date ?? null,
+        currentEvent?.reminder_timezone?.trim() || null
       ),
-    [scheduleSessions, currentEvent?.start_date, currentEvent?.end_date, nowNextTick]
+    [scheduleSessions, currentEvent?.start_date, currentEvent?.end_date, currentEvent?.reminder_timezone, nowNextTick]
   );
 
   const { liveB2BList, nextB2B } = useMemo(() => {
-    const now = Date.now();
+    const now = new Date();
+    const zone = currentEvent?.reminder_timezone?.trim() || null;
     const parsed = b2bHomeRows
       .map((r) => {
-        try {
-          const startMs = parseISO(r.start_time.replace(/\s/, 'T')).getTime();
-          const endMs = parseISO(r.end_time.replace(/\s/, 'T')).getTime();
-          return { ...r, startMs, endMs };
-        } catch {
-          return { ...r, startMs: NaN, endMs: NaN };
-        }
+        const start = parseSessionDate(r.start_time);
+        const end = parseSessionDate(r.end_time);
+        if (!start || !end) return null;
+        const dateKey = getSessionDateKeyFromIso(r.start_time);
+        if (!dateKey) return null;
+        const startMs = sessionInstantOnEventDayLocal(start, dateKey, zone)?.getTime() ?? NaN;
+        const endMs = sessionInstantOnEventDayLocal(end, dateKey, zone)?.getTime() ?? NaN;
+        if (Number.isNaN(startMs) || Number.isNaN(endMs)) return null;
+        return { ...r, startMs, endMs, dateKey, start, end };
       })
-      .filter((r) => !Number.isNaN(r.startMs) && !Number.isNaN(r.endMs));
+      .filter((r): r is NonNullable<typeof r> => r != null);
 
     const live = parsed
-      .filter((r) => now >= r.startMs && now <= r.endMs)
+      .filter((r) => isSessionLiveWallClockOnEventDay(now, r.start, r.end, r.dateKey, zone))
       .sort((a, b) => a.startMs - b.startMs)
-      .map((r) => {
-        const { startMs: _a, endMs: _b, ...rest } = r;
-        return rest;
-      });
+      .map(({ startMs: _a, endMs: _b, dateKey: _c, start: _d, end: _e, ...rest }) => rest);
 
-    const upcoming = parsed
-      .filter((r) => r.startMs > now)
-      .sort((a, b) => a.startMs - b.startMs);
+    const upcoming = parsed.filter((r) => r.startMs > now.getTime()).sort((a, b) => a.startMs - b.startMs);
     const first = upcoming[0];
     return {
       liveB2BList: live,
@@ -346,53 +356,24 @@ export default function HomeScreen() {
           }
         : null,
     };
-  }, [b2bHomeRows, nowNextTick]);
+  }, [b2bHomeRows, nowNextTick, currentEvent?.reminder_timezone]);
 
-  const show1on1InInfo = currentEvent?.menu_show_1on1 !== false;
-
-  const loadSponsorsInfo = useCallback(async () => {
-    if (!currentEvent?.id) {
-      setSponsorsInfo([]);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('event_sponsors')
-      .select(
-        'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_info_screen, show_in_hamburger, show_in_hamburger_header, show_in_hamburger_footer, show_on_schedule, show_on_feed, is_active'
-      )
-      .eq('event_id', currentEvent.id)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true });
-    if (error) {
-      setSponsorsInfo([]);
-      return;
-    }
-    const rows = (data ?? []) as EventSponsor[];
-    setSponsorsInfo(rows.filter((r) => r.show_on_info_screen));
-  }, [currentEvent?.id]);
-
-  useEffect(() => {
-    void loadSponsorsInfo();
-  }, [loadSponsorsInfo]);
+  const show1on1InInfo = isAppMenuItemVisible(currentEvent, 'menu_show_1on1');
 
   const refetchInfoData = useCallback(async () => {
     if (!user?.id) return;
     await refresh(user.id, user?.is_platform_admin);
-    if (currentEvent?.id) {
-      const [rules, { data: sessions }, { data: ann }] = await Promise.all([
-        fetchPointRules(currentEvent.id),
-        supabase.from('schedule_sessions').select('id, title, start_time, end_time, day_number').eq('event_id', currentEvent.id).eq('is_active', true).order('day_number').order('start_time'),
-        supabase.from('announcements').select('id, title, content, created_at').eq('event_id', currentEvent.id).order('created_at', { ascending: false }).limit(20),
-      ]);
-      setPointRules(rules);
-      setScheduleSessions((sessions ?? []) as SessionForNowNext[]);
-      setAnnouncements((ann ?? []) as { id: string; title: string; content: string; created_at: string }[]);
-      fetchB2BHomeRows();
-      await loadSponsorsInfo();
+    const eventId = useEventStore.getState().currentEvent?.id ?? currentEvent?.id;
+    if (eventId) {
+      const { data: freshEvent } = await supabase.from('events').select('*').eq('id', eventId).maybeSingle();
+      if (freshEvent) {
+        await useEventStore.getState().setCurrentEvent(freshEvent as Event);
+      }
+      await loadInfoScreenData(eventId);
     } else {
       setSponsorsInfo([]);
     }
-  }, [user?.id, currentEvent?.id, refresh, fetchB2BHomeRows, loadSponsorsInfo]);
+  }, [user?.id, user?.is_platform_admin, currentEvent?.id, refresh, loadInfoScreenData]);
 
   const refetchInfoDataRef = useRef(refetchInfoData);
   refetchInfoDataRef.current = refetchInfoData;
@@ -637,33 +618,27 @@ export default function HomeScreen() {
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       <ScrollView
-        contentContainerStyle={styles.content}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
         }
       >
-        {/* Banner — full-bleed image only (no text overlay), Guidebook-style */}
+        {/* Banner — edge-to-edge (outside horizontal padding) */}
         {e.banner_url ? (
-          <View style={styles.bannerWrap}>
-            <ImageBackground
-              source={{ uri: e.banner_url }}
-              style={styles.bannerImage}
-              imageStyle={styles.bannerImageStyle}
-              resizeMode="cover"
-            />
-          </View>
+          <EventBannerHero uri={e.banner_url} />
         ) : (
           <View style={styles.bannerWrap}>
             <LinearGradient
               colors={[themeColor, colors.primaryDark]}
-              style={styles.bannerGradient}
+              style={{ width: windowWidth, height: fallbackBannerHeight }}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
             />
           </View>
         )}
 
+        <View style={styles.contentBody}>
         {/* Event title & location below banner (Guidebook-style) */}
         <View style={styles.eventIntro}>
           <Text style={styles.eventIntroTitle}>{String(welcomeTitle)}</Text>
@@ -704,7 +679,13 @@ export default function HomeScreen() {
 
         {sponsorsInfo.length > 0 ? (
           <View style={styles.sponsorStripBare}>
-            <CompactSponsorStrip sponsors={sponsorsInfo} title="Sponsored by" layout="bare" />
+            <CompactSponsorStrip
+              sponsors={sponsorsInfo}
+              title="Mobile app sponsored by"
+              layout="bare"
+              eventId={currentEvent?.id}
+              placement="info"
+            />
           </View>
         ) : null}
 
@@ -861,7 +842,7 @@ export default function HomeScreen() {
                     </TouchableOpacity>
                   </View>
                   <Text style={styles.announcementContent} numberOfLines={2}>{String(a.content)}</Text>
-                  <Text style={styles.announcementDate}>{format(new Date(a.created_at), 'MMM d, yyyy · h:mm a')}</Text>
+                  <Text style={styles.announcementDate}>{format(new Date(announcementDisplayTime(a)), 'MMM d, yyyy · h:mm a')}</Text>
                 </TouchableOpacity>
               ))}
               {visibleAnnouncements.length === 0 ? (
@@ -952,6 +933,7 @@ export default function HomeScreen() {
         </TouchableOpacity>
 
         <View style={{ height: 24 }} />
+        </View>
       </ScrollView>
 
       {/* Event switcher modal: see all your events and switch, or join with code */}
@@ -973,7 +955,7 @@ export default function HomeScreen() {
             </View>
             {selectedAnnouncement ? (
               <Text style={styles.announcementModalDate}>
-                {format(new Date(selectedAnnouncement.created_at), 'MMM d, yyyy · h:mm a')}
+                {format(new Date(announcementDisplayTime(selectedAnnouncement)), 'MMM d, yyyy · h:mm a')}
               </Text>
             ) : null}
             <ScrollView
@@ -1038,20 +1020,11 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   flex1: { flex: 1 },
   content: { padding: theme.spacing.lg, paddingBottom: theme.spacing.xxl },
-  // Full-bleed banner (Guidebook-style: image only, no text overlay) — fixed aspect, no overlap
+  scrollContent: { paddingBottom: theme.spacing.xxl },
+  contentBody: { paddingHorizontal: theme.spacing.lg },
   bannerWrap: {
-    marginHorizontal: -theme.spacing.lg,
     marginBottom: theme.spacing.lg,
     overflow: 'hidden',
-  },
-  bannerImage: {
-    width: '100%',
-    aspectRatio: 16 / 10,
-  },
-  bannerImageStyle: {},
-  bannerGradient: {
-    width: '100%',
-    aspectRatio: 16 / 10,
   },
   eventIntro: {
     marginTop: theme.spacing.sm,

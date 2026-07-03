@@ -67,6 +67,25 @@ Deno.serve(async (req: Request) => {
   const uniqueIds = [...new Set(recipient_user_ids as string[])];
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
+  if (event_id) {
+    const { data: evRow, error: evErr } = await admin
+      .from("events")
+      .select("notifications_paused, notifications_paused_until")
+      .eq("id", event_id)
+      .maybeSingle();
+    if (evErr) {
+      return json({ error: evErr.message }, 500);
+    }
+    const muted = (evRow as { notifications_paused?: boolean; notifications_paused_until?: string | null } | null);
+    const untilMs = muted?.notifications_paused_until ? Date.parse(muted.notifications_paused_until) : NaN;
+    const activePause =
+      muted?.notifications_paused === true &&
+      (!Number.isFinite(untilMs) || untilMs > Date.now());
+    if (activePause) {
+      return json({ sent: 0, message: "Notifications paused for this event" }, 200);
+    }
+  }
+
   const { data: users } = await admin
     .from("users")
     .select("id, push_token")

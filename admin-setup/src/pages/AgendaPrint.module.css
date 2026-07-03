@@ -1,0 +1,419 @@
+/* Screen: full-width preview outside narrow admin content */
+.screenWrap {
+  max-width: 900px;
+  margin: 0 auto 48px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  margin-bottom: 24px;
+  padding: 16px 18px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--color-accent);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-muted);
+  text-decoration: none;
+  transition: background var(--transition), color var(--transition);
+}
+
+.back:hover {
+  background: rgba(212, 175, 55, 0.25);
+  color: var(--color-accent-hover);
+}
+
+.toolbarActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin-left: auto;
+}
+
+.printBtn {
+  padding: 10px 20px;
+  background: var(--color-accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  letter-spacing: 0.02em;
+}
+
+.printBtn:hover {
+  background: var(--color-accent-hover);
+}
+
+.hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  max-width: 36rem;
+}
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--color-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.checkbox input {
+  width: 1.05rem;
+  height: 1.05rem;
+  cursor: pointer;
+}
+
+.loading,
+.errorBox {
+  padding: 24px;
+  text-align: center;
+}
+
+.errorBox {
+  color: var(--color-danger);
+}
+
+/* Printable document — editorial layout aligned with program-agenda mockups */
+.sheet {
+  --agenda-accent: #2563eb;
+  --agenda-gold: #c9a961;
+  --agenda-navy: #0f172a;
+  background: #ffffff;
+  color: #0f172a;
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow:
+    0 1px 3px rgba(15, 23, 42, 0.06),
+    0 12px 40px rgba(15, 23, 42, 0.08);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  font-family: var(--font-sans, 'Inter', system-ui, sans-serif);
+}
+
+.sheetHeader {
+  position: relative;
+  padding: 36px 40px 32px;
+  background: var(--agenda-navy);
+  color: #ffffff;
+  border-bottom: 3px solid var(--agenda-gold);
+}
+
+.sheetHeader::after {
+  display: none;
+}
+
+.headerInner {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  justify-content: space-between;
+}
+
+.logo {
+  width: 72px;
+  height: 72px;
+  object-fit: contain;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 6px;
+  flex-shrink: 0;
+}
+
+.headerText {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Explicit colors: global h1 { color } would otherwise make title illegible on dark header */
+.eventName {
+  margin: 0 0 10px;
+  font-family: var(--font-display, 'Playfair Display', Georgia, serif);
+  font-size: clamp(1.5rem, 2.8vw, 2rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.18;
+  color: #ffffff;
+}
+
+.tagline {
+  margin: 0 0 14px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.92);
+  letter-spacing: 0.01em;
+}
+
+.metaRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px 0;
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.metaItem {
+  display: block;
+  line-height: 1.45;
+}
+
+.metaItem strong {
+  font-weight: 600;
+  color: #ffffff;
+  margin-right: 6px;
+}
+
+.sheetBody {
+  padding: 32px 40px 40px;
+  background: #ffffff;
+}
+
+.dayBlock {
+  margin-bottom: 36px;
+}
+
+.dayBlock:last-child {
+  margin-bottom: 0;
+}
+
+.dayHead {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.dayLabel {
+  margin: 0;
+  font-family: var(--font-display, 'Playfair Display', Georgia, serif);
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+}
+
+.dayDate {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #64748b;
+}
+
+.sessionCard {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  gap: 18px 24px;
+  padding: 18px 20px;
+  margin-bottom: 14px;
+  background: #fff;
+  border-radius: 10px;
+  border: 1px solid #e8ecf1;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+
+.timeCol {
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: 0.02em;
+  line-height: 1.45;
+}
+
+.timeDash {
+  display: block;
+  font-weight: 600;
+  color: #94a3b8;
+  font-size: 0.75rem;
+  margin-top: 2px;
+}
+
+.detailCol {
+  min-width: 0;
+}
+
+.sessionTitle {
+  margin: 0 0 8px;
+  font-family: var(--font-display, 'Playfair Display', Georgia, serif);
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: #0f172a;
+  letter-spacing: -0.02em;
+  line-height: 1.32;
+}
+
+.typePill {
+  display: inline-block;
+  margin-bottom: 10px;
+  padding: 4px 11px;
+  font-family: var(--font-sans, 'Inter', system-ui, sans-serif);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #0f172a;
+  border: 1px solid #e2e8f0;
+}
+
+.speakers {
+  margin: 0 0 6px;
+  font-size: 0.9rem;
+  color: #475569;
+  line-height: 1.45;
+}
+
+.speakers strong {
+  color: #334155;
+  font-weight: 600;
+}
+
+.place {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.place strong {
+  color: #475569;
+  font-weight: 600;
+}
+
+.description {
+  margin: 10px 0 0;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(15, 23, 42, 0.1);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  color: #57534e;
+}
+
+.description p {
+  margin: 0 0 6px;
+}
+
+.description p:last-child {
+  margin-bottom: 0;
+}
+
+.footerNote {
+  margin: 36px 0 0;
+  padding-top: 24px;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
+  text-align: center;
+}
+
+.footerDateLine {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  letter-spacing: 0.02em;
+}
+
+.footerMetaLine {
+  margin: 0;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.emptyDay {
+  margin: 0;
+  font-size: 0.9rem;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* Print — match on-screen mockup; enable “Background graphics” in dialog for navy header */
+@media print {
+  .noPrint {
+    display: none !important;
+  }
+
+  .screenWrap {
+    max-width: none;
+    margin: 0;
+  }
+
+  .sheet {
+    box-shadow: none;
+    border: none;
+    border-radius: 0;
+    background: #fff;
+  }
+
+  .sheetHeader {
+    background: #0f172a !important;
+    color: #fff !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    padding: 28px 0 24px;
+    border-bottom: 3px solid #c9a961 !important;
+  }
+
+  .eventName {
+    color: #fff !important;
+  }
+
+  .tagline {
+    color: rgba(255, 255, 255, 0.92) !important;
+  }
+
+  .metaRow {
+    color: rgba(255, 255, 255, 0.9) !important;
+  }
+
+  .metaItem strong {
+    color: #fff !important;
+  }
+
+  .sheetBody {
+    padding: 20px 0 0;
+  }
+
+  /*
+   * Do NOT use page-break-inside: avoid on .dayBlock — if Day 1 is taller than the
+   * space left under the header, the browser moves the *entire* day to page 2 and
+   * leaves page 1 almost blank.
+   */
+  .dayBlock {
+    page-break-inside: auto;
+    break-inside: auto;
+  }
+
+  .dayHead {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  .sessionCard {
+    page-break-inside: auto;
+    break-inside: auto;
+    box-shadow: none;
+  }
+
+  @page {
+    margin: 12mm 14mm;
+    size: letter;
+  }
+}

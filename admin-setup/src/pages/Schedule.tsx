@@ -2,7 +2,17 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import Papa from 'papaparse';
 import { supabase } from '../lib/supabase';
+import {
+  buildAgendaDayRows,
+  formatSessionSpeakersLine,
+  formatTime12FromISO,
+  getDateKeyForDayNumber,
+  getEventDayNumbers,
+  getSessionDateKeyFromIso,
+} from '../lib/agendaDayRows';
 import type { Event, ScheduleSession, SpeakerEntry } from '../lib/types';
+import { isEventNotificationsPausedActive } from '../lib/eventNotificationsPaused';
+import { notifyScheduleChange, formatScheduleNotifyResult } from '../lib/scheduleChangeNotificationPush';
 import styles from './Schedule.module.css';
 
 /** Up to 5 speakers per session (matches mobile `speakers` JSON + denormalized first speaker). */
@@ -183,15 +193,6 @@ function speakersToDbPayload(rows: SpeakerFormRow[]) {
   };
 }
 
-function formatSessionSpeakersLine(s: ScheduleSession): string {
-  const arr = Array.isArray(s.speakers) ? s.speakers : [];
-  const names = arr
-    .map((x) => (x && typeof x === 'object' ? String((x as SpeakerEntry).name ?? '').trim() : ''))
-    .filter(Boolean);
-  if (names.length > 0) return names.join(', ');
-  return s.speaker_name?.trim() ? s.speaker_name.trim() : '';
-}
-
 function speakersPayloadFromCsvRow(row: Record<string, string>) {
   const slots = [
     { name: row.speaker_name ?? '', title: row.speaker_title ?? '', company: row.speaker_company ?? '' },
@@ -228,6 +229,8 @@ type SessionFormState = {
   session_types: string[];
   /** Star rating + feedback in the app (per session) */
   ratings_enabled: boolean;
+  /** Room check-in in the mobile Session check-in list */
+  check_in_enabled: boolean;
 };
 
 /**
@@ -446,74 +449,6 @@ function parseTimeToHHMMLoose(timeStr: string): { h: number; m: number } | null 
   return null;
 }
 
-/** UTC calendar yyyy-MM-dd from stored timestamp (matches app `schedule.tsx` getSessionDateKey). */
-function getSessionDateKeyFromIso(iso: string | null | undefined): string | null {
-  const d = new Date(iso ?? '');
-  if (Number.isNaN(d.getTime())) return null;
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/**
- * Agenda tab date for day N — local calendar from event start_date (matches app getDateKeyForDayNumber).
- */
-function getDateKeyForDayNumber(dayNumber: number, eventStartDate: string | null | undefined): string | null {
-  if (!eventStartDate || typeof eventStartDate !== 'string' || dayNumber == null) return null;
-  const match = String(eventStartDate).trim().match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (!match) return null;
-  const year = parseInt(match[1] ?? '0', 10);
-  const month = parseInt(match[2] ?? '0', 10);
-  const day = parseInt(match[3] ?? '0', 10);
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-  const base = new Date(year, month - 1, day);
-  if (Number.isNaN(base.getTime())) return null;
-  const sessionDate = new Date(base);
-  sessionDate.setDate(sessionDate.getDate() + (dayNumber - 1));
-  if (Number.isNaN(sessionDate.getTime())) return null;
-  const y2 = sessionDate.getFullYear();
-  const m2 = sessionDate.getMonth() + 1;
-  const d2 = sessionDate.getDate();
-  return `${y2}-${String(m2).padStart(2, '0')}-${String(d2).padStart(2, '0')}`;
-}
-
-/** Event day indices 1..N from start_date through end_date inclusive (matches app getEventDayNumbers). */
-function getEventDayNumbers(startDate: string | null | undefined, endDate: string | null | undefined): number[] {
-  if (!startDate || !endDate || typeof startDate !== 'string' || typeof endDate !== 'string') return [];
-  const startStr = startDate.trim().split(/\s/)[0] ?? '';
-  const endStr = endDate.trim().split(/\s/)[0] ?? '';
-  const parseLocal = (s: string) => {
-    const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-    if (!m) return null;
-    const y = parseInt(m[1] ?? '0', 10);
-    const mo = parseInt(m[2] ?? '0', 10);
-    const d = parseInt(m[3] ?? '0', 10);
-    const dt = new Date(y, mo - 1, d);
-    return Number.isNaN(dt.getTime()) ? null : dt;
-  };
-  const start = parseLocal(startStr);
-  const end = parseLocal(endStr);
-  if (!start || !end) return [];
-  const startMs = new Date(start.getFullYear(), start.getMonth(), start.getDate()).getTime();
-  const endMs = new Date(end.getFullYear(), end.getMonth(), end.getDate()).getTime();
-  if (endMs < startMs) return [];
-  const days = Math.round((endMs - startMs) / (24 * 60 * 60 * 1000)) + 1;
-  return Array.from({ length: Math.max(1, Math.min(days, 365)) }, (_, i) => i + 1);
-}
-
-function formatDateKeyForDisplay(dateKey: string): string {
-  const m = dateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (!m) return dateKey;
-  const y = parseInt(m[1] ?? '0', 10);
-  const mo = parseInt(m[2] ?? '0', 10);
-  const d = parseInt(m[3] ?? '0', 10);
-  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  const date = new Date(y, mo - 1, d);
-  if (Number.isNaN(date.getTime())) return dateKey;
-  return `${months[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`;
-}
-
 /** DB day_number for a session start — same rule as mobile agenda filter. */
 function getAgendaDayNumberFromStartIso(
   iso: string,
@@ -598,16 +533,6 @@ function toDateTimeLocalFromEventDayAndISO(
   return `${y}-${m}-${day}T${hh}:${min}`;
 }
 
-function formatTime12FromISO(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  const hh = d.getUTCHours();
-  const mm = d.getUTCMinutes();
-  const ampm = hh >= 12 ? 'PM' : 'AM';
-  const hour12 = hh % 12 === 0 ? 12 : hh % 12;
-  return `${hour12}:${String(mm).padStart(2, '0')} ${ampm}`;
-}
-
 export default function Schedule() {
   const { eventId } = useParams<{ eventId: string }>();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -627,6 +552,7 @@ export default function Schedule() {
     end_time: '',
     session_types: ['breakout'],
     ratings_enabled: true,
+    check_in_enabled: true,
   });
   const [editCustomTypeInput, setEditCustomTypeInput] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
@@ -641,17 +567,39 @@ export default function Schedule() {
     end_time: '',
     session_types: ['breakout'],
     ratings_enabled: true,
+    check_in_enabled: true,
   });
   const [addCustomTypeInput, setAddCustomTypeInput] = useState('');
   const [savingAdd, setSavingAdd] = useState(false);
   const [deletingAll, setDeletingAll] = useState(false);
+  const [sessionNotifyNote, setSessionNotifyNote] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [dayFilter, setDayFilter] = useState('all');
+  const [typeFilter, setTypeFilter] = useState('all');
+  const [roomFilter, setRoomFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'ratings_off' | 'check_in_hidden'>('all');
+
+  const notificationsPausedActive = isEventNotificationsPausedActive(event);
+
+  const runSessionNotify = async (
+    kind: 'added' | 'updated' | 'removed',
+    options?: { sessionTitle?: string; sessionId?: string }
+  ) => {
+    if (!eventId) return;
+    const result = await notifyScheduleChange(eventId, kind, options);
+    setSessionNotifyNote(formatScheduleNotifyResult(result));
+  };
 
   useEffect(() => {
     if (!eventId) return;
     let cancelled = false;
     (async () => {
       try {
-        const { data: eventData } = await supabase.from('events').select('id, name, start_date, end_date').eq('id', eventId).single();
+        const { data: eventData } = await supabase
+          .from('events')
+          .select('id, name, start_date, end_date, notifications_paused, notifications_paused_until')
+          .eq('id', eventId)
+          .single();
         if (eventData && !cancelled) setEvent(eventData as Event);
         const { data: sessionsData, error } = await supabase
           .from('schedule_sessions')
@@ -822,6 +770,7 @@ export default function Schedule() {
           session_type: sessionType,
           is_active: true,
           ratings_enabled: true,
+          check_in_enabled: true,
         };
         const { error } = await supabase.from('schedule_sessions').insert(payload);
         if (error) {
@@ -897,6 +846,7 @@ export default function Schedule() {
       end_time: toDateTimeLocalFromEventDayAndISO(s.end_time, endDay, eventStart) || toDateTimeLocalUTC(s.end_time),
       session_types: normalizeSessionTypesList(s.session_type ?? 'breakout'),
       ratings_enabled: s.ratings_enabled !== false,
+      check_in_enabled: s.check_in_enabled !== false,
     });
     setEditCustomTypeInput('');
   };
@@ -905,6 +855,7 @@ export default function Schedule() {
     e.preventDefault();
     if (!editingSession || !eventId || !event) return;
     setSavingEdit(true);
+    setSessionNotifyNote(null);
     try {
       const startDate = parseDateTimeLocalAsUTC(editForm.start_time);
       const endDate = parseDateTimeLocalAsUTC(editForm.end_time);
@@ -925,6 +876,7 @@ export default function Schedule() {
           day_number: dayNumber,
           session_type: serializeSessionTypes(editForm.session_types),
           ratings_enabled: editForm.ratings_enabled,
+          check_in_enabled: editForm.check_in_enabled,
         })
         .eq('id', editingSession.id);
       if (error) throw error;
@@ -945,11 +897,16 @@ export default function Schedule() {
                 day_number: dayNumber,
                 session_type: serializeSessionTypes(editForm.session_types),
                 ratings_enabled: editForm.ratings_enabled,
+                check_in_enabled: editForm.check_in_enabled,
               }
             : s
         )
       );
       setEditingSession(null);
+      await runSessionNotify('updated', {
+        sessionTitle: editForm.title.trim(),
+        sessionId: editingSession.id,
+      });
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to update');
     } finally {
@@ -972,6 +929,7 @@ export default function Schedule() {
       end_time: defaultEnd,
       session_types: ['breakout'],
       ratings_enabled: true,
+      check_in_enabled: true,
     });
     setAddCustomTypeInput('');
     setAddingSession(true);
@@ -1004,6 +962,7 @@ export default function Schedule() {
         session_type: serializeSessionTypes(addForm.session_types),
         is_active: true,
         ratings_enabled: addForm.ratings_enabled,
+        check_in_enabled: addForm.check_in_enabled,
       };
 
       const { data: inserted, error } = await supabase
@@ -1025,6 +984,10 @@ export default function Schedule() {
       });
 
       setAddingSession(false);
+      await runSessionNotify('added', {
+        sessionTitle: addForm.title.trim(),
+        sessionId: (inserted as ScheduleSession).id,
+      });
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to add');
     } finally {
@@ -1038,6 +1001,7 @@ export default function Schedule() {
       const { error } = await supabase.from('schedule_sessions').delete().eq('id', s.id);
       if (error) throw error;
       setSessions((prev) => prev.filter((x) => x.id !== s.id));
+      await runSessionNotify('removed', { sessionTitle: s.title, sessionId: s.id });
     } catch (err) {
       alert(err instanceof Error ? err.message : 'Failed to delete');
     }
@@ -1068,66 +1032,92 @@ export default function Schedule() {
     }
   };
 
-  /**
-   * Same bucketing as mobile Agenda: session shows on tab where
-   * getSessionDateKey(start_time) === getDateKeyForDayNumber(day, event.start_date).
-   */
-  const sessionsByDay = useMemo(() => {
-    const eventStart = event?.start_date;
-    const eventEnd = event?.end_date;
-    let dayNums = getEventDayNumbers(eventStart, eventEnd);
-    if (dayNums.length === 0 && sessions.length > 0) {
-      const set = new Set<number>();
-      for (const s of sessions) {
-        const n = Number(s.day_number);
-        if (Number.isFinite(n) && n >= 1) set.add(n);
-      }
-      dayNums = Array.from(set).sort((a, b) => a - b);
-      if (dayNums.length === 0) dayNums = [1];
-    }
-
-    type Row = { dayNum: number | null; dateLabel: string; dateKey: string; items: ScheduleSession[] };
-    const rows: Row[] = [];
-    const assigned = new Set<string>();
-
-    if (dayNums.length > 0 && eventStart) {
-      for (const dayNum of dayNums) {
-        const dateKey = getDateKeyForDayNumber(dayNum, eventStart);
-        if (!dateKey) continue;
-        const items = sessions
-          .filter((s) => getSessionDateKeyFromIso(s.start_time) === dateKey)
-          .sort((a, b) => a.start_time.localeCompare(b.start_time));
-        for (const s of items) assigned.add(s.id);
-        rows.push({
-          dayNum,
-          dateLabel: formatDateKeyForDisplay(dateKey),
-          dateKey,
-          items,
-        });
-      }
-    }
-
-    const orphans = sessions.filter((s) => !assigned.has(s.id));
-    if (orphans.length > 0) {
-      const byKey = new Map<string, ScheduleSession[]>();
-      for (const s of orphans) {
-        const k = getSessionDateKeyFromIso(s.start_time) ?? 'unknown';
-        if (!byKey.has(k)) byKey.set(k, []);
-        byKey.get(k)!.push(s);
-      }
-      for (const k of Array.from(byKey.keys()).sort()) {
-        const items = (byKey.get(k) ?? []).sort((a, b) => a.start_time.localeCompare(b.start_time));
-        rows.push({
-          dayNum: null,
-          dateLabel: k === 'unknown' ? 'Unknown date' : formatDateKeyForDisplay(k),
-          dateKey: k,
-          items,
-        });
-      }
-    }
-
-    return rows;
+  const dayOptions = useMemo(() => {
+    return buildAgendaDayRows(sessions, event?.start_date, event?.end_date).map((row) => ({
+      dateKey: row.dateKey,
+      label: row.dateLabel,
+      dayNum: row.dayNum,
+      count: row.items.length,
+    }));
   }, [sessions, event?.start_date, event?.end_date]);
+
+  const sessionTypesInEvent = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of sessions) {
+      for (const t of normalizeSessionTypesList(s.session_type)) set.add(t);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [sessions]);
+
+  const roomOptions = useMemo(() => {
+    const set = new Set<string>();
+    for (const s of sessions) {
+      const label = [s.room, s.location].filter(Boolean).join(', ').trim();
+      if (label) set.add(label);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [sessions]);
+
+  const filteredSessions = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return sessions.filter((s) => {
+      if (dayFilter !== 'all') {
+        const key = getSessionDateKeyFromIso(s.start_time);
+        if (key !== dayFilter) return false;
+      }
+      if (typeFilter !== 'all') {
+        if (!normalizeSessionTypesList(s.session_type).includes(typeFilter)) return false;
+      }
+      if (roomFilter !== 'all') {
+        const place = [s.room, s.location].filter(Boolean).join(', ').trim();
+        if (place !== roomFilter) return false;
+      }
+      if (statusFilter === 'ratings_off' && s.ratings_enabled !== false) return false;
+      if (statusFilter === 'check_in_hidden' && s.check_in_enabled !== false) return false;
+      if (q) {
+        const hay = [
+          s.title,
+          s.description,
+          s.room,
+          s.location,
+          formatSessionSpeakersLine(s),
+          formatTime12FromISO(s.start_time),
+          formatTime12FromISO(s.end_time),
+          ...normalizeSessionTypesList(s.session_type),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [sessions, searchQuery, dayFilter, typeFilter, roomFilter, statusFilter]);
+
+  const sessionsByDay = useMemo(
+    () =>
+      buildAgendaDayRows(filteredSessions, event?.start_date, event?.end_date).filter(
+        (row) => row.items.length > 0
+      ),
+    [filteredSessions, event?.start_date, event?.end_date]
+  );
+
+  const hasActiveFilters =
+    searchQuery.trim() !== '' ||
+    dayFilter !== 'all' ||
+    typeFilter !== 'all' ||
+    roomFilter !== 'all' ||
+    statusFilter !== 'all';
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setDayFilter('all');
+    setTypeFilter('all');
+    setRoomFilter('all');
+    setStatusFilter('all');
+  };
+
+  const formatTypeLabel = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
   if (loading) return <div className={styles.loading}>Loading…</div>;
 
@@ -1137,110 +1127,232 @@ export default function Schedule() {
         <Link to={`/events/${eventId}`} className={styles.back}>← Event</Link>
       </div>
       <h1>Schedule — {event?.name ?? 'Event'}</h1>
-      <p className={styles.hint}>
-        First row should be <strong>headers</strong> (any sensible names—Date, Start time, Room, etc.—or use Download template). Columns can be in any order.
-        Dates <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code> (Excel), times <code>HH:MM</code> (24h). From Excel use <strong>Save As → CSV UTF-8</strong>; commas inside title/description are handled when the file is valid CSV.
-        Up to <strong>five speakers</strong> per row: <code>speaker_name</code> / <code>speaker_title</code> / <code>speaker_company</code>, then{' '}
-        <code>speaker_2_name</code>…<code>speaker_5_company</code> (optional—see template).
-        <strong>Older spreadsheets</strong> with only two speakers (15 columns before <code>location</code>) still import: we detect that layout when a 24-column positional parse would put dates in the wrong place.
-        Day groupings match the mobile app: set the event&apos;s <strong>start</strong> and <strong>end</strong> dates so each agenda day lines up.
-      </p>
-      <div className={styles.toolbar}>
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv,text/csv"
-          onChange={handleFileChange}
-          style={{ display: 'none' }}
-        />
-        <button
-          type="button"
-          disabled={importing || deletingAll}
-          className={styles.importBtn}
-          onClick={() => fileInputRef.current?.click()}
+      {notificationsPausedActive ? (
+        <p className={styles.mutedBanner}>
+          <strong>Notifications paused</strong> for this event — single session edits will not send push or in-app alerts until you unmute on the{' '}
+          <Link to={`/events/${eventId}`}>event page</Link>.
+        </p>
+      ) : null}
+      {sessionNotifyNote ? (
+        <p className={styles.notifyNote} role="status">
+          {sessionNotifyNote}
+        </p>
+      ) : null}
+      <section className={styles.importSection}>
+        <h2 className={styles.importSectionTitle}>Import sessions from CSV</h2>
+        <p className={styles.hint}>
+          Upload a CSV file to add multiple sessions at once. This is the fastest way to populate your schedule.
+        </p>
+        <details
+          className={styles.csvHelpDetails}
+          onToggle={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
         >
-          {importing ? 'Importing…' : 'Import CSV (batch)'}
-        </button>
-        <button
-          type="button"
-          disabled={importing || addingSession || deletingAll}
-          className={styles.importBtn}
-          onClick={openAdd}
-          title="Add a single session (no CSV)"
-        >
-          Add session
-        </button>
-        <button
-          type="button"
-          disabled={deletingAll}
-          className={styles.templateBtn}
-          onClick={() => {
-            const eventStart = event?.start_date ?? new Date().toISOString().slice(0, 10);
-            const rowValues = [
-              'Opening Keynote',
-              'Welcome session',
-              'Speaker Name',
-              'CEO',
-              'Company Inc',
-              'Jane Doe',
-              'VP of Strategy',
-              'Second Company',
-              ...Array(9).fill(''),
-              'Main Hall',
-              '101',
-              eventStart,
-              '09:00',
-              eventStart,
-              '10:00',
-              'keynote',
-            ];
-            const row = rowValues.map((c) => (/[",\n]/.test(c) ? `"${String(c).replace(/"/g, '""')}"` : c)).join(',');
-            const csv = [CSV_HEADERS.join(','), row].join('\n');
-            const blob = new Blob([csv], { type: 'text/csv' });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = 'session-template.csv';
-            a.click();
-            URL.revokeObjectURL(url);
-          }}
-        >
-          Download template
-        </button>
-        <button
-          type="button"
-          className={styles.deleteAllBtn}
-          disabled={
-            sessions.length === 0 ||
-            importing ||
-            deletingAll ||
-            savingEdit ||
-            savingAdd ||
-            addingSession ||
-            !!editingSession
-          }
-          title="Remove every session for this event"
-          onClick={() => void handleDeleteAllSessions()}
-        >
-          {deletingAll ? 'Deleting…' : 'Delete all sessions'}
-        </button>
-      </div>
-      {importResult && (
-        <div className={styles.result}>
-          <strong>Import result:</strong> {importResult.added} added, {importResult.failed} failed.
-          {importResult.errors.length > 0 && (
-            <ul className={styles.errorList}>
-              {importResult.errors.map((msg, i) => (
-                <li key={i}>{msg}</li>
-              ))}
-              {importResult.errors.length >= 20 && <li>…and more</li>}
+          <summary className={styles.csvHelpSummary} onClick={(e) => e.stopPropagation()}>
+            How to prepare your CSV
+          </summary>
+          <div className={styles.csvHelpBody}>
+            <p>
+              Don&apos;t change the column headers in the template. Just download it and fill in your session data.
+              Column headers are already set up correctly.
+            </p>
+            <ul>
+              <li>
+                Dates: <code>YYYY-MM-DD</code> | Times: <code>HH:MM</code> (24-hour format)
+              </li>
+              <li>
+                Times are in your event&apos;s timezone. If you change the timezone later, times auto-adjust—no
+                re-import needed.
+              </li>
+              <li>
+                Save as <strong>CSV UTF-8</strong> from Excel to avoid issues.
+              </li>
             </ul>
-          )}
+          </div>
+        </details>
+        <div className={styles.importToolbar}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleFileChange}
+            style={{ display: 'none' }}
+          />
+          <button
+            type="button"
+            disabled={deletingAll}
+            className={styles.templateBtn}
+            onClick={() => {
+              const eventStart = event?.start_date ?? new Date().toISOString().slice(0, 10);
+              const rowValues = [
+                'Opening Keynote',
+                'Welcome session',
+                'Speaker Name',
+                'CEO',
+                'Company Inc',
+                'Jane Doe',
+                'VP of Strategy',
+                'Second Company',
+                ...Array(9).fill(''),
+                'Main Hall',
+                '101',
+                eventStart,
+                '09:00',
+                eventStart,
+                '10:00',
+                'keynote',
+              ];
+              const row = rowValues
+                .map((c) => (/[",\n]/.test(c) ? `"${String(c).replace(/"/g, '""')}"` : c))
+                .join(',');
+              const csv = [CSV_HEADERS.join(','), row].join('\n');
+              const blob = new Blob([csv], { type: 'text/csv' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'session-template.csv';
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            Download CSV template
+          </button>
+          <button
+            type="button"
+            disabled={importing || deletingAll}
+            className={styles.importBtn}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            {importing ? 'Importing…' : 'Upload CSV and import'}
+          </button>
+          <button
+            type="button"
+            disabled={importing || addingSession || deletingAll}
+            className={styles.importBtn}
+            onClick={openAdd}
+            title="Add a single session (no CSV)"
+          >
+            Add session
+          </button>
+          <Link className={styles.templateBtn} to={`/events/${eventId}/agenda-print`}>
+            Printable agenda
+          </Link>
+          <button
+            type="button"
+            className={styles.deleteAllBtn}
+            disabled={
+              sessions.length === 0 ||
+              importing ||
+              deletingAll ||
+              savingEdit ||
+              savingAdd ||
+              addingSession ||
+              !!editingSession
+            }
+            title="Remove every session for this event"
+            onClick={() => void handleDeleteAllSessions()}
+          >
+            {deletingAll ? 'Deleting…' : 'Delete all sessions'}
+          </button>
         </div>
-      )}
+        {importResult && (
+          <div className={styles.result}>
+            <strong>Import result:</strong> {importResult.added} added, {importResult.failed} failed.
+            {importResult.errors.length > 0 && (
+              <ul className={styles.errorList}>
+                {importResult.errors.map((msg, i) => (
+                  <li key={i}>{msg}</li>
+                ))}
+                {importResult.errors.length >= 20 && <li>…and more</li>}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
       <h2 className={styles.listTitle}>Sessions ({sessions.length})</h2>
+      {sessions.length > 0 ? (
+        <>
+          <div className={styles.filterPanel}>
+            <input
+              className={styles.searchInput}
+              type="search"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search title, speaker, room, location, or type…"
+              aria-label="Search sessions"
+            />
+            <div className={styles.filterRow}>
+              <select
+                className={styles.filterSelect}
+                value={dayFilter}
+                onChange={(e) => setDayFilter(e.target.value)}
+                aria-label="Filter by day"
+              >
+                <option value="all">All days</option>
+                {dayOptions.map((d) => (
+                  <option key={d.dateKey} value={d.dateKey}>
+                    {d.dayNum != null ? `Day ${d.dayNum} — ${d.label}` : d.label} ({d.count})
+                  </option>
+                ))}
+              </select>
+              <select
+                className={styles.filterSelect}
+                value={typeFilter}
+                onChange={(e) => setTypeFilter(e.target.value)}
+                aria-label="Filter by session type"
+              >
+                <option value="all">All types</option>
+                {sessionTypesInEvent.map((t) => (
+                  <option key={t} value={t}>
+                    {formatTypeLabel(t)}
+                  </option>
+                ))}
+              </select>
+              {roomOptions.length > 0 ? (
+                <select
+                  className={styles.filterSelect}
+                  value={roomFilter}
+                  onChange={(e) => setRoomFilter(e.target.value)}
+                  aria-label="Filter by room or location"
+                >
+                  <option value="all">All rooms</option>
+                  {roomOptions.map((r) => (
+                    <option key={r} value={r}>
+                      {r}
+                    </option>
+                  ))}
+                </select>
+              ) : null}
+              <select
+                className={styles.filterSelect}
+                value={statusFilter}
+                onChange={(e) =>
+                  setStatusFilter(e.target.value as 'all' | 'ratings_off' | 'check_in_hidden')
+                }
+                aria-label="Filter by session options"
+              >
+                <option value="all">All options</option>
+                <option value="ratings_off">Ratings off</option>
+                <option value="check_in_hidden">Check-in hidden</option>
+              </select>
+              {hasActiveFilters ? (
+                <button type="button" className={styles.clearFiltersBtn} onClick={clearFilters}>
+                  Clear filters
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <p className={styles.resultSummary}>
+            Showing {filteredSessions.length} of {sessions.length} session
+            {sessions.length === 1 ? '' : 's'}
+            {hasActiveFilters ? ' (filtered)' : ''}
+          </p>
+        </>
+      ) : null}
       {sessions.length === 0 ? (
         <p className={styles.empty}>No sessions yet. Import a CSV or add them in the mobile app.</p>
+      ) : filteredSessions.length === 0 ? (
+        <p className={styles.empty}>No sessions match your filters. Try clearing filters or changing your search.</p>
       ) : (
         <div className={styles.dayGroups}>
           {sessionsByDay.map(({ dayNum, dateLabel, dateKey, items }) => (
@@ -1267,6 +1379,9 @@ export default function Schedule() {
                       {formatSessionSpeakersLine(s) ? ` · ${formatSessionSpeakersLine(s)}` : ''}
                       {s.location ? ` · ${s.location}` : ''}
                       {s.ratings_enabled === false ? <span className={styles.ratingsOffBadge}> · Ratings off</span> : null}
+                      {s.check_in_enabled === false ? (
+                        <span className={styles.ratingsOffBadge}> · Check-in hidden</span>
+                      ) : null}
                     </span>
                     <div className={styles.itemActions}>
                       <button type="button" className={`${styles.itemBtn} ${styles.itemBtnEdit}`} onClick={() => openEdit(s)}>
@@ -1442,6 +1557,17 @@ export default function Schedule() {
                 />
                 <span>Allow session ratings in the app (1–5 stars and optional feedback). Uncheck for breaks, meals, or non-rated sessions.</span>
               </label>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={editForm.check_in_enabled}
+                  onChange={(e) => setEditForm((f) => ({ ...f, check_in_enabled: e.target.checked }))}
+                />
+                <span>
+                  Include in Session check-in (mobile app). Uncheck for breaks, meals, or sessions that do not need room
+                  attendance.
+                </span>
+              </label>
               <button type="submit" className={styles.importBtn} disabled={savingEdit}>
                 {savingEdit ? 'Saving…' : 'Save'}
               </button>
@@ -1613,6 +1739,17 @@ export default function Schedule() {
                   onChange={(e) => setAddForm((f) => ({ ...f, ratings_enabled: e.target.checked }))}
                 />
                 <span>Allow session ratings in the app (1–5 stars and optional feedback). Uncheck for breaks, meals, or non-rated sessions.</span>
+              </label>
+              <label className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={addForm.check_in_enabled}
+                  onChange={(e) => setAddForm((f) => ({ ...f, check_in_enabled: e.target.checked }))}
+                />
+                <span>
+                  Include in Session check-in (mobile app). Uncheck for breaks, meals, or sessions that do not need room
+                  attendance.
+                </span>
               </label>
 
               <button type="submit" className={styles.importBtn} disabled={savingAdd}>

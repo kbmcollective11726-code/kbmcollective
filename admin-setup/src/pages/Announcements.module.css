@@ -1,5 +1,6 @@
 .page {
-  max-width: 640px;
+  max-width: var(--page-max-content);
+  width: 100%;
 }
 
 .head {
@@ -35,6 +36,17 @@
   margin: 0 0 16px;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+.mutedBanner {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .form {
@@ -288,9 +300,44 @@
   margin-bottom: 4px;
 }
 
+.itemBody {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--color-text);
+  white-space: pre-wrap;
+}
+
 .itemMeta {
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+.schedulePreview {
+  margin: -4px 0 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.statusPending,
+.statusSent {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+
+.statusPending {
+  background: rgba(245, 158, 11, 0.18);
+  color: #b45309;
+}
+
+.statusSent {
+  background: #dcfce7;
+  color: #166534;
 }
 
 .empty {

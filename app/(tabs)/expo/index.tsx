@@ -14,15 +14,27 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from '@react-navigation/native';
-import { Store, MapPin, ChevronRight, Calendar, Users, Star } from 'lucide-react-native';
-import { format, parseISO, isPast } from 'date-fns';
+import { Store, MapPin, ChevronRight, Calendar, Users, Star, History } from 'lucide-react-native';
+import {
+  isB2BSlotPastWallClock,
+  sessionInstantOnEventDayLocal,
+  getSessionDateKeyFromIso,
+  parseSessionDate,
+} from '../../../lib/scheduleNowNext';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
+import { effectiveIsEventAdmin as computeEffectiveEventAdmin, effectiveIsVendorRep as computeEffectiveVendorRep } from '../../../lib/rolePreview';
 import { supabase, supabaseStorage } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import { scheduleMeetingReminders, cancelAllMeetingReminders } from '../../../lib/meetingReminders';
 import Avatar from '../../../components/Avatar';
+import MeetingRepresentatives from '../../../components/MeetingRepresentatives';
 import type { VendorBooth } from '../../../lib/types';
+import { fetchRepresentativesByBoothIds, type BoothRepresentative } from '../../../lib/vendorBoothReps';
+import { formatB2BSlotRangeWallClock } from '../../../lib/b2bEventTime';
+import { fetchVendorPriorInteractionFlags, type VendorPriorInteractionFlag } from '../../../lib/vendorAttendeeBrief';
+import VendorAttendeeBriefModal from '../../../components/VendorAttendeeBriefModal';
 
 export type RepMeetingAttendee = {
   id: string;
@@ -34,16 +46,11 @@ export type RepMeetingAttendee = {
   meetingTimes: { start: string; end: string; bookingId: string }[];
 };
 
-export type BoothWithMeeting = VendorBooth & { meetingStart?: string; meetingEnd?: string; meetingSlotId?: string };
-
-type VendorMeetingAttendanceRow = {
-  id: string;
-  subject_user_id: string;
-  meeting_booking_id: string;
-  attended_meeting: boolean;
-  note: string;
-  meeting_label?: string | null;
-  updated_at: string;
+export type BoothWithMeeting = VendorBooth & {
+  meetingStart?: string;
+  meetingEnd?: string;
+  meetingSlotId?: string;
+  representatives?: BoothRepresentative[];
 };
 
 type VendorAttendeeBadgeTokenRow = {
@@ -51,55 +58,36 @@ type VendorAttendeeBadgeTokenRow = {
   token: string;
 };
 
-function formatMeetingTime(start: string, end: string): string {
-  try {
-    const s = parseISO(start.replace(' ', 'T'));
-    const e = parseISO(end.replace(' ', 'T'));
-    return `${format(s, 'EEE, MMM d · h:mm a')} – ${format(e, 'h:mm a')}`;
-  } catch {
-    return `${start} – ${end}`;
-  }
-}
-
-/** Prefer slot times on device TZ; `meeting_label` from RPC uses Postgres `to_char` (often UTC). */
-function formatVendorAttendanceMeetingLine(
-  row: VendorMeetingAttendanceRow,
-  attendee: RepMeetingAttendee
-): string {
-  const bid = row.meeting_booking_id;
-  const slot = bid ? attendee.meetingTimes.find((t) => t.bookingId === bid) : undefined;
-  if (slot?.start && slot?.end) {
-    const raw = (row.meeting_label || '').trim();
-    const vendorPart = raw.includes(' · ') ? raw.split(' · ')[0].trim() : '';
-    const timePart = formatMeetingTime(slot.start, slot.end);
-    if (vendorPart) return `${vendorPart} · ${timePart}`;
-    return timePart;
-  }
-  return (row.meeting_label || '').trim() || 'General visit';
-}
-
-function toTimeMs(value: string): number {
-  try {
-    return parseISO(value.replace(' ', 'T')).getTime();
-  } catch {
-    return NaN;
-  }
+function toTimeMs(value: string, eventIanaZone?: string | null): number {
+  const start = parseSessionDate(value);
+  const dateKey = getSessionDateKeyFromIso(value);
+  if (!start || !dateKey) return NaN;
+  return sessionInstantOnEventDayLocal(start, dateKey, eventIanaZone)?.getTime() ?? NaN;
 }
 
 export default function ExpoScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { previewRole, isPlatformAdmin } = useRolePreviewContext();
   const [booths, setBooths] = useState<BoothWithMeeting[]>([]);
   const [ratedMeetingSlotIds, setRatedMeetingSlotIds] = useState<Set<string>>(new Set());
   const [repAttendees, setRepAttendees] = useState<RepMeetingAttendee[]>([]);
-  const [repAttendanceByAttendee, setRepAttendanceByAttendee] = useState<Record<string, VendorMeetingAttendanceRow[]>>({});
   const [repBadgeTokensByAttendee, setRepBadgeTokensByAttendee] = useState<Record<string, string>>({});
+  const [repNotesByAttendee, setRepNotesByAttendee] = useState<Record<string, string>>({});
+  const [priorFlags, setPriorFlags] = useState<Map<string, VendorPriorInteractionFlag>>(new Map());
+  const [briefModalVisible, setBriefModalVisible] = useState(false);
+  const [briefSubjectId, setBriefSubjectId] = useState<string | null>(null);
+  const [briefName, setBriefName] = useState('');
+  const [briefMeetings, setBriefMeetings] = useState<{ start: string; end: string }[]>([]);
   const [isVendorRep, setIsVendorRep] = useState(false);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
+  const effectiveIsEventAdmin = computeEffectiveEventAdmin(isEventAdmin, isPlatformAdmin, previewRole);
+  const eventTz = currentEvent?.reminder_timezone;
+  const vendorBriefEnabled = currentEvent?.vendor_brief_enabled !== false;
 
   const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
     const repsRes = await client
@@ -118,28 +106,6 @@ export default function ExpoScreen() {
       .eq('contact_user_id', uid);
     return (legacy.data ?? []).map((b: { id: string }) => b.id);
   }, []);
-
-  const loadVendorRepAttendance = useCallback(
-    async (eventId: string, attendeeIds: string[], client: typeof supabase) => {
-      const { data, error } = await client.rpc('list_vendor_meeting_attendance_for_event', {
-        p_event_id: eventId,
-        p_subject_ids: attendeeIds,
-      });
-      if (error) throw error;
-      const pack = data as { rows?: VendorMeetingAttendanceRow[]; error?: string } | null;
-      if (pack?.error) throw new Error(pack.error);
-      const rows = Array.isArray(pack?.rows) ? pack.rows : [];
-      const map: Record<string, VendorMeetingAttendanceRow[]> = {};
-      for (const row of rows) {
-        if (!row?.subject_user_id) continue;
-        const arr = map[row.subject_user_id] ?? [];
-        arr.push(row);
-        map[row.subject_user_id] = arr;
-      }
-      setRepAttendanceByAttendee(map);
-    },
-    []
-  );
 
   const loadVendorRepBadgeTokens = useCallback(
     async (eventId: string, attendeeIds: string[], client: typeof supabase) => {
@@ -161,11 +127,36 @@ export default function ExpoScreen() {
     []
   );
 
+  const loadVendorRepNotes = useCallback(
+    async (eventId: string, attendeeIds: string[], scannerUserId: string, client: typeof supabase) => {
+      if (attendeeIds.length === 0) {
+        setRepNotesByAttendee({});
+        return;
+      }
+      const { data, error } = await client
+        .from('badge_scans')
+        .select('subject_user_id, note')
+        .eq('event_id', eventId)
+        .eq('scanner_user_id', scannerUserId)
+        .in('subject_user_id', attendeeIds);
+      if (error) throw error;
+      const map: Record<string, string> = {};
+      for (const row of data ?? []) {
+        const r = row as { subject_user_id?: string; note?: string | null };
+        if (!r.subject_user_id) continue;
+        const text = typeof r.note === 'string' ? r.note.trim() : '';
+        if (text) map[r.subject_user_id] = text;
+      }
+      setRepNotesByAttendee(map);
+    },
+    []
+  );
+
   const fetchBooths = useCallback(async () => {
     if (!currentEvent?.id) {
       setBooths([]);
-      setRepAttendanceByAttendee({});
       setRepBadgeTokensByAttendee({});
+      setRepNotesByAttendee({});
       setLoading(false);
       setError(null);
       return;
@@ -188,13 +179,14 @@ export default function ExpoScreen() {
         const row = roleDataRes.data as { role?: string; roles?: string[] } | null;
         const roles = Array.isArray(row?.roles) ? row.roles : [];
         const role = row?.role ?? roles[0] ?? '';
-        const isEventAdmin =
-          user?.is_platform_admin === true ||
+        const realEventAdmin =
           role === 'admin' ||
           role === 'super_admin' ||
           roles.includes('admin') ||
           roles.includes('super_admin');
-        const isVendorRep = repBoothIds.length > 0;
+        const isEventAdmin =
+          computeEffectiveEventAdmin(realEventAdmin, isPlatformAdmin, previewRole);
+        const isVendorRep = computeEffectiveVendorRep(repBoothIds.length > 0, isPlatformAdmin, previewRole);
 
         if (isVendorRep && !isEventAdmin) {
           setIsVendorRep(true);
@@ -207,8 +199,6 @@ export default function ExpoScreen() {
           if (slotIds.length === 0) {
             setBooths([]);
             setRepAttendees([]);
-            setRepAttendanceByAttendee({});
-            setRepBadgeTokensByAttendee({});
             list = [];
           } else {
             const { data: bookingsData } = await client
@@ -230,8 +220,6 @@ export default function ExpoScreen() {
             if (attendeeIds.length === 0) {
               setBooths([]);
               setRepAttendees([]);
-              setRepAttendanceByAttendee({});
-              setRepBadgeTokensByAttendee({});
               list = [];
             } else {
               const { data: usersData } = await client
@@ -280,8 +268,15 @@ export default function ExpoScreen() {
               setBooths([]);
               setRepAttendees(attendees);
               await Promise.all([
-                loadVendorRepAttendance(currentEvent.id, attendeeIds, client),
                 loadVendorRepBadgeTokens(currentEvent.id, attendeeIds, client),
+                user?.id
+                  ? loadVendorRepNotes(currentEvent.id, attendeeIds, user.id, client)
+                  : Promise.resolve(),
+                currentEvent.vendor_brief_enabled !== false
+                  ? fetchVendorPriorInteractionFlags(currentEvent.id, attendeeIds, client)
+                      .then(setPriorFlags)
+                      .catch(() => setPriorFlags(new Map()))
+                  : Promise.resolve(setPriorFlags(new Map())),
               ]);
             }
             list = [];
@@ -289,8 +284,8 @@ export default function ExpoScreen() {
         } else {
           setIsVendorRep(false);
           setRepAttendees([]);
-          setRepAttendanceByAttendee({});
           setRepBadgeTokensByAttendee({});
+          setRepNotesByAttendee({});
         }
         if (!isVendorRep || isEventAdmin) {
         if (!isEventAdmin) {
@@ -337,12 +332,16 @@ export default function ExpoScreen() {
             // Attendee view: upcoming/live first (earliest first), past meetings at the bottom.
             .sort((a, b) => {
               const now = Date.now();
-              const aStartMs = a.meetingStart ? Date.parse(a.meetingStart.replace(' ', 'T')) : Number.NaN;
-              const bStartMs = b.meetingStart ? Date.parse(b.meetingStart.replace(' ', 'T')) : Number.NaN;
-              const aEndMs = a.meetingEnd ? Date.parse(a.meetingEnd.replace(' ', 'T')) : Number.NaN;
-              const bEndMs = b.meetingEnd ? Date.parse(b.meetingEnd.replace(' ', 'T')) : Number.NaN;
-              const aIsPast = Number.isFinite(aEndMs) ? aEndMs < now : true;
-              const bIsPast = Number.isFinite(bEndMs) ? bEndMs < now : true;
+              const aStartMs = a.meetingStart ? toTimeMs(a.meetingStart, eventTz) : Number.NaN;
+              const bStartMs = b.meetingStart ? toTimeMs(b.meetingStart, eventTz) : Number.NaN;
+              const aEndMs = a.meetingEnd && a.meetingStart
+                ? (isB2BSlotPastWallClock(a.meetingStart, a.meetingEnd, eventTz) ? 0 : 1)
+                : 1;
+              const bEndMs = b.meetingEnd && b.meetingStart
+                ? (isB2BSlotPastWallClock(b.meetingStart, b.meetingEnd, eventTz) ? 0 : 1)
+                : 1;
+              const aIsPast = aEndMs === 0;
+              const bIsPast = bEndMs === 0;
 
               if (aIsPast !== bIsPast) return aIsPast ? 1 : -1;
 
@@ -390,8 +389,8 @@ export default function ExpoScreen() {
       } else {
         setIsVendorRep(false);
         setRepAttendees([]);
-        setRepAttendanceByAttendee({});
         setRepBadgeTokensByAttendee({});
+        setRepNotesByAttendee({});
         setRatedMeetingSlotIds(new Set());
         const { data: boothData, error: e } = await client
           .from('vendor_booths')
@@ -403,20 +402,37 @@ export default function ExpoScreen() {
         list = (boothData ?? []) as BoothWithMeeting[];
       }
 
+      if (list.length > 0) {
+        const repMap = await fetchRepresentativesByBoothIds(
+          list.map((b) => ({ id: b.id, contact_user_id: b.contact_user_id })),
+          client
+        );
+        list = list.map((b) => ({ ...b, representatives: repMap.get(b.id) ?? [] }));
+      }
+
       setBooths(list);
     } catch (err) {
       console.error('Expo fetch error:', err);
       setBooths([]);
       setRepAttendees([]);
-      setRepAttendanceByAttendee({});
       setRepBadgeTokensByAttendee({});
+      setRepNotesByAttendee({});
       setIsVendorRep(false);
       setError(err instanceof Error ? err.message : 'Could not load booths.');
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentEvent?.id, user?.id, fetchRepBoothIds, loadVendorRepAttendance, loadVendorRepBadgeTokens]);
+  }, [
+    currentEvent?.id,
+    currentEvent?.reminder_timezone,
+    user?.id,
+    isPlatformAdmin,
+    previewRole,
+    fetchRepBoothIds,
+    loadVendorRepBadgeTokens,
+    loadVendorRepNotes,
+  ]);
 
   // Like Info: load on mount and on focus. No timeout so first try can complete.
   useEffect(() => {
@@ -455,11 +471,8 @@ export default function ExpoScreen() {
     );
   }, [booths]);
 
-  const isBoothMeetingPast = (b: BoothWithMeeting) => {
-    if (!b.meetingEnd) return false;
-    const endMs = Date.parse(b.meetingEnd.replace(' ', 'T'));
-    return Number.isFinite(endMs) ? endMs < Date.now() : false;
-  };
+  const isBoothMeetingPast = (b: BoothWithMeeting) =>
+    !!(b.meetingStart && b.meetingEnd && isB2BSlotPastWallClock(b.meetingStart, b.meetingEnd, eventTz));
 
   useEffect(() => {
     if (!user?.id || !currentEvent?.id) return;
@@ -474,7 +487,12 @@ export default function ExpoScreen() {
       const row = data as { role?: string; roles?: string[] } | null;
       const role = row?.role ?? '';
       const roles = Array.isArray(row?.roles) ? row.roles : [];
-      setIsEventAdmin(user?.is_platform_admin === true || role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin'));
+      const realEventAdmin =
+        role === 'admin' ||
+        role === 'super_admin' ||
+        roles.includes('admin') ||
+        roles.includes('super_admin');
+      setIsEventAdmin(realEventAdmin);
     })();
   }, [user?.id, currentEvent?.id]);
 
@@ -487,6 +505,24 @@ export default function ExpoScreen() {
     if (!url?.trim()) return;
     const u = url.startsWith('http') ? url : `https://${url}`;
     Linking.openURL(u).catch(() => {});
+  };
+
+  const openAttendeeBrief = (
+    attendeeId: string,
+    attendeeName?: string | null,
+    meetingTimes?: { start: string; end: string }[]
+  ) => {
+    setBriefSubjectId(attendeeId);
+    setBriefName(attendeeName ?? '');
+    setBriefMeetings(meetingTimes ?? []);
+    setBriefModalVisible(true);
+  };
+
+  const closeBriefModal = () => {
+    setBriefModalVisible(false);
+    setBriefSubjectId(null);
+    setBriefName('');
+    setBriefMeetings([]);
   };
 
   if (!currentEvent) {
@@ -515,7 +551,7 @@ export default function ExpoScreen() {
     const nowMs = Date.now();
     const isAttendeeUpcoming = (attendee: RepMeetingAttendee) =>
       attendee.meetingTimes.some((t) => {
-        const endMs = toTimeMs(t.end);
+        const endMs = toTimeMs(t.end, eventTz);
         return Number.isFinite(endMs) && endMs >= nowMs;
       });
 
@@ -556,9 +592,6 @@ export default function ExpoScreen() {
               <View style={s.repHeader}>
                 <Text style={s.repTitle}>People you're meeting with</Text>
                 <Text style={s.repSubtitle}>{repAttendees.length} {repAttendees.length === 1 ? 'person' : 'people'} signed up</Text>
-                <Text style={s.repSubtitle}>
-                  {Object.keys(repAttendanceByAttendee).length} scanned
-                </Text>
               </View>
             }
             renderItem={({ item }) => {
@@ -570,65 +603,59 @@ export default function ExpoScreen() {
                 );
               }
               const attendee = item.attendee;
-              const attendanceRows = repAttendanceByAttendee[attendee.id] ?? [];
               const attendeeToken = repBadgeTokensByAttendee[attendee.id];
+              const savedNote = repNotesByAttendee[attendee.id]?.trim() ?? '';
+              const flag = priorFlags.get(attendee.id);
+              const metBefore = vendorBriefEnabled && !!flag && (flag.prior_meetings_count + flag.prior_notes_count) > 0;
+              const openLeadNotes = () => {
+                if (!attendeeToken) return;
+                router.push(
+                  `/(tabs)/profile/badge-scan?t=${encodeURIComponent(attendeeToken)}&from=${encodeURIComponent('/(tabs)/expo')}` as any
+                );
+              };
               return (
                 <TouchableOpacity
                   style={s.attendeeCard}
                   activeOpacity={0.7}
-                  onPress={() => router.push(`/(tabs)/feed/user/${attendee.id}?from=${encodeURIComponent('/(tabs)/expo')}` as any)}
+                  onPress={() => openAttendeeBrief(attendee.id, attendee.full_name, attendee.meetingTimes)}
                 >
                   <Avatar uri={attendee.avatar_url} name={attendee.full_name} size={48} />
                   <View style={s.attendeeBody}>
                     <Text style={s.attendeeName} numberOfLines={1}>{attendee.full_name || 'Unknown'}</Text>
+                    {metBefore ? (
+                      <View style={s.metBeforeChip}>
+                        <History size={12} color={colors.primary} />
+                        <Text style={s.metBeforeChipText} numberOfLines={1}>
+                          Prior interaction{flag?.last_event_name ? ` · ${flag.last_event_name}` : ''}
+                        </Text>
+                      </View>
+                    ) : null}
                     {attendee.company ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.company}</Text> : null}
                     {attendee.title ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.title}</Text> : null}
                     {attendee.meetingTimes.length > 0 ? (
                       <View style={s.attendeeTimes}>
                         {attendee.meetingTimes.slice(0, 2).map((t, i) => (
-                          <Text key={i} style={s.attendeeTime}>{formatMeetingTime(t.start, t.end)}</Text>
+                          <Text key={i} style={s.attendeeTime}>{formatB2BSlotRangeWallClock(t.start, t.end)}</Text>
                         ))}
                         {attendee.meetingTimes.length > 2 ? <Text style={s.attendeeTime}>+{attendee.meetingTimes.length - 2} more</Text> : null}
                       </View>
                     ) : null}
+                    {savedNote ? (
+                      <Text style={s.savedNotePreview} numberOfLines={2}>
+                        {savedNote}
+                      </Text>
+                    ) : null}
                     {attendeeToken ? (
                       <TouchableOpacity
-                        style={s.markAttendanceLink}
-                        onPress={() =>
-                          router.push(
-                            `/(tabs)/profile/badge-scan?t=${encodeURIComponent(attendeeToken)}&from=${encodeURIComponent('/(tabs)/expo')}` as any
-                          )
-                        }
+                        style={s.notesLink}
+                        onPress={(e) => {
+                          e.stopPropagation?.();
+                          openLeadNotes();
+                        }}
                       >
-                        <Text style={s.markAttendanceLinkText}>Mark attendance</Text>
+                        <Text style={s.notesLinkText}>{savedNote ? 'Edit notes' : 'Add notes'}</Text>
                       </TouchableOpacity>
                     ) : null}
-                    {attendanceRows.length > 0 ? (
-                      <View style={s.scanSummaryWrap}>
-                        {attendanceRows.slice(0, 2).map((row) => (
-                          <View key={row.id} style={s.scanRow}>
-                            <View style={[s.scanPill, row.attended_meeting ? s.scanPillAttended : s.scanPillNoShow]}>
-                              <Text style={[s.scanPillText, row.attended_meeting ? s.scanPillTextAttended : s.scanPillTextNoShow]}>
-                                {row.attended_meeting ? 'Attended' : 'No-show'}
-                              </Text>
-                            </View>
-                            <Text style={s.scanMeta} numberOfLines={1}>
-                              {formatVendorAttendanceMeetingLine(row, attendee)}
-                            </Text>
-                            {row.note?.trim() ? (
-                              <Text style={s.scanNote} numberOfLines={2}>
-                                {row.note.trim()}
-                              </Text>
-                            ) : null}
-                          </View>
-                        ))}
-                        {attendanceRows.length > 2 ? (
-                          <Text style={s.scanMeta}>+{attendanceRows.length - 2} more saved</Text>
-                        ) : null}
-                      </View>
-                    ) : (
-                      <Text style={s.scanNotRecorded}>Not scanned yet</Text>
-                    )}
                   </View>
                   <ChevronRight size={22} color={colors.textMuted} strokeWidth={2} />
                 </TouchableOpacity>
@@ -636,6 +663,37 @@ export default function ExpoScreen() {
             }}
           />
         )}
+        <VendorAttendeeBriefModal
+          visible={briefModalVisible}
+          onClose={closeBriefModal}
+          eventId={currentEvent?.id}
+          subjectUserId={briefSubjectId}
+          subjectName={briefName}
+          subjectTitle={repAttendees.find((a) => a.id === briefSubjectId)?.title ?? null}
+          subjectCompany={repAttendees.find((a) => a.id === briefSubjectId)?.company ?? null}
+          meetings={briefMeetings}
+          enableNotes
+          showPriorInteractions={vendorBriefEnabled}
+          initialNote={briefSubjectId ? repNotesByAttendee[briefSubjectId] ?? '' : ''}
+          onNoteSaved={(note) => {
+            if (!briefSubjectId) return;
+            setRepNotesByAttendee((prev) => {
+              const next = { ...prev };
+              if (note) next[briefSubjectId] = note;
+              else delete next[briefSubjectId];
+              return next;
+            });
+          }}
+          onViewProfile={
+            briefSubjectId
+              ? () => {
+                  const id = briefSubjectId;
+                  closeBriefModal();
+                  router.push(`/(tabs)/feed/user/${id}?from=${encodeURIComponent('/(tabs)/expo')}` as any);
+                }
+              : undefined
+          }
+        />
       </SafeAreaView>
     );
   }
@@ -650,8 +708,8 @@ export default function ExpoScreen() {
       {booths.length === 0 ? (
         <View style={s.centered}>
           <Store size={48} color={colors.textMuted} />
-          <Text style={s.emptyText}>{isEventAdmin ? 'No vendor booths yet.' : 'No meetings assigned to you yet.'}</Text>
-          {isEventAdmin ? (
+          <Text style={s.emptyText}>{effectiveIsEventAdmin ? 'No vendor booths yet.' : 'No meetings assigned to you yet.'}</Text>
+          {effectiveIsEventAdmin ? (
             <>
               <Text style={s.emptySubtext}>Add vendor booths from Event admin, then assign attendees to meetings here.</Text>
               <TouchableOpacity style={s.adminCta} onPress={() => router.push('/profile/admin-vendor-booths')}>
@@ -715,7 +773,7 @@ export default function ExpoScreen() {
                   <View style={s.meetingBlock}>
                     <View style={s.meetingRow}>
                       <Calendar size={16} color={colors.primary} />
-                      <Text style={s.meetingTime}>{formatMeetingTime(item.meetingStart, item.meetingEnd)}</Text>
+                      <Text style={s.meetingTime}>{formatB2BSlotRangeWallClock(item.meetingStart, item.meetingEnd)}</Text>
                     </View>
                     {item.booth_location ? (
                       <View style={s.meetingRow}>
@@ -723,35 +781,29 @@ export default function ExpoScreen() {
                         <Text style={s.meetingLocation}>{item.booth_location}</Text>
                       </View>
                     ) : null}
-                    {(() => {
-                      try {
-                        const endDate = parseISO((item.meetingEnd ?? '').replace(' ', 'T'));
-                        if (!Number.isNaN(endDate.getTime()) && isPast(endDate) && item.meetingSlotId) {
-                          const alreadyRated = ratedMeetingSlotIds.has(item.meetingSlotId);
-                          return (
-                            alreadyRated ? (
-                              <View style={s.ratedMeetingRow}>
-                                <Star size={18} color={colors.primary} />
-                                <Text style={s.rateMeetingBtnText}>Already rated</Text>
-                              </View>
-                            ) : (
-                              <TouchableOpacity
-                                style={s.rateMeetingBtn}
-                                onPress={() => {
-                                  const fromEnc = encodeURIComponent('/(tabs)/expo');
-                                  router.push(`/expo/${item.id}?from=${fromEnc}&rate_slot_id=${encodeURIComponent(item.meetingSlotId!)}` as any);
-                                }}
-                                activeOpacity={0.7}
-                              >
-                                <Star size={18} color={colors.primary} />
-                                <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
-                              </TouchableOpacity>
-                            )
-                          );
-                        }
-                      } catch {}
-                      return null;
-                    })()}
+                    {item.representatives && item.representatives.length > 0 ? (
+                      <MeetingRepresentatives representatives={item.representatives} variant="compact" />
+                    ) : null}
+                    {item.meetingStart && item.meetingEnd && isB2BSlotPastWallClock(item.meetingStart, item.meetingEnd, eventTz) && item.meetingSlotId ? (
+                      ratedMeetingSlotIds.has(item.meetingSlotId) ? (
+                        <View style={s.ratedMeetingRow}>
+                          <Star size={18} color={colors.primary} />
+                          <Text style={s.rateMeetingBtnText}>Already rated</Text>
+                        </View>
+                      ) : (
+                        <TouchableOpacity
+                          style={s.rateMeetingBtn}
+                          onPress={() => {
+                            const fromEnc = encodeURIComponent('/(tabs)/expo');
+                            router.push(`/expo/${item.id}?from=${fromEnc}&rate_slot_id=${encodeURIComponent(item.meetingSlotId!)}` as any);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Star size={18} color={colors.primary} />
+                          <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
+                        </TouchableOpacity>
+                      )
+                    ) : null}
                   </View>
                 ) : item.booth_location ? (
                   <View style={s.metaRow}>
@@ -799,22 +851,24 @@ const s = StyleSheet.create({
   },
   attendeeBody: { flex: 1, marginLeft: 14, minWidth: 0 },
   attendeeName: { fontSize: 17, fontWeight: '600', color: colors.text },
+  metBeforeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 999,
+    backgroundColor: colors.primaryFaded,
+  },
+  metBeforeChipText: { fontSize: 12, fontWeight: '600', color: colors.primary, maxWidth: 200 },
   attendeeMeta: { fontSize: 14, color: colors.textSecondary, marginTop: 2 },
   attendeeTimes: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 6 },
   attendeeTime: { fontSize: 13, color: colors.primary, fontWeight: '500' },
-  markAttendanceLink: { marginTop: 8, alignSelf: 'flex-start' },
-  markAttendanceLinkText: { fontSize: 13, color: colors.primary, fontWeight: '600' },
-  scanSummaryWrap: { marginTop: 8, gap: 4 },
-  scanRow: { gap: 3 },
-  scanPill: { alignSelf: 'flex-start', borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
-  scanPillAttended: { backgroundColor: '#dcfce7' },
-  scanPillNoShow: { backgroundColor: '#fee2e2' },
-  scanPillText: { fontSize: 11, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.3 },
-  scanPillTextAttended: { color: '#166534' },
-  scanPillTextNoShow: { color: '#991b1b' },
-  scanMeta: { fontSize: 12, color: colors.textSecondary },
-  scanNote: { fontSize: 12, color: colors.text, lineHeight: 16 },
-  scanNotRecorded: { marginTop: 8, fontSize: 12, color: colors.textMuted },
+  savedNotePreview: { marginTop: 8, fontSize: 13, color: colors.text, lineHeight: 18 },
+  notesLink: { marginTop: 8, alignSelf: 'flex-start' },
+  notesLinkText: { fontSize: 13, color: colors.primary, fontWeight: '600' },
   card: {
     backgroundColor: colors.card,
     borderRadius: 16,

@@ -10,9 +10,7 @@
   margin: 0 auto;
   border-radius: 10px 10px 0 0;
   overflow: hidden;
-  background: #000;
-  height: clamp(236px, 32vw, 332px);
-  position: relative;
+  background: #fff;
   border: 1px solid #b9c6df;
   border-bottom: 0;
 }
@@ -20,10 +18,10 @@
 .heroImage {
   display: block;
   width: 100%;
-  height: 100%;
+  aspect-ratio: 8 / 5;
+  max-height: min(420px, 50vh);
   object-fit: cover;
-  object-position: center center;
-  background: #000;
+  object-position: center;
 }
 
 .heroPlaceholder {
@@ -252,6 +250,12 @@ textarea {
   backdrop-filter: blur(2px);
 }
 
+.inlineActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
 .primaryBtn,
 .ghostBtn {
   border-radius: 8px;
@@ -314,8 +318,8 @@ textarea {
 }
 
 @media (max-width: 700px) {
-  .hero {
-    height: clamp(182px, 48vw, 258px);
+  .heroImage {
+    max-height: min(320px, 42vh);
   }
   .topNav { overflow-x: auto; white-space: nowrap; }
   .infoCard h2 { font-size: 22px; }

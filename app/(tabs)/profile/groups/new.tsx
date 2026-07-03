@@ -14,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../../lib/supabase';
 import { createNotificationAndPush } from '../../../../lib/notifications';
 import { colors } from '../../../../constants/colors';
@@ -30,6 +31,7 @@ export default function NewGroupScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { applyEventAdmin } = useRolePreviewContext();
   const [name, setName] = useState('');
   const [members, setMembers] = useState<MemberOption[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -53,12 +55,12 @@ export default function NewGroupScreen() {
       const row = roleData as { role?: string; roles?: string[] } | null;
       const role = row?.role ?? 'attendee';
       const roles = Array.isArray(row?.roles) ? row.roles : [];
-      const admin =
+      const realAdmin =
         role === 'admin' ||
         role === 'super_admin' ||
         roles.includes('admin') ||
-        roles.includes('super_admin') ||
-        user?.is_platform_admin === true;
+        roles.includes('super_admin');
+      const admin = applyEventAdmin(realAdmin);
       setIsAdmin(admin);
       if (!admin) {
         setLoading(false);
@@ -85,7 +87,7 @@ export default function NewGroupScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id, user?.is_platform_admin, currentEvent?.id]);
+  }, [user?.id, currentEvent?.id, applyEventAdmin]);
 
   useEffect(() => {
     if (!user?.id || !currentEvent?.id) {

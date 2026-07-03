@@ -3,7 +3,7 @@ import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import JSZip from "https://esm.sh/jszip@3.10.1";
 
-const MAX_FILES = 40;
+const MAX_FILES = 50;
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",

@@ -10,7 +10,6 @@ import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../stores/authStore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import NotificationFeedbackListener from '../components/NotificationFeedbackListener';
-import { useDeepLink } from '../lib/useDeepLink';
 import { abortAllRequests, supabase, isSupabaseConfigured, startForegroundRefresh, awaitForegroundRefresh, testSupabaseConnection } from '../lib/supabase';
 import { notifyAfterSessionRefreshed } from '../lib/onSessionRefreshed';
 import { registerPushToken } from '../lib/pushNotifications';
@@ -46,8 +45,6 @@ export default function RootLayout() {
   const { initialize, isLoading } = useAuthStore();
   const splashHidden = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-  useDeepLink();
-
   useEffect(() => {
     initialize();
   }, [initialize]);

@@ -3,8 +3,73 @@ import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import { uploadEventImage } from '../lib/uploadEventImage';
+import {
+  LOGO_FILE_ACCEPT,
+  SPONSOR_LOGO_CALLOUT_BODY,
+  SPONSOR_LOGO_CALLOUT_TITLE,
+  SPONSOR_LOGO_UPLOAD_HINT,
+} from '../lib/logoUploadHints';
+import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import type { Event, EventSponsor } from '../lib/types';
 import styles from './EventSponsors.module.css';
+
+type SponsorClickStatRow = {
+  sponsor_id: string;
+  company_name: string;
+  tier_label: string | null;
+  total_clicks: number;
+  unique_users: number;
+  click_rate_pct: number | null;
+  by_placement: Record<string, number>;
+};
+
+function formatClickRate(pct: number | null | undefined): string {
+  if (pct == null || !Number.isFinite(pct)) return '—';
+  return `${pct}%`;
+}
+
+const PLACEMENT_LABELS: Record<string, string> = {
+  info: 'Info',
+  feed: 'Feed',
+  schedule: 'Schedule',
+  hamburger_header: 'Menu header',
+  hamburger_footer: 'Menu footer',
+  live_wall: 'Live wall',
+};
+
+type SponsorClickLogRow = {
+  id: string;
+  clicked_at: string;
+  placement: string;
+  sponsor_id: string;
+  sponsor_name: string;
+  sponsor_tier: string | null;
+  website_url: string | null;
+  user_id: string | null;
+  user_email: string | null;
+  user_name: string | null;
+};
+
+function csvEscape(value: string): string {
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+
+function formatPlacementBreakdown(by: Record<string, number>): string {
+  const entries = Object.entries(by ?? {}).filter(([, n]) => n > 0);
+  if (entries.length === 0) return '—';
+  return entries
+    .sort((a, b) => b[1] - a[1])
+    .map(([key, count]) => `${PLACEMENT_LABELS[key] ?? key}: ${count}`)
+    .join(' · ');
+}
+
+function normalizeWebsiteUrl(raw: string): string | null {
+  const u = raw.trim();
+  if (!u) return null;
+  if (/^https?:\/\//i.test(u)) return u;
+  return `https://${u.replace(/^\/+/, '')}`;
+}
 
 type Props = { sponsor: EventSponsor; eventId: string; onChanged: () => void };
 
@@ -64,7 +129,7 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
         .update({
           company_name: name,
           tier_label: tierLabel.trim() || null,
-          website_url: websiteUrl.trim() || null,
+          website_url: normalizeWebsiteUrl(websiteUrl),
           logo_url: nextLogo,
           sort_order: Number.isFinite(so) ? so : 0,
           show_on_info_screen: showInfo,
@@ -119,10 +184,10 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
       <label className={styles.label}>
         Website (optional)
         <input
+          type="url"
           value={websiteUrl}
           onChange={(e) => setWebsiteUrl(e.target.value)}
-          type="url"
-          placeholder="https://"
+          placeholder="https://example.com (https:// added automatically if omitted)"
         />
       </label>
       <div className={styles.logoRow}>
@@ -132,7 +197,7 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
         <div>
           <input
             type="file"
-            accept="image/*"
+            accept={LOGO_FILE_ACCEPT}
             className={styles.hiddenFile}
             id={`logo-${sponsor.id}`}
             onChange={(e) => {
@@ -146,10 +211,7 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
               {saving ? 'Uploading…' : 'Change logo'}
             </span>
           </label>
-          <p className={styles.meta}>
-            Upload saves immediately. Use <strong>3:1</strong> (e.g. 1200×400 px) — see the blue note at the top of this
-            page.
-          </p>
+          <p className={styles.meta}>{SPONSOR_LOGO_UPLOAD_HINT}</p>
         </div>
       </div>
       <label className={styles.label}>
@@ -163,7 +225,7 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
       <p className={styles.meta}>Lower numbers appear first when multiple sponsors share the same area.</p>
       <label className={styles.checkRow}>
         <input type="checkbox" checked={showInfo} onChange={(e) => setShowInfo(e.target.checked)} />
-        <span>Info tab — &quot;Sponsored by&quot; block (on/off per sponsor)</span>
+        <span>Info tab — &quot;Mobile app sponsored by&quot; block (on/off per sponsor)</span>
       </label>
       <label className={styles.checkRow}>
         <input
@@ -179,7 +241,7 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
           checked={showHamburgerFooter}
           onChange={(e) => setShowHamburgerFooter(e.target.checked)}
         />
-        <span>Hamburger — &quot;Sponsored by&quot; block (bottom of drawer)</span>
+        <span>Hamburger — &quot;Mobile app sponsored by&quot; block (bottom of drawer)</span>
       </label>
       <label className={styles.checkRow}>
         <input type="checkbox" checked={showSchedule} onChange={(e) => setShowSchedule(e.target.checked)} />
@@ -282,8 +344,13 @@ export default function EventSponsors() {
   const { eventId } = useParams<{ eventId: string }>();
   const [event, setEvent] = useState<Event | null>(null);
   const [sponsors, setSponsors] = useState<EventSponsor[]>([]);
+  const [clickStats, setClickStats] = useState<SponsorClickStatRow[]>([]);
+  const [attendeeCount, setAttendeeCount] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [isPlatformAdmin, setIsPlatformAdmin] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [clearing, setClearing] = useState(false);
 
   const load = useCallback(async () => {
     if (!eventId) return;
@@ -292,17 +359,31 @@ export default function EventSponsors() {
       const { data: ev, error: evErr } = await supabase.from('events').select('id, name').eq('id', eventId).single();
       if (evErr) throw evErr;
       setEvent((ev as Event) ?? null);
-      const { data, error: spErr } = await supabase
-        .from('event_sponsors')
-        .select('*')
-        .eq('event_id', eventId)
-        .order('sort_order', { ascending: true })
-        .order('created_at', { ascending: true });
+      const [{ data, error: spErr }, { data: statsPack, error: statsErr }] = await Promise.all([
+        supabase
+          .from('event_sponsors')
+          .select('*')
+          .eq('event_id', eventId)
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: true }),
+        supabase.rpc('list_event_sponsor_click_stats', { p_event_id: eventId }),
+      ]);
       if (spErr) throw spErr;
+      if (statsErr) throw statsErr;
       setSponsors((data as EventSponsor[]) ?? []);
+      const pack = statsPack as {
+        error?: string;
+        rows?: SponsorClickStatRow[];
+        attendee_count?: number;
+      } | null;
+      if (pack?.error) throw new Error(pack.error);
+      setClickStats(pack?.rows ?? []);
+      setAttendeeCount(typeof pack?.attendee_count === 'number' ? pack.attendee_count : 0);
     } catch (e) {
       setError(postgrestErrorMessage(e) || 'Failed to load');
       setSponsors([]);
+      setClickStats([]);
+      setAttendeeCount(0);
     } finally {
       setLoading(false);
     }
@@ -311,7 +392,89 @@ export default function EventSponsors() {
   useEffect(() => {
     setLoading(true);
     void load();
+    void isCurrentUserPlatformAdmin().then(setIsPlatformAdmin);
   }, [load]);
+
+  const totalClicks = clickStats.reduce((sum, r) => sum + r.total_clicks, 0);
+
+  const downloadClickReport = async () => {
+    if (!eventId) return;
+    setExporting(true);
+    setError('');
+    try {
+      const { data, error: logErr } = await supabase.rpc('list_event_sponsor_click_log', {
+        p_event_id: eventId,
+      });
+      if (logErr) throw logErr;
+      const pack = data as { error?: string; rows?: SponsorClickLogRow[] } | null;
+      if (pack?.error) throw new Error(pack.error);
+      const rows = pack?.rows ?? [];
+      const headers = [
+        'clicked_at',
+        'sponsor',
+        'tier',
+        'website_url',
+        'screen',
+        'user_name',
+        'user_email',
+      ];
+      const lines = [headers.join(',')];
+      for (const r of rows) {
+        lines.push(
+          [
+            r.clicked_at ? new Date(r.clicked_at).toISOString() : '',
+            r.sponsor_name ?? '',
+            r.sponsor_tier ?? '',
+            r.website_url ?? '',
+            PLACEMENT_LABELS[r.placement] ?? r.placement,
+            r.user_name ?? '',
+            r.user_email ?? '',
+          ]
+            .map((v) => csvEscape(String(v)))
+            .join(',')
+        );
+      }
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const slug = (event?.name ?? 'event').replace(/[^\w.-]+/g, '-').slice(0, 40);
+      const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `sponsor-clicks-${slug}-${stamp}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not export click report');
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const clearAllClicks = async () => {
+    if (!eventId || !isPlatformAdmin) return;
+    const ok = window.confirm(
+      `Delete all ${totalClicks} sponsor click record(s) for this event?\n\nThis cannot be undone. Use before a new event cycle or to reset test data.`
+    );
+    if (!ok) return;
+    setClearing(true);
+    setError('');
+    try {
+      const { data, error: clearErr } = await supabase.rpc('clear_event_sponsor_clicks', {
+        p_event_id: eventId,
+        p_sponsor_id: null,
+      });
+      if (clearErr) throw clearErr;
+      const pack = data as { error?: string; deleted?: number } | null;
+      if (pack?.error) throw new Error(pack.error);
+      await load();
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not clear clicks');
+    } finally {
+      setClearing(false);
+    }
+  };
 
   if (!eventId) return <div className={styles.error}>Missing event</div>;
   if (loading) return <div className={styles.loading}>Loading…</div>;
@@ -327,17 +490,86 @@ export default function EventSponsors() {
           Add sponsor rows and assign a <strong>tier</strong> label (e.g. Presenting, Gold). Use the checkboxes so each
           sponsor can appear on the in-app <strong>Info</strong> tab, the hamburger <strong>header</strong> and/or{' '}
           <strong>footer</strong> (separate toggles), and the optional           <strong>Schedule</strong>, <strong>Feed</strong>, and the browser <strong>live wall</strong>{' '}
-          (logo bar). Turn a placement off to hide that sponsor there only.
+          (logo bar). Turn a placement off to hide that sponsor there only. Logo taps in the mobile app are counted below
+          (requires a current app build with click tracking).
         </p>
         <div className={styles.logoSizeCallout}>
-          <strong>Logo dimensions (so it fills the app “Sponsored by” area)</strong>
-          Upload a <strong>wide horizontal</strong> image with aspect ratio <strong>3:1</strong> (width = 3× height) — the
-          same shape as a full-width banner. Recommended: <code>1200×400</code> px (good minimum) or <code>1800×600</code>{' '}
-          px (crisper on large phones). JPG/PNG. The app <strong>fills the frame</strong> edge-to-edge; if your file is
-          square or a different ratio, the edges may be <strong>cropped</strong> to fit 3:1.
+          <strong>{SPONSOR_LOGO_CALLOUT_TITLE}</strong>
+          {SPONSOR_LOGO_CALLOUT_BODY}
         </div>
       </div>
       {error ? <p className={styles.error}>{error}</p> : null}
+
+      <section className={styles.statsSection}>
+        <div className={styles.statsHead}>
+          <div>
+            <h2 className={styles.statsTitle}>Logo click analytics</h2>
+            <p className={styles.statsHint}>
+              A click is counted only when the sponsor website actually opens in the browser (not a failed tap).
+              <strong> Click rate</strong> = unique attendees who clicked ÷ event members excluding admins
+              (admin / super_admin roles). Event admins can download a CSV; platform admins can clear all records for
+              this event.
+            </p>
+            <p className={styles.statsAttendeeCount}>
+              Event attendees <span className={styles.statsAttendeeMuted}>(excl. admins)</span>:{' '}
+              <strong>{attendeeCount}</strong>
+            </p>
+          </div>
+          <div className={styles.statsActions}>
+            <button
+              type="button"
+              className={`${styles.btn} ${styles.btnPrimary} ${styles.statsActionBtn}`}
+              disabled={exporting || totalClicks === 0}
+              onClick={() => void downloadClickReport()}
+            >
+              {exporting ? 'Exporting…' : 'Download CSV report'}
+            </button>
+            {isPlatformAdmin ? (
+              <button
+                type="button"
+                className={`${styles.btn} ${styles.btnDanger} ${styles.statsActionBtn}`}
+                disabled={clearing || totalClicks === 0}
+                onClick={() => void clearAllClicks()}
+              >
+                {clearing ? 'Clearing…' : 'Clear all clicks'}
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {clickStats.length === 0 ? (
+          <p className={styles.hint}>Add sponsors below to start tracking logo clicks.</p>
+        ) : (
+          <>
+            {totalClicks === 0 ? (
+              <p className={styles.hint}>No verified clicks yet — taps count only after the website opens.</p>
+            ) : null}
+            <div className={styles.statsTableWrap}>
+              <table className={styles.statsTable}>
+                <thead>
+                  <tr>
+                    <th>Sponsor</th>
+                    <th>Total clicks</th>
+                    <th>Unique users</th>
+                    <th>Click rate</th>
+                    <th>By screen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {clickStats.map((row) => (
+                    <tr key={row.sponsor_id}>
+                      <td>{row.company_name}</td>
+                      <td className={styles.statsNum}>{row.total_clicks}</td>
+                      <td className={styles.statsNum}>{row.unique_users}</td>
+                      <td className={styles.statsNum}>{formatClickRate(row.click_rate_pct)}</td>
+                      <td className={styles.statsBreakdown}>{formatPlacementBreakdown(row.by_placement)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </section>
 
       <NewSponsorForm eventId={eventId} onCreated={load} />
 

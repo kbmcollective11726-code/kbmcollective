@@ -23,6 +23,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library';
+import * as Sharing from 'expo-sharing';
 import { useFocusEffect } from '@react-navigation/native';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
@@ -193,18 +194,30 @@ export default function PhotoBookScreen() {
         );
         return;
       }
-      // Request only photo/write permission so we don't trigger undeclared AUDIO permission (Android)
-      const { status } = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Allow photo library access in Settings to save photos.');
-        setSaving(false);
-        return;
-      }
       const filename = imageUrl.split('/').pop()?.split('?')[0] || `photo-${Date.now()}.jpg`;
       const fileUri = `${FileSystem.cacheDirectory}${filename}`;
       const { uri } = await FileSystem.downloadAsync(imageUrl, fileUri);
-      await MediaLibrary.saveToLibraryAsync(uri);
-      Toast.show({ type: 'success', text1: 'Saved', text2: 'Photo saved to your camera roll.' });
+
+      if (Platform.OS === 'android') {
+        if (!(await Sharing.isAvailableAsync())) {
+          throw new Error('Sharing is not available on this device');
+        }
+        await Sharing.shareAsync(uri, { mimeType: 'image/jpeg', dialogTitle: 'Save photo' });
+        Toast.show({
+          type: 'success',
+          text1: 'Save photo',
+          text2: 'Choose Save to Photos or a gallery app from the menu.',
+        });
+      } else {
+        const { status } = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
+        if (status !== 'granted') {
+          Alert.alert('Permission needed', 'Allow photo library access in Settings to save photos.');
+          setSaving(false);
+          return;
+        }
+        await MediaLibrary.saveToLibraryAsync(uri);
+        Toast.show({ type: 'success', text1: 'Saved', text2: 'Photo saved to your camera roll.' });
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Unknown error';
       Toast.show({ type: 'error', text1: 'Save failed', text2: msg });

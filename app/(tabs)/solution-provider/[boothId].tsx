@@ -11,13 +11,15 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
-import { ExternalLink, MapPin, Store } from 'lucide-react-native';
+import { ChevronRight, ExternalLink, MapPin, Store } from 'lucide-react-native';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, supabaseStorage } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import type { VendorBooth } from '../../../lib/types';
 import { Platform } from 'react-native';
 import SolutionNavBack, { navigateSolutionBack } from '../../../components/SolutionNavBack';
+import Avatar from '../../../components/Avatar';
+import { fetchBoothRepresentatives, type BoothRepresentative } from '../../../lib/vendorBoothReps';
 
 export default function SolutionProviderDetailScreen() {
   const params = useLocalSearchParams<{ boothId: string; from?: string }>();
@@ -26,6 +28,7 @@ export default function SolutionProviderDetailScreen() {
   const router = useRouter();
   const { currentEvent } = useEventStore();
   const [booth, setBooth] = useState<VendorBooth | null>(null);
+  const [representatives, setRepresentatives] = useState<BoothRepresentative[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -37,6 +40,7 @@ export default function SolutionProviderDetailScreen() {
     const load = async () => {
       if (!boothId || !currentEvent?.id) {
         setBooth(null);
+        setRepresentatives([]);
         setLoading(false);
         return;
       }
@@ -53,12 +57,20 @@ export default function SolutionProviderDetailScreen() {
         if (fetchError) throw fetchError;
         if (!data) {
           setBooth(null);
+          setRepresentatives([]);
           setError('Solution provider not found.');
           return;
         }
-        setBooth(data as VendorBooth);
+        const boothRow = data as VendorBooth;
+        setBooth(boothRow);
+        try {
+          setRepresentatives(await fetchBoothRepresentatives(boothRow, client));
+        } catch {
+          setRepresentatives([]);
+        }
       } catch (err) {
         setBooth(null);
+        setRepresentatives([]);
         setError(err instanceof Error ? err.message : 'Could not load solution provider.');
       } finally {
         setLoading(false);
@@ -104,6 +116,38 @@ export default function SolutionProviderDetailScreen() {
             <View style={s.section}>
               <Text style={s.sectionTitle}>About</Text>
               <Text style={s.body}>{booth.description}</Text>
+            </View>
+          ) : null}
+
+          {representatives.length > 0 ? (
+            <View style={s.section}>
+              <Text style={s.sectionTitle}>Representatives</Text>
+              {representatives.map((rep) => {
+                const subtitle = [rep.title, rep.company].filter(Boolean).join(' · ');
+                return (
+                  <TouchableOpacity
+                    key={rep.user_id}
+                    style={s.repRow}
+                    activeOpacity={0.75}
+                    onPress={() => router.push(`/(tabs)/feed/user/${rep.user_id}` as any)}
+                  >
+                    <Avatar uri={rep.avatar_url} name={rep.full_name} size={44} />
+                    <View style={s.repTextCol}>
+                      <Text style={s.repName} numberOfLines={1}>
+                        {rep.full_name}
+                      </Text>
+                      {subtitle ? (
+                        <Text style={s.repSubtitle} numberOfLines={2}>
+                          {subtitle}
+                        </Text>
+                      ) : (
+                        <Text style={s.repSubtitleMuted}>View profile</Text>
+                      )}
+                    </View>
+                    <ChevronRight size={20} color={colors.textMuted} />
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           ) : null}
 
@@ -164,4 +208,17 @@ const s = StyleSheet.create({
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   linkText: { flex: 1, color: colors.primary, fontSize: 15 },
+  repRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    marginTop: 4,
+  },
+  repTextCol: { flex: 1, minWidth: 0 },
+  repName: { fontSize: 16, fontWeight: '700', color: colors.text, flexShrink: 1 },
+  repSubtitle: { marginTop: 2, fontSize: 13, color: colors.textSecondary, lineHeight: 18 },
+  repSubtitleMuted: { marginTop: 2, fontSize: 13, color: colors.textMuted },
 });

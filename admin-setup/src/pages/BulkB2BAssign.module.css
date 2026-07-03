@@ -1,5 +1,6 @@
 .page {
-  max-width: 960px;
+  max-width: var(--page-max-content);
+  width: 100%;
 }
 
 .head {
@@ -239,9 +240,16 @@
 
 .tableWrap {
   overflow-x: auto;
+  overflow-y: visible;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   margin-bottom: 20px;
+}
+
+.table td.attendeeCell {
+  overflow: visible;
+  position: relative;
+  min-width: 220px;
 }
 
 .table {

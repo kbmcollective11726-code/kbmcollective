@@ -66,8 +66,30 @@ export interface Event {
   menu_show_agenda?: boolean;
   /** Hamburger: Notes (badge scans) for admins / vendor reps (default on). */
   menu_show_notes?: boolean;
+  /** Hamburger: Session check-in (room badge scan) for event / platform admins. */
+  menu_show_session_check_in?: boolean;
+  /** Web hub tiles enabled for event admins (includes session_attendance). */
+  admin_console_tiles?: string[] | null;
+  platform_menu_show_agenda?: boolean;
+  platform_menu_show_1on1?: boolean;
+  platform_menu_show_scan_badge?: boolean;
+  platform_menu_show_solution_providers?: boolean;
+  platform_menu_show_live_wall?: boolean;
+  platform_menu_show_notes?: boolean;
+  platform_menu_show_session_check_in?: boolean;
+  vendor_scan_show_meeting_checkin?: boolean;
+  /** When true (default), vendors/admins see the pre-meeting attendee brief + "have we met before" history. */
+  vendor_brief_enabled?: boolean;
   /** Printed on attendee badges (e.g. Hosted by …). */
   badge_host_footer?: string | null;
+  /** Optional wide header strip for printed badges (cadmin). */
+  badge_banner_url?: string | null;
+  /** When true, event-scoped notifications are muted (in-app + push). */
+  notifications_paused?: boolean;
+  /** Optional auto-unmute time; when elapsed, notifications resume automatically. */
+  notifications_paused_until?: string | null;
+  /** IANA zone for agenda wall-clock (Live now, starting-soon reminders ~2–6 min). When set, matches `notify-event-starting-soon`. */
+  reminder_timezone?: string | null;
 }
 
 export interface EventSponsor {
@@ -83,7 +105,7 @@ export interface EventSponsor {
   show_in_hamburger?: boolean;
   /** Small logo in drawer header beside "Menu". (Optional when using legacy `show_in_hamburger` only.) */
   show_in_hamburger_header?: boolean;
-  /** "Sponsored by" block at bottom of drawer. */
+  /** "Mobile app sponsored by" block at bottom of drawer / strips. */
   show_in_hamburger_footer?: boolean;
   /** Compact strip on the Schedule tab (horizontal logos). */
   show_on_schedule: boolean;
@@ -109,6 +131,8 @@ export interface EventMember {
   points: number;
   joined_at: string;
   user?: User;
+  /** Populated when membership is loaded with `events(*)` join. */
+  events?: Event | null;
 }
 
 export interface Post {
@@ -167,6 +191,8 @@ export interface ScheduleSession {
   is_bookmarked?: boolean;
   /** When false, star rating / feedback is hidden for this session. */
   ratings_enabled?: boolean;
+  /** When false, hidden from mobile Session check-in list. */
+  check_in_enabled?: boolean;
 }
 
 export interface SessionRating {

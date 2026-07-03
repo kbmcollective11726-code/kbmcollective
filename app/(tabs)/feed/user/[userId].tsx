@@ -23,6 +23,7 @@ import { useBlockStore } from '../../../../stores/blockStore';
 import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
 import { awardPoints } from '../../../../lib/points';
 import { createNotificationAndPush } from '../../../../lib/notifications';
+import { sendUserReportAdminPush } from '../../../../lib/pushNotifications';
 import { colors } from '../../../../constants/colors';
 import Avatar from '../../../../components/Avatar';
 import HeaderNotificationBell from '../../../../components/HeaderNotificationBell';
@@ -422,14 +423,24 @@ export default function UserProfileScreen() {
 
   const submitReport = async () => {
     if (!currentUser?.id || !userId) return;
+    if (!currentEvent?.id) {
+      Alert.alert('Select an event', 'Join or select an event before submitting a report.');
+      return;
+    }
     try {
-      const { error } = await supabase.from('user_reports').insert({
-        reporter_id: currentUser.id,
-        reported_user_id: userId,
-        reason: reportReason,
-        details: reportDetails.trim() || null,
-      });
+      const { data, error } = await supabase
+        .from('user_reports')
+        .insert({
+          reporter_id: currentUser.id,
+          reported_user_id: userId,
+          event_id: currentEvent.id,
+          reason: reportReason,
+          details: reportDetails.trim() || null,
+        })
+        .select('id')
+        .single();
       if (error) throw error;
+      if (data?.id) void sendUserReportAdminPush(data.id);
       setShowReportModal(false);
       setReportReason('spam');
       setReportDetails('');

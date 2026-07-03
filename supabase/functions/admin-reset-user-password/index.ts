@@ -160,5 +160,30 @@ Deno.serve(async (req: Request) => {
     return json({ error: upErr.message }, 400);
   }
 
+  const { data: targetPublic } = await admin
+    .from("users")
+    .select("email, full_name")
+    .eq("id", targetUserId)
+    .maybeSingle();
+  const auditActions: string[] = [];
+  if (wantsPassword) auditActions.push("password_reset");
+  if (wantsEmail) auditActions.push("email_change");
+  for (const auditAction of auditActions) {
+    await admin.rpc("insert_platform_audit_log", {
+      p_category: "admin",
+      p_action: auditAction,
+      p_actor_user_id: caller.id,
+      p_target_user_id: targetUserId,
+      p_target_email: (targetPublic as { email?: string } | null)?.email ?? authUser.user.email ?? null,
+      p_target_name: (targetPublic as { full_name?: string } | null)?.full_name ?? null,
+      p_event_id: eventId,
+      p_ip_address: null,
+      p_details: {
+        source: "admin-reset-user-password",
+        ...(wantsEmail ? { new_email: newEmail } : {}),
+      },
+    });
+  }
+
   return json({ success: true }, 200);
 });

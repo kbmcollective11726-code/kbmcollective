@@ -19,6 +19,7 @@ import {
 } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
@@ -29,10 +30,10 @@ export default function AdminScreen() {
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { applyEventAdmin, showPlatformAdminTools } = useRolePreviewContext();
   const isPlatformAdmin = user?.is_platform_admin === true;
   const [isEventAdmin, setIsEventAdmin] = useState(false);
   const [roleChecked, setRoleChecked] = useState(false);
-
   useEffect(() => {
     if (!user?.id || !currentEvent?.id) {
       setRoleChecked(true);
@@ -55,13 +56,17 @@ export default function AdminScreen() {
         const isAdmin = role === 'admin' || role === 'super_admin' || roles.includes('admin') || roles.includes('super_admin');
         setIsEventAdmin(isAdmin);
       } catch {
-        if (!cancelled) setIsEventAdmin(false);
+        if (!cancelled) {
+          setIsEventAdmin(false);
+        }
       } finally {
         if (!cancelled) setRoleChecked(true);
       }
     })();
     return () => { cancelled = true; };
   }, [user?.id, currentEvent?.id]);
+
+  const effectiveIsEventAdmin = applyEventAdmin(isEventAdmin);
 
   const goBack = useCallback(() => {
     const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
@@ -76,10 +81,10 @@ export default function AdminScreen() {
   // Platform admin = same + All events (platform), Delete user account. Everyone else = no admin access.
   useEffect(() => {
     if (!roleChecked || !user) return;
-    if (!isEventAdmin && !isPlatformAdmin) {
+    if (!effectiveIsEventAdmin && !showPlatformAdminTools) {
       router.replace('/profile');
     }
-  }, [roleChecked, isEventAdmin, isPlatformAdmin, user, router]);
+  }, [roleChecked, effectiveIsEventAdmin, showPlatformAdminTools, user, router]);
 
   if (!roleChecked) {
     return (
@@ -98,11 +103,11 @@ export default function AdminScreen() {
         <ProfileStackScreenHeader variant="back" title="Event admin" onBack={goBack} />
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.subtitle}>
-            {isPlatformAdmin
+            {showPlatformAdminTools
               ? 'Select an event below, create a new one, or enter an event code on the Info tab.'
               : 'Select an event on the Info tab to manage it.'}
           </Text>
-          {isPlatformAdmin && (
+          {showPlatformAdminTools && (
             <>
               <TouchableOpacity
                 style={[styles.createBtn, { marginBottom: 12 }]}
@@ -123,9 +128,9 @@ export default function AdminScreen() {
   }
 
   const menu = [
-    ...(isPlatformAdmin ? [{ key: 'all-events', title: 'All events (platform)', icon: Building2, href: '/profile/admin-all-events' }] : []),
-    ...(isPlatformAdmin ? [{ key: 'delete-user', title: 'Delete user account', icon: UserX, href: '/profile/admin-delete-user' }] : []),
-    ...(isPlatformAdmin ? [{ key: 'create', title: 'Create new event', icon: PlusCircle, href: '/profile/admin-event-new' }] : []),
+    ...(showPlatformAdminTools ? [{ key: 'all-events', title: 'All events (platform)', icon: Building2, href: '/profile/admin-all-events' }] : []),
+    ...(showPlatformAdminTools ? [{ key: 'delete-user', title: 'Delete user account', icon: UserX, href: '/profile/admin-delete-user' }] : []),
+    ...(showPlatformAdminTools ? [{ key: 'create', title: 'Create new event', icon: PlusCircle, href: '/profile/admin-event-new' }] : []),
     { key: 'event', title: 'Edit event', icon: Calendar, href: '/profile/admin-event-edit' },
     { key: 'info', title: 'Edit info page', icon: FileText, href: '/profile/admin-info-page' },
     { key: 'points', title: 'Point rules', icon: Award, href: '/profile/admin-point-rules' },

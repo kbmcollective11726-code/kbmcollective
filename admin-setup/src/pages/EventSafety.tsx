@@ -12,6 +12,7 @@ type ReportRow = {
   reason: string;
   details: string | null;
   created_at: string;
+  event_id?: string | null;
   reporter: SafetyUser;
   reported: SafetyUser;
 };
@@ -77,8 +78,10 @@ export default function EventSafety() {
       </div>
       <h1>Safety — {eventName || 'Event'}</h1>
       <p className={styles.hint}>
-        User reports and blocks where <strong>both</strong> people are members of this event. Reports come from the
-        app profile screen; blocks are stored when someone uses Block there.
+        User reports and blocks tied to this event. New reports include the event they were filed under; older rows may
+        appear when both people were members here. Event and platform admins get in-app (and push) notifications when
+        someone submits a report from the app with this event selected. Reports come from the app profile screen; blocks
+        are stored when someone uses Block there.
       </p>
 
       {error ? <p className={styles.error}>{error}</p> : null}

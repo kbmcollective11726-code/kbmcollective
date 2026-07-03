@@ -1,5 +1,6 @@
 .page {
-  max-width: 800px;
+  max-width: var(--page-max-content);
+  width: 100%;
 }
 
 .head {
@@ -37,6 +38,123 @@
   color: var(--color-text-secondary);
 }
 
+.importSection {
+  margin-bottom: 20px;
+  padding: 18px 20px;
+  background: var(--color-bg, #fff);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgba(26, 35, 50, 0.06);
+}
+
+.importSectionTitle {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  color: var(--color-text);
+}
+
+.importSection .hint {
+  margin-bottom: 14px;
+}
+
+.csvHelpDetails {
+  margin: 0 0 16px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: rgba(26, 35, 50, 0.02);
+  overflow: hidden;
+}
+
+.csvHelpSummary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+  list-style: none;
+  user-select: none;
+}
+
+.csvHelpSummary::-webkit-details-marker {
+  display: none;
+}
+
+.csvHelpSummary::before {
+  content: '▸';
+  color: var(--color-accent);
+  font-size: 12px;
+  transition: transform var(--transition);
+}
+
+.csvHelpDetails[open] .csvHelpSummary::before {
+  transform: rotate(90deg);
+}
+
+.csvHelpBody {
+  padding: 0 14px 14px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+}
+
+.csvHelpBody p {
+  margin: 0 0 10px;
+}
+
+.csvHelpBody p:last-child {
+  margin-bottom: 0;
+}
+
+.csvHelpBody ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.csvHelpBody li {
+  margin-bottom: 6px;
+}
+
+.csvHelpBody li:last-child {
+  margin-bottom: 0;
+}
+
+.csvHelpBody code {
+  background: var(--color-surface);
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.importToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.importSection .result {
+  margin-top: 14px;
+  margin-bottom: 0;
+}
+
+.mutedBanner {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border: 1px solid #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.importToolbar .deleteAllBtn {
+  margin-left: auto;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -59,6 +177,9 @@
 }
 
 .templateBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 10px 16px;
   background: var(--color-surface);
   border: 1px solid var(--color-border);
@@ -66,6 +187,7 @@
   font-size: 14px;
   font-weight: 500;
   color: var(--color-text);
+  text-decoration: none;
 }
 
 .templateBtn:hover {
@@ -101,6 +223,12 @@
   font-size: 14px;
 }
 
+.notifyNote {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted, #64748b);
+}
+
 .errorList {
   margin: 8px 0 0;
   padding-left: 20px;
@@ -109,9 +237,69 @@
 }
 
 .listTitle {
-  margin: 0 0 12px;
+  margin: 0 0 8px;
   font-size: 1.1rem;
   color: var(--color-text);
+}
+
+.filterPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.searchInput {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  box-sizing: border-box;
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.filterSelect {
+  flex: 1 1 160px;
+  min-width: 130px;
+  max-width: min(240px, 100%);
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  background: #fff;
+}
+
+.resultSummary {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.clearFiltersBtn {
+  padding: 10px 14px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.clearFiltersBtn:hover {
+  border-color: var(--color-accent);
+  color: var(--color-accent);
 }
 
 .dayGroups {

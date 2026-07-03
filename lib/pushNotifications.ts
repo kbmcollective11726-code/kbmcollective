@@ -1,7 +1,7 @@
 import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { InteractionManager, Platform } from 'react-native';
-import { supabase, supabaseStorage } from './supabase';
+import { supabase, supabaseStorage, supabaseUrl, isSupabaseConfigured } from './supabase';
 import { ensureAndroidNotificationChannel } from './notificationChannel';
 
 /**
@@ -35,8 +35,6 @@ export async function setAppBadgeCount(count: number): Promise<void> {
     // ignore (e.g. not supported on this device)
   }
 }
-
-const SUPABASE_URL = (process.env.EXPO_PUBLIC_SUPABASE_URL ?? '').trim();
 
 /**
  * Register for push notifications and save the Expo push token to the user's profile.
@@ -98,7 +96,10 @@ export async function sendPushToUser(
   body: string,
   options?: { eventId?: string; postId?: string; chatUserId?: string; groupId?: string; boothId?: string }
 ): Promise<{ sent: number; error?: string }> {
-  if (!SUPABASE_URL) return { sent: 0 };
+  if (!isSupabaseConfigured) {
+    if (__DEV__) console.warn('[push] sendPushToUser skipped: Supabase URL not configured');
+    return { sent: 0 };
+  }
   try {
     const { data: { session } } = await supabase.auth.getSession();
     if (!session?.access_token) return { sent: 0 };
@@ -127,7 +128,7 @@ export async function sendAnnouncementPush(
   recipientUserIds: string[],
   options?: { postId?: string; chatUserId?: string; groupId?: string; boothId?: string }
 ): Promise<{ sent: number; error?: string }> {
-  if (!SUPABASE_URL || recipientUserIds.length === 0) {
+  if (!isSupabaseConfigured || recipientUserIds.length === 0) {
     return { sent: 0 };
   }
   try {
@@ -142,7 +143,7 @@ export async function sendAnnouncementPush(
     if (options?.groupId) payload.group_id = options.groupId;
     if (options?.boothId) payload.booth_id = options.boothId;
 
-    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-announcement-push`, {
+    const res = await fetch(`${supabaseUrl}/functions/v1/send-announcement-push`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -155,6 +156,33 @@ export async function sendAnnouncementPush(
       return { sent: 0, error: data?.error ?? res.statusText };
     }
     return { sent: data?.sent ?? 0 };
+  } catch (err) {
+    return { sent: 0, error: err instanceof Error ? err.message : 'Request failed' };
+  }
+}
+
+/** Push event admins + platform admins after a user report (in-app row is created by DB trigger). */
+export async function sendUserReportAdminPush(reportId: string): Promise<{ sent: number; error?: string }> {
+  if (!isSupabaseConfigured || !reportId) {
+    return { sent: 0 };
+  }
+  try {
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session?.access_token) return { sent: 0 };
+    const res = await fetch(`${supabaseUrl}/functions/v1/send-user-report-push`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${session.access_token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ report_id: reportId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (__DEV__) console.warn('[push] send-user-report-push:', data?.error ?? res.statusText);
+      return { sent: 0, error: data?.error ?? res.statusText };
+    }
+    return { sent: typeof data?.sent === 'number' ? data.sent : 0 };
   } catch (err) {
     return { sent: 0, error: err instanceof Error ? err.message : 'Request failed' };
   }

@@ -64,34 +64,54 @@ export default function EventList() {
 
   const renderEventList = (rows: Event[]) => (
     <ul className={styles.list}>
-      {rows.map((ev) => (
-        <li key={ev.id}>
-          <div className={styles.card}>
-            <Link to={`/events/${ev.id}`} className={styles.eventLink}>
-              <span className={styles.name}>{ev.name}</span>
-              <span className={styles.meta}>
-                {ev.event_code ?? '—'} · {ev.start_date} – {ev.end_date}
-                {ev.is_active === false ? ' · Disabled' : ''}
-              </span>
-            </Link>
-            <button
-              type="button"
-              className={ev.is_active ? styles.statusBtnWarn : styles.statusBtnOk}
-              disabled={savingId === ev.id}
-              onClick={() => toggleEventActive(ev)}
-            >
-              {savingId === ev.id ? 'Saving…' : ev.is_active ? 'Deactivate' : 'Activate'}
-            </button>
-          </div>
-        </li>
-      ))}
+      {rows.map((ev) => {
+        const isActive = ev.is_active !== false;
+        return (
+          <li key={ev.id}>
+            <div className={`${styles.card} ${isActive ? '' : styles.cardInactive}`}>
+              <Link to={`/events/${ev.id}`} className={styles.eventLink}>
+                <span className={styles.nameRow}>
+                  <span className={styles.name}>{ev.name}</span>
+                  <span
+                    className={`${styles.statusBadge} ${isActive ? styles.statusBadgeActive : styles.statusBadgeInactive}`}
+                    aria-label={isActive ? 'Event is active' : 'Event is inactive'}
+                  >
+                    {isActive ? 'Active' : 'Inactive'}
+                  </span>
+                </span>
+                <span className={styles.meta}>
+                  {ev.event_code ?? '—'} · {ev.start_date} – {ev.end_date}
+                </span>
+              </Link>
+              <div className={styles.eventActions}>
+                <span className={styles.statusHint}>{isActive ? 'Live in app' : 'Hidden from app'}</span>
+                <button
+                  type="button"
+                  className={isActive ? styles.statusBtnWarn : styles.statusBtnOk}
+                  disabled={savingId === ev.id}
+                  onClick={() => toggleEventActive(ev)}
+                  title={isActive ? 'Hide this event from the mobile app' : 'Make this event visible in the mobile app again'}
+                >
+                  {savingId === ev.id ? 'Saving…' : isActive ? 'Deactivate event' : 'Activate event'}
+                </button>
+              </div>
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 
   return (
     <div className={styles.page}>
       <div className={styles.head}>
-        <h1>Your events</h1>
+        <div>
+          <h1>Your events</h1>
+          <p className={styles.pageHint}>
+            <strong>Active</strong> events appear in the mobile app. <strong>Inactive</strong> events are hidden — use
+            the button on the right to change status, not as a label for the current state.
+          </p>
+        </div>
         <Link to="/events/new" className={styles.newBtn}>Create event</Link>
       </div>
       {events.length === 0 ? (

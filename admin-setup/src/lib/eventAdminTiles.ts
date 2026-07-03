@@ -14,6 +14,7 @@ export type EventAdminConsoleTileId =
   | 'matchmaking'
   | 'badges'
   | 'scan_log'
+  | 'session_attendance'
   | 'safety';
 
 export const DEFAULT_EVENT_ADMIN_CONSOLE_TILES: EventAdminConsoleTileId[] = [
@@ -39,10 +40,25 @@ export const ALL_EVENT_ADMIN_CONSOLE_TILE_IDS: EventAdminConsoleTileId[] = [
   'matchmaking',
   'badges',
   'scan_log',
+  'session_attendance',
   'safety',
 ];
 
 const VALID_TILE_IDS = new Set<string>(ALL_EVENT_ADMIN_CONSOLE_TILE_IDS);
+
+/** Stored on events created before announcements was included in the column default. */
+const LEGACY_DEFAULT_TILES_WITHOUT_ANNOUNCEMENTS: EventAdminConsoleTileId[] = [
+  'members',
+  'schedule',
+  'agenda_print',
+  'photos',
+];
+
+function isLegacyDefaultWithoutAnnouncements(tiles: EventAdminConsoleTileId[]): boolean {
+  if (tiles.length !== LEGACY_DEFAULT_TILES_WITHOUT_ANNOUNCEMENTS.length) return false;
+  const set = new Set(tiles);
+  return LEGACY_DEFAULT_TILES_WITHOUT_ANNOUNCEMENTS.every((id) => set.has(id));
+}
 
 export interface EventAdminConsoleTileDef {
   id: EventAdminConsoleTileId;
@@ -132,9 +148,15 @@ export const EVENT_ADMIN_CONSOLE_TILES: EventAdminConsoleTileDef[] = [
   },
   {
     id: 'scan_log',
-    title: 'Scan log',
-    desc: 'Badge scans from the app only: subject, scanner, kind, attendance, 1:1 meeting, notes, and timestamps',
+    title: 'Notes log',
+    desc: 'Badge-scan notes and context from the app: subject, scanner, kind, 1:1 meeting, notes, and timestamps',
     to: (eventId) => `/events/${eventId}/scan-log`,
+  },
+  {
+    id: 'session_attendance',
+    title: 'Session attendance',
+    desc: 'Per-session badge check-in at the door — bookmarked vs checked in, print or export',
+    to: (eventId) => `/events/${eventId}/session-attendance`,
   },
   {
     id: 'safety',
@@ -160,6 +182,7 @@ export const EVENT_ADMIN_CONSOLE_PATH_SEGMENT_TO_TILE: Record<string, EventAdmin
   matchmaking: 'matchmaking',
   badges: 'badges',
   'scan-log': 'scan_log',
+  'session-attendance': 'session_attendance',
   safety: 'safety',
 };
 
@@ -173,7 +196,16 @@ export function normalizeAdminConsoleTiles(raw: unknown): EventAdminConsoleTileI
       out.push(item as EventAdminConsoleTileId);
     }
   }
-  return out.length > 0 ? out : [...DEFAULT_EVENT_ADMIN_CONSOLE_TILES];
+  const normalized = out.length > 0 ? out : [...DEFAULT_EVENT_ADMIN_CONSOLE_TILES];
+  if (isLegacyDefaultWithoutAnnouncements(normalized)) {
+    return [...DEFAULT_EVENT_ADMIN_CONSOLE_TILES];
+  }
+  return normalized;
+}
+
+/** Platform enabled session room check-in (web hub + mobile scan for event admins). */
+export function isSessionAttendanceEnabled(tiles: string[] | null | undefined): boolean {
+  return new Set(normalizeAdminConsoleTiles(tiles)).has('session_attendance');
 }
 
 /** Platform admins and event super_admins see every hub tile; event admins see `admin_console_tiles` only. */

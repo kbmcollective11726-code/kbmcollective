@@ -7,10 +7,14 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "vercel:env": "node scripts/vercel-env-push.mjs"
+    "vercel:env": "node scripts/vercel-env-push.mjs",
+    "vercel:link": "vercel link --project admin-setup --scope kbmconnects-projects --yes",
+    "deploy": "vercel --prod --scope kbmconnects-projects --yes",
+    "deploy:preview": "vercel --scope kbmconnects-projects --yes"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
+    "luxon": "^3.7.2",
     "papaparse": "^5.5.3",
     "qrcode": "^1.5.4",
     "react": "^18.3.1",
@@ -18,6 +22,7 @@
     "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@types/luxon": "^3.7.1",
     "@types/papaparse": "^5.5.2",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.3.12",

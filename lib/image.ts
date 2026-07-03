@@ -7,6 +7,7 @@ import { decode as decodeBase64ToArrayBuffer } from 'base64-arraybuffer';
 import md5 from 'js-md5';
 import Toast from 'react-native-toast-message';
 import { supabase, supabaseStorage, supabaseUrl } from './supabase';
+import { EVENT_BANNER_HEIGHT, EVENT_BANNER_WIDTH } from './eventBanner';
 
 const MAX_WIDTH = 1920;
 const MAX_WIDTH_POST = 1280;
@@ -47,13 +48,14 @@ export async function pickImage(
       alert('Camera permission is needed to take photos');
       return null;
     }
-  } else {
+  } else if (Platform.OS === 'ios') {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       alert('Photo library access is needed to select photos');
       return null;
     }
   }
+  /* Android: system photo picker — no READ_MEDIA_IMAGES / READ_MEDIA_VIDEO (Google Play policy). */
 
   const libraryBase: ImagePicker.ImagePickerOptions = {
     mediaTypes: ['images'],
@@ -153,6 +155,56 @@ export async function compressImage(
     } catch {
       /* fall through */
     }
+  }
+
+  return primarySrc;
+}
+
+const BANNER_JPEG_QUALITY = 0.82;
+
+/** Light JPEG compress before server letterbox — do not resize (edge function letterboxes to 1200×750). */
+export async function compressEventBanner(uri: string): Promise<string> {
+  const saveOpts = {
+    compress: BANNER_JPEG_QUALITY,
+    format: ImageManipulator.SaveFormat.JPEG,
+  } as const;
+
+  const primarySrc = await stableUriForImageManipulator(uri);
+
+  let width = EVENT_BANNER_WIDTH;
+  let height = EVENT_BANNER_HEIGHT;
+  try {
+    const probe = await ImageManipulator.manipulateAsync(primarySrc, [], saveOpts);
+    if (probe.width && probe.height) {
+      width = probe.width;
+      height = probe.height;
+    }
+  } catch {
+    /* use defaults */
+  }
+
+  const maxEdge = Math.max(width, height);
+  if (maxEdge <= EVENT_BANNER_WIDTH) {
+    try {
+      const result = await ImageManipulator.manipulateAsync(primarySrc, [], saveOpts);
+      if (result?.uri) return result.uri;
+    } catch {
+      /* fall through */
+    }
+    return primarySrc;
+  }
+
+  const scale = EVENT_BANNER_WIDTH / maxEdge;
+  const newWidth = Math.max(1, Math.round(width * scale));
+  try {
+    const result = await ImageManipulator.manipulateAsync(
+      primarySrc,
+      [{ resize: { width: newWidth } }],
+      saveOpts
+    );
+    if (result?.uri) return result.uri;
+  } catch {
+    /* fall through */
   }
 
   return primarySrc;
@@ -306,19 +358,11 @@ type R2UploadResult = { url: string } | { failed: true; reason: string };
 
 const R2_PROXY_TIMEOUT_MS = 60_000;
 
-/**
- * Upload image to R2 via Edge Function proxy (app sends base64, function uploads to R2).
- * Used on Android so the app only talks to Supabase; images still end up on R2.
- */
-async function uploadToR2ViaProxy(
-  key: string,
-  base64: string,
-  contentType: string
-): Promise<R2UploadResult> {
+type EdgeImageResponse = { publicUrl?: string; base64?: string; error?: string };
+
+async function callUploadImageEdge(body: Record<string, unknown>): Promise<EdgeImageResponse | null> {
   const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) {
-    return { failed: true, reason: 'Not signed in' };
-  }
+  if (!session?.access_token) return null;
   const url = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/upload-image-to-r2`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), R2_PROXY_TIMEOUT_MS);
@@ -329,32 +373,64 @@ async function uploadToR2ViaProxy(
         'Content-Type': 'application/json',
         Authorization: `Bearer ${session.access_token}`,
       },
-      body: JSON.stringify({ key, contentType, base64 }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
     const text = await res.text();
-    type ProxyResponse = { publicUrl?: string; error?: string } | null;
-    let body: ProxyResponse = null;
     try {
-      body = text ? (JSON.parse(text) as { publicUrl?: string; error?: string }) : null;
+      const parsed = text ? (JSON.parse(text) as EdgeImageResponse) : null;
+      if (!res.ok && parsed?.error) return parsed;
+      if (!res.ok) return { error: text?.slice(0, 150) || `HTTP ${res.status}` };
+      return parsed;
     } catch {
-      return { failed: true, reason: res.ok ? 'Invalid response' : (text?.slice(0, 150) || `HTTP ${res.status}`) };
+      return res.ok ? null : { error: text?.slice(0, 150) || `HTTP ${res.status}` };
     }
-    if (!res.ok) {
-      const reason = body && typeof body === 'object' ? (body.error ?? String(body)) : `HTTP ${res.status}`;
-      return { failed: true, reason };
-    }
-    if (!body?.publicUrl) {
-      return { failed: true, reason: 'No URL in response' };
-    }
-    return { url: body.publicUrl };
   } catch (e) {
     clearTimeout(timeoutId);
     const msg = e instanceof Error ? e.message : String(e);
     const isAbort = e instanceof Error && e.name === 'AbortError';
-    return { failed: true, reason: isAbort ? `Upload timed out after ${R2_PROXY_TIMEOUT_MS / 1000}s` : msg };
+    return { error: isAbort ? `Upload timed out after ${R2_PROXY_TIMEOUT_MS / 1000}s` : msg };
   }
+}
+
+/** Letterbox to 1200×750 on the server (matches cadmin). Returns JPEG base64. */
+async function letterboxBannerBase64ViaEdge(base64: string): Promise<string | null> {
+  const body = await callUploadImageEdge({
+    base64,
+    transform: 'event-banner',
+    processOnly: true,
+  });
+  const out = body?.base64;
+  return typeof out === 'string' && out.length > 0 ? out : null;
+}
+
+/**
+ * Upload image to R2 via Edge Function proxy (app sends base64, function uploads to R2).
+ * Used on Android so the app only talks to Supabase; images still end up on R2.
+ */
+async function uploadToR2ViaProxy(
+  key: string,
+  base64: string,
+  contentType: string,
+  transform?: 'event-banner'
+): Promise<R2UploadResult> {
+  const body = await callUploadImageEdge({
+    key,
+    contentType,
+    base64,
+    ...(transform ? { transform } : {}),
+  });
+  if (!body) {
+    return { failed: true, reason: 'Upload request failed' };
+  }
+  if (body.error) {
+    return { failed: true, reason: body.error };
+  }
+  if (!body.publicUrl) {
+    return { failed: true, reason: 'No URL in response' };
+  }
+  return { url: body.publicUrl };
 }
 
 /**
@@ -609,14 +685,24 @@ export async function uploadEventBanner(
   bucket: string = 'event-photos'
 ): Promise<string | null> {
   try {
-    const compressedUri = await compressImage(localUri);
-    const base64 = await FileSystem.readAsStringAsync(compressedUri, {
+    const compressedUri = await compressEventBanner(localUri);
+    const rawBase64 = await FileSystem.readAsStringAsync(compressedUri, {
       encoding: 'base64',
     });
     const filePath = `${eventId}/banner_${Date.now()}.jpg`;
-    const arrayBuffer = decodeBase64ToArrayBuffer(base64);
+    const r2Key = `event-photos/${filePath}`;
 
-    const r2Result = await uploadToR2(`event-photos/${filePath}`, arrayBuffer, 'image/jpeg');
+    const letterboxedBase64 = await letterboxBannerBase64ViaEdge(rawBase64);
+    if (!letterboxedBase64) {
+      console.error('Banner letterbox failed');
+      return null;
+    }
+
+    const proxyResult = await uploadToR2ViaProxy(r2Key, letterboxedBase64, 'image/jpeg');
+    if (!('failed' in proxyResult)) return proxyResult.url;
+
+    const arrayBuffer = decodeBase64ToArrayBuffer(letterboxedBase64);
+    const r2Result = await uploadToR2(r2Key, arrayBuffer, 'image/jpeg');
     if (!('failed' in r2Result)) return r2Result.url;
 
     const { data, error } = await supabase.storage

@@ -11,6 +11,7 @@ export type NotificationType =
   | 'meeting'
   | 'schedule_change'
   | 'connection_request'
+  | 'user_report'
   | 'system';
 
 /**

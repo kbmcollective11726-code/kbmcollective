@@ -17,6 +17,7 @@ import { useRouter } from 'expo-router';
 import { Calendar } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../lib/supabase';
 import { initializePointRules } from '../../../lib/points';
 import { colors } from '../../../constants/colors';
@@ -57,13 +58,14 @@ export default function AdminEventNewScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { setCurrentEvent, fetchMyMemberships, bumpAdminCheck } = useEventStore();
+  const { showPlatformAdminTools } = useRolePreviewContext();
   const isPlatformAdmin = user?.is_platform_admin === true;
 
   useEffect(() => {
-    if (user && !isPlatformAdmin) {
+    if (user && (!isPlatformAdmin || !showPlatformAdminTools)) {
       router.replace('/profile/admin');
     }
-  }, [user, isPlatformAdmin, router]);
+  }, [user, isPlatformAdmin, showPlatformAdminTools, router]);
 
   // Only super admins (platform admins) can create events.
 

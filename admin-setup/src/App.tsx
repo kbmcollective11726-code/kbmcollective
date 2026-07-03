@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate, useParams } from 'react-router-dom';
+import { Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom';
 import { useEffect, useState } from 'react';
 import { Session } from '@supabase/supabase-js';
 import { supabase, isConfigured } from './lib/supabase';
@@ -24,17 +24,25 @@ import Dashboard from './pages/Dashboard';
 import VendorBooths from './pages/VendorBooths';
 import VendorBoothForm from './pages/VendorBoothForm';
 import PlatformUsers from './pages/PlatformUsers';
+import PlatformUserAudit from './pages/PlatformUserAudit';
 import TestGuide from './pages/TestGuide';
 import EventPhotos from './pages/EventPhotos';
 import EventSponsors from './pages/EventSponsors';
 import EventMatchmaking from './pages/EventMatchmaking';
 import EventBadges from './pages/EventBadges';
 import EventScanLog from './pages/EventScanLog';
+import EventSessionAttendance from './pages/EventSessionAttendance';
+import EventSessionAttendanceReport from './pages/EventSessionAttendanceReport';
 import EventSafety from './pages/EventSafety';
 import EventAdminTiles from './pages/EventAdminTiles';
-import RegistrationPortal from './pages/RegistrationPortal';
+import BadgeOpen from './pages/BadgeOpen';
+import { portalRouteElements } from './PortalRoutes';
 
 export default function App() {
+  const location = useLocation();
+  const isPortalRoute = location.pathname.startsWith('/portal/');
+  const isRegisterRoute = location.pathname.startsWith('/register/');
+  const isBadgeOpenRoute = location.pathname === '/badge';
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -56,6 +64,14 @@ export default function App() {
     );
   }
 
+  if (isBadgeOpenRoute) {
+    return (
+      <Routes>
+        <Route path="/badge" element={<BadgeOpen />} />
+      </Routes>
+    );
+  }
+
   if (loading) {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh' }}>
@@ -64,19 +80,27 @@ export default function App() {
     );
   }
 
-  if (!session) {
+  if (isPortalRoute || isRegisterRoute || !session) {
+    if (!session && !isPortalRoute && !isRegisterRoute) {
+      return (
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          {portalRouteElements()}
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      );
+    }
     return (
       <Routes>
-        <Route path="/register/:eventId/:audience" element={<RegistrationPortal />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
+        {portalRouteElements()}
+        {!session ? <Route path="*" element={<Navigate to="/login" replace />} /> : null}
       </Routes>
     );
   }
 
   return (
     <Routes>
-      <Route path="/register/:eventId/:audience" element={<RegistrationPortal />} />
+      {portalRouteElements()}
       <Route path="/" element={<Layout />}>
         <Route index element={<EventList />} />
         <Route path="events/new" element={<EventNew />} />
@@ -99,8 +123,11 @@ export default function App() {
         <Route path="events/:eventId/matchmaking" element={<EventMatchmaking />} />
         <Route path="events/:eventId/badges" element={<EventBadges />} />
         <Route path="events/:eventId/scan-log" element={<EventScanLog />} />
+        <Route path="events/:eventId/session-attendance" element={<EventSessionAttendance />} />
+        <Route path="events/:eventId/session-attendance/:sessionId" element={<EventSessionAttendanceReport />} />
         <Route path="events/:eventId/safety" element={<EventSafety />} />
         <Route path="platform/users" element={<PlatformUsers />} />
+        <Route path="platform/audit" element={<PlatformUserAudit />} />
         <Route path="platform/test-guide" element={<TestGuide />} />
       </Route>
       <Route path="/login" element={<Navigate to="/" replace />} />

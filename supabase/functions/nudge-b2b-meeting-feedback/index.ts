@@ -104,7 +104,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: booths, error: boothError } = await supabase
     .from("vendor_booths")
-    .select("id, vendor_name, event_id")
+    .select("id, vendor_name, event_id, events!inner(notifications_paused, notifications_paused_until)")
     .in("id", boothIds);
 
   if (boothError) {
@@ -112,9 +112,20 @@ Deno.serve(async (req: Request) => {
     return json({ error: boothError.message }, 500);
   }
 
-  const boothMap = new Map<string, BoothRow>();
-  for (const b of (booths ?? []) as BoothRow[]) {
-    boothMap.set(b.id, b);
+  const boothMap = new Map<string, BoothRow & { notifications_paused: boolean }>();
+  for (const b of (booths ?? []) as (BoothRow & {
+    events?: { notifications_paused?: boolean; notifications_paused_until?: string | null } | null;
+  })[]) {
+    const untilMs = b.events?.notifications_paused_until ? Date.parse(b.events.notifications_paused_until) : NaN;
+    const activePause =
+      b.events?.notifications_paused === true &&
+      (!Number.isFinite(untilMs) || untilMs > Date.now());
+    boothMap.set(b.id, {
+      id: b.id,
+      vendor_name: b.vendor_name,
+      event_id: b.event_id,
+      notifications_paused: activePause,
+    });
   }
   const slotMap = new Map(slotList.map((s) => [s.id, s]));
 
@@ -143,6 +154,7 @@ Deno.serve(async (req: Request) => {
     const booth = boothMap.get(slot.booth_id);
     const vendorName = booth?.vendor_name ?? "this vendor";
     const eventId = booth?.event_id ?? null;
+    if (booth?.notifications_paused === true) continue;
     const token = tokenByUser.get(booking.attendee_id);
     if (!token) continue;
 

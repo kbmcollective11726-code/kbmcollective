@@ -1,38 +1,59 @@
 .page {
-  max-width: 900px;
+  max-width: var(--page-max-content);
+  width: 100%;
+  margin: 0 0 48px;
 }
 
-.head {
-  margin-bottom: 16px;
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding: 14px 16px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
 }
 
 .back {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
   font-size: 14px;
-  font-weight: 500;
+  font-weight: 600;
   color: var(--color-accent);
-  padding: 8px 14px;
-  border-radius: var(--radius-sm);
-  background: var(--color-accent-muted);
-  transition: background var(--transition), color var(--transition);
-}
-
-.back:hover {
   text-decoration: none;
-  background: rgba(212, 175, 55, 0.25);
-  color: var(--color-accent-hover);
 }
 
-.page h1 {
+.toolbarActions {
+  display: flex;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.btn,
+.btnPrimary {
+  padding: 8px 14px;
+  font-size: 14px;
+  font-weight: 600;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+}
+
+.btnPrimary {
+  background: var(--color-accent);
+  color: #fff;
+  border-color: var(--color-accent);
+}
+
+.printHead h1 {
   margin: 0 0 8px;
   font-size: 1.35rem;
   color: var(--color-text);
 }
 
-.hint {
-  margin: 0 0 16px;
+.meta {
+  margin: 0 0 4px;
   font-size: 13px;
   color: var(--color-text-secondary);
 }
@@ -66,6 +87,12 @@
   color: var(--color-text-secondary);
 }
 
+.listTitle {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+  color: var(--color-text);
+}
+
 .tableWrap {
   overflow-x: auto;
   margin-bottom: 20px;
@@ -84,14 +111,27 @@
   border-bottom: 1px solid var(--color-border);
 }
 
+.table thead {
+  background: var(--color-primary);
+}
+
 .table th {
-  font-weight: 600;
-  color: var(--color-text-secondary);
+  font-weight: 700;
+  color: #ffffff;
   white-space: nowrap;
 }
 
 .table tr:hover {
   background: var(--color-surface);
+}
+
+.commentCell {
+  min-width: 10rem;
+  max-width: 22rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.45;
+  vertical-align: top;
 }
 
 .detailBtn {
@@ -111,22 +151,24 @@
 .modalOverlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: rgba(15, 23, 42, 0.62);
+  backdrop-filter: blur(2px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 100;
+  z-index: 1200;
   padding: 24px;
 }
 
 .modal {
-  background: var(--color-bg);
+  background: #ffffff;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  max-width: 480px;
+  max-width: 520px;
   width: 100%;
   max-height: 90vh;
   overflow-y: auto;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.4);
 }
 
 .modalHead {
@@ -135,43 +177,97 @@
   align-items: center;
   padding: 16px 20px;
   border-bottom: 1px solid var(--color-border);
+  background: #ffffff;
+  position: sticky;
+  top: 0;
+  z-index: 1;
 }
 
 .modalHead h2 {
   margin: 0;
   font-size: 1.1rem;
+  color: var(--color-text);
 }
 
 .modalClose {
   background: none;
   border: none;
-  font-size: 1.25rem;
+  font-size: 1.5rem;
+  line-height: 1;
   cursor: pointer;
   color: var(--color-text-secondary);
 }
 
 .modalBody {
   padding: 20px;
+  background: #ffffff;
 }
 
 .modalRow {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
 
 .modalRow strong {
   display: block;
   font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--color-text-secondary);
-  margin-bottom: 2px;
+  margin-bottom: 4px;
 }
 
-.listTitle {
-  margin: 0 0 12px;
-  font-size: 1.1rem;
+.modalRow span {
+  display: block;
+  font-size: 15px;
   color: var(--color-text);
+  line-height: 1.45;
+}
+
+.modalComment {
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .empty {
   color: var(--color-text-secondary);
   padding: 24px 0;
+}
+
+@media print {
+  .toolbar,
+  .listTitle,
+  .noPrintCol,
+  .modalOverlay {
+    display: none !important;
+  }
+
+  .page {
+    max-width: none;
+    margin: 0;
+  }
+
+  .summary {
+    break-inside: avoid;
+  }
+
+  .table th,
+  .table td {
+    border: 1px solid #ccc;
+    font-size: 11px;
+    padding: 6px 8px;
+  }
+
+  .table th {
+    color: #111;
+    background: #f4f4f5;
+  }
+
+  .commentCell {
+    max-width: none;
+  }
+
+  .table tr:hover {
+    background: transparent;
+  }
 }

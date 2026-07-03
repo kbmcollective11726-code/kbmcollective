@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import { uploadEventImage } from '../lib/uploadEventImage';
+import { LOGO_FILE_ACCEPT, VENDOR_BOOTH_LOGO_HINT } from '../lib/logoUploadHints';
 import type { VendorBooth } from '../lib/types';
 import styles from './VendorBoothForm.module.css';
 
@@ -244,10 +245,10 @@ export default function VendorBoothForm() {
 
   return (
     <div className={styles.page}>
-      <Link to={`/events/${eventId}/vendor-booths`} className={styles.back}>
-        ← Vendor booths
-      </Link>
-      <h1>{isNew ? 'Add vendor booth' : 'Edit vendor booth'}</h1>
+        <Link to={`/events/${eventId}/vendor-booths`} className={styles.back}>
+          ← Solution Providers
+        </Link>
+      <h1>{isNew ? 'Add booth' : 'Edit booth'}</h1>
 
       {formError ? <div className={styles.error}>{formError}</div> : null}
 
@@ -284,11 +285,11 @@ export default function VendorBoothForm() {
         />
 
         <span className={styles.labelRow}>Booth logo (optional)</span>
-        <p className={styles.fieldHint}>Upload a square or wide logo — same storage as the mobile app (R2 or event-photos).</p>
+        <p className={styles.fieldHint}>{VENDOR_BOOTH_LOGO_HINT}</p>
         <input
           ref={logoInputRef}
           type="file"
-          accept="image/*"
+          accept={LOGO_FILE_ACCEPT}
           className={styles.hiddenFile}
           onChange={onLogoFile}
           aria-hidden

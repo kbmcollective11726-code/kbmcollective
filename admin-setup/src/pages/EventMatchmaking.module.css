@@ -1,6 +1,9 @@
 .page {
   display: grid;
   gap: 16px;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+  padding: 10px;
+  border-radius: 14px;
 }
 
 .head h1 {
@@ -19,10 +22,11 @@
 }
 
 .section {
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  padding: 14px;
+  border: 1px solid #dbe4f0;
+  border-radius: 14px;
+  padding: 16px;
   background: #fff;
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.06);
 }
 
 .section h2 {
@@ -71,6 +75,22 @@
   flex: 1 1 300px;
 }
 
+.sectionPick {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  color: #475569;
+}
+
+.sectionPick span {
+  font-weight: 600;
+}
+
+.sectionPick select {
+  min-width: min(260px, 100%);
+}
+
 .inlineForm button {
   border: 0;
   border-radius: 8px;
@@ -102,12 +122,18 @@
 .formCard {
   text-align: left;
   border: 1px solid #cbd5e1;
-  border-radius: 10px;
+  border-radius: 12px;
   background: #fff;
-  padding: 10px;
+  padding: 12px;
   display: grid;
   gap: 4px;
   cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+.formCard:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.12);
 }
 
 .formCardActive {
@@ -139,23 +165,335 @@
 }
 
 .baseTag {
-  margin-left: 8px;
-  color: #1d4ed8 !important;
+  display: inline-block;
+  margin-left: 6px;
+  color: #1d4ed8;
   background: #dbeafe;
   border: 1px solid #93c5fd;
   border-radius: 999px;
-  padding: 1px 7px;
-  font-size: 11px !important;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-style: normal;
+}
+
+.workbench {
+  display: grid;
+  gap: 14px;
+}
+
+/* Question list + editor: side-by-side on wide viewports so Edit stays visible while scrolling the list */
+.questionsEditorSplit {
+  display: grid;
+  grid-template-columns: 1fr minmax(280px, 400px);
+  gap: 14px;
+  align-items: start;
+}
+
+.questionsListColumn {
+  min-width: 0;
+}
+
+.questionEditorColumn {
+  min-width: 0;
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+@media (min-width: 961px) {
+  .questionEditorColumn {
+    position: sticky;
+    top: 12px;
+    max-height: calc(100vh - 24px);
+    overflow-y: auto;
+    align-self: start;
+    padding-bottom: 8px;
+  }
+}
+
+@media (max-width: 960px) {
+  .questionsEditorSplit {
+    grid-template-columns: 1fr;
+  }
+}
+
+.panel {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.panelPrimary {
+  border-color: #93c5fd;
+  box-shadow: 0 0 0 1px rgba(37, 99, 235, 0.08);
+}
+
+.panelMuted {
+  background: #f8fafc;
+}
+
+.panelAccent {
+  border-color: #fcd34d;
+  background: linear-gradient(180deg, #fffbeb 0%, #fff 48%);
+}
+
+.panelHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e2e8f0;
+  background: rgba(248, 250, 252, 0.85);
+}
+
+.panelTitle {
+  font-weight: 700;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.panelHint {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.panelBody {
+  padding: 14px;
+}
+
+.panelActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #f1f5f9;
+}
+
+.fieldGrid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: #334155;
+}
+
+.field > span:first-child {
+  font-weight: 600;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #64748b;
+}
+
+.field input,
+.field select {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  min-height: 42px;
+}
+
+.fieldGrow {
+  flex: 1 1 280px;
+  min-width: 200px;
+}
+
+.fieldShrink {
+  flex: 0 1 220px;
+  min-width: 160px;
+}
+
+.fieldCheckbox .checkboxRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 42px;
+}
+
+.fieldCheckbox input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+}
+
+.filterRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+}
+
+.searchInput {
+  width: 100%;
+}
+
+.btnPrimary {
+  border: 0;
+  border-radius: 8px;
+  background: #2563eb;
+  color: #fff;
+  padding: 10px 18px;
+  font-weight: 600;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.btnPrimary:disabled {
+  opacity: 0.65;
+  cursor: default;
+}
+
+.btnSecondary {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btnSecondary:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btnDangerOutline {
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #b91c1c;
+  padding: 8px 12px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btnDangerOutline:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.btnIcon {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  padding: 6px 10px;
+  min-width: 36px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.btnIcon:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.unsavedPill {
+  font-size: 12px;
+  font-weight: 700;
+  color: #b45309;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  padding: 4px 10px;
+}
+
+.questionRow {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: start;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid transparent;
+}
+
+.questionRowSelected {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.questionRowMain {
+  min-width: 0;
+}
+
+.questionRowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+.questionMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.typePill {
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  background: #f1f5f9;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.requiredPill {
+  font-size: 11px;
+  font-weight: 700;
+  color: #9d174d;
+  background: #fce7f3;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.hiddenPill {
+  font-size: 11px;
+  font-weight: 600;
+  color: #64748b;
+  background: #e2e8f0;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.sectionHeadActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .qSelectBtn {
   background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #dbe4f0;
   border-radius: 8px;
-  padding: 8px;
+  padding: 10px;
   text-align: left;
   width: 100%;
   cursor: pointer;
+}
+
+.qSelectBtn:hover {
+  border-color: #93c5fd;
+  background: #fff;
 }
 
 .qMoveBtns {
@@ -192,6 +530,46 @@
   padding-top: 10px;
 }
 
+.optionPanel .optionEditor {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sectionManager {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+  background: #f8fafc;
+}
+
+.sectionStack {
+  display: grid;
+  gap: 10px;
+}
+
+.sectionBlock {
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  padding: 10px;
+  background: #ffffff;
+}
+
+.sectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.sectionHead h3 {
+  margin: 0;
+  font-size: 14px;
+  color: #334155;
+}
+
 .optionEditor h3 {
   margin: 0 0 8px;
   font-size: 15px;
@@ -200,6 +578,14 @@
 .optionList {
   margin: 0;
   padding-left: 18px;
+}
+
+.optionRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 4px 0;
 }
 
 .tableWrap {
@@ -229,6 +615,29 @@
 
 .rowActive {
   background: #e8f0ff !important;
+}
+
+.rowActions {
+  width: 1%;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.rowActions button {
+  cursor: pointer;
+}
+
+.detailHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+}
+
+.detailHead h3 {
+  margin: 0;
 }
 
 .tableWrap th {

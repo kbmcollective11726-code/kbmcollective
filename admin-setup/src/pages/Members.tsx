@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase, supabaseUrl, edgeFunctionHeaders } from '../lib/supabase';
 import { adminResetUserPassword } from '../lib/adminResetUserPassword';
+import TransferMeetingsModal from '../components/TransferMeetingsModal';
+import type { MemberPickOption } from '../components/MemberSearchSelect';
 import type { Event } from '../lib/types';
 import styles from './Members.module.css';
 
@@ -333,12 +335,15 @@ type SearchableUser = {
 
 function parseCsvLine(line: string): string[] {
   const out: string[] = [];
+  const n = line.length;
   let i = 0;
-  while (i < line.length) {
+  // Parse one field per iteration, then consume the trailing delimiter comma.
+  // This keeps quoted fields that contain commas (e.g. "Director, Talent") in a single column.
+  for (;;) {
+    let val = '';
     if (line[i] === '"') {
-      let val = '';
       i++;
-      while (i < line.length) {
+      while (i < n) {
         if (line[i] === '"') {
           if (line[i + 1] === '"') {
             val += '"';
@@ -352,13 +357,17 @@ function parseCsvLine(line: string): string[] {
           i++;
         }
       }
-      out.push(val);
+      // Ignore any stray characters (e.g. whitespace) between the closing quote and the next comma.
+      while (i < n && line[i] !== ',') i++;
     } else {
       const comma = line.indexOf(',', i);
-      const end = comma === -1 ? line.length : comma;
-      out.push(line.slice(i, end).trim());
-      i = comma === -1 ? line.length : comma + 1;
+      const end = comma === -1 ? n : comma;
+      val = line.slice(i, end).trim();
+      i = end;
     }
+    out.push(val);
+    if (i >= n) break;
+    i++;
   }
   return out;
 }
@@ -463,8 +472,11 @@ export default function Members() {
   const [loginFilter, setLoginFilter] = useState<'all' | 'never'>('all');
   const [page, setPage] = useState(1);
   const [editingMember, setEditingMember] = useState<MemberRow | null>(null);
+  const [transferSource, setTransferSource] = useState<MemberRow | null>(null);
   const membersListStartRef = useRef<HTMLHeadingElement>(null);
+  const addToolsRef = useRef<HTMLDetailsElement>(null);
   const skipScrollToMembersOnPage = useRef(true);
+  const [addToolsOpen, setAddToolsOpen] = useState(false);
   const [existingUserSearch, setExistingUserSearch] = useState('');
   const [existingUserHits, setExistingUserHits] = useState<SearchableUser[]>([]);
   const [existingUserSearchLoading, setExistingUserSearchLoading] = useState(false);
@@ -473,6 +485,14 @@ export default function Members() {
   const [addingExistingUserId, setAddingExistingUserId] = useState<string | null>(null);
 
   const memberIdSet = useMemo(() => new Set(members.map((m) => m.user_id)), [members]);
+
+  const memberPickOptions = useMemo((): MemberPickOption[] => {
+    return members.map((m) => ({
+      user_id: m.user_id,
+      role: m.role,
+      user: { full_name: m.full_name, email: m.email },
+    }));
+  }, [members]);
 
   useEffect(() => {
     const q = existingUserSearch.trim();
@@ -599,6 +619,10 @@ export default function Members() {
   useEffect(() => {
     setPage((p) => Math.min(Math.max(1, p), totalPages));
   }, [totalPages]);
+
+  useEffect(() => {
+    if (!loading && members.length === 0) setAddToolsOpen(true);
+  }, [loading, members.length]);
 
   useEffect(() => {
     if (skipScrollToMembersOnPage.current) {
@@ -898,9 +922,126 @@ export default function Members() {
       <div className={styles.head}>
         <Link to={`/events/${eventId}`} className={styles.back}>← Event</Link>
       </div>
-      <h1>Members — {event?.name ?? 'Event'}</h1>
+      <div className={styles.pageTop}>
+        <h1>Members — {event?.name ?? 'Event'}</h1>
+        {members.length > 0 ? (
+          <button
+            type="button"
+            className={styles.headerBtn}
+            onClick={() => membersListStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+          >
+            Jump to member list ↓
+          </button>
+        ) : null}
+      </div>
 
-      <section className={styles.bulkSection}>
+      <details
+        ref={addToolsRef}
+        className={styles.addToolsPanel}
+        open={addToolsOpen}
+        onToggle={(e) => {
+          if (e.target !== e.currentTarget) return;
+          setAddToolsOpen((e.currentTarget as HTMLDetailsElement).open);
+        }}
+      >
+        <summary className={styles.addToolsSummary}>
+          <span className={styles.addToolsSummaryTitle}>Add members to this event</span>
+          <span className={styles.addToolsSummaryHint}>Bulk CSV · create one account · link existing users</span>
+        </summary>
+        <div className={styles.addToolsBody}>
+      <section className={styles.addMemberSection}>
+        <h2 className={styles.listTitle}>Bulk import from CSV</h2>
+        <p className={styles.hint}>
+          Upload a CSV file with member details. Most common way to add multiple members at once.
+        </p>
+        <details
+          className={styles.csvHelpDetails}
+          onToggle={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <summary className={styles.csvHelpSummary} onClick={(e) => e.stopPropagation()}>
+            How to prepare your CSV
+          </summary>
+          <div className={styles.csvHelpBody}>
+            <p>
+              Don&apos;t change the column headers in the template. Download it and fill in your member data — headers are
+              already set up correctly.
+            </p>
+            <ul>
+              <li>
+                <strong>Required:</strong> <code>email</code>
+              </li>
+              <li>
+                <strong>Optional:</strong> <code>full_name</code>, <code>title</code>, <code>company</code>,{' '}
+                <code>role</code> (e.g. attendee, speaker, vendor, admin — comma-separated for multiple roles)
+              </li>
+              <li>If the <code>role</code> column is missing or empty, the default role below is used for each row.</li>
+              <li>New emails get the default password. Existing emails are linked to this event (password unchanged).</li>
+              <li>Save as <strong>CSV UTF-8</strong> from Excel to avoid import issues.</li>
+            </ul>
+          </div>
+        </details>
+        <div className={styles.bulkRow}>
+          <button type="button" className={styles.importBtn} onClick={downloadMembersTemplate}>
+            Download CSV template
+          </button>
+          <input
+            ref={bulkFileInputRef}
+            type="file"
+            accept=".csv,text/csv"
+            onChange={handleBulkCreateFile}
+            style={{ display: 'none' }}
+          />
+          <label className={styles.bulkLabel}>
+            Default password (min 8 chars):{' '}
+            <input
+              type="password"
+              className={styles.bulkInput}
+              value={bulkPassword}
+              onChange={(e) => setBulkPassword(e.target.value)}
+              placeholder="e.g. ChangeMe123"
+              minLength={8}
+            />
+          </label>
+          {eventId && (
+            <label className={styles.bulkLabel}>
+              Default role (when CSV has no role column):{' '}
+              <select
+                className={styles.bulkSelect}
+                value={bulkRole}
+                onChange={(e) => setBulkRole(e.target.value)}
+              >
+                {ROLES.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <button
+            type="button"
+            disabled={bulkCreating || bulkPassword.length < 8}
+            className={styles.importBtn}
+            onClick={() => bulkFileInputRef.current?.click()}
+          >
+            {bulkCreating ? 'Creating…' : 'Upload CSV and create accounts'}
+          </button>
+        </div>
+        {bulkResult && (
+          <div className={styles.result}>
+            <strong>Bulk create:</strong> {bulkResult.created} new accounts, {bulkResult.linked} linked to event
+            (already existed), {bulkResult.failed} failed.
+            {bulkResult.errors.length > 0 && (
+              <ul className={styles.errorList}>
+                {bulkResult.errors.map((msg, i) => (
+                  <li key={i}>{msg}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className={styles.addMemberSection}>
         <h2 className={styles.listTitle}>Create one account</h2>
         <p className={styles.hint}>
           Add a single new user with email and password. They are added to this event immediately. If the email already
@@ -972,110 +1113,45 @@ export default function Members() {
         ) : null}
       </section>
 
-      <section className={styles.bulkSection}>
-        <h2 className={styles.listTitle}>Create new user accounts (bulk)</h2>
-        <p className={styles.hint}>
-          <strong>Buttons:</strong> <em>Download CSV template</em> — sample file. <em>Default password</em> — used for brand-new accounts only (min 8 characters).
-          <em>Default role</em> — used when a row has no <code>role</code> column or it’s empty. <em>Upload CSV and create accounts</em> — pick your filled CSV to run the import.
-          Columns: <code>full_name</code>, <code>email</code>, optional <code>title</code> (or <code>job_title</code>), optional <code>company</code> (or <code>organization</code>), and optional <code>role</code>. If you skip <code>role</code> or leave it empty, the default role above is used.
-          Use one or more roles per row: <code>attendee</code>, <code>speaker</code>, <code>vendor</code>, <code>admin</code>. Separate multiple roles with commas (e.g. <code>attendee,speaker,vendor</code>) — same as in the app.
-          New users get this password and must change it on first sign-in. Existing emails are linked to the event; name, title, and company are updated when provided.
-        </p>
-        <div className={styles.bulkRow}>
-          <button type="button" className={styles.importBtn} onClick={downloadMembersTemplate}>
-            Download CSV template
-          </button>
-          <input
-            ref={bulkFileInputRef}
-            type="file"
-            accept=".csv,text/csv"
-            onChange={handleBulkCreateFile}
-            style={{ display: 'none' }}
-          />
-          <label className={styles.bulkLabel}>
-            Default password (min 8 chars):{' '}
-            <input
-              type="password"
-              className={styles.bulkInput}
-              value={bulkPassword}
-              onChange={(e) => setBulkPassword(e.target.value)}
-              placeholder="e.g. ChangeMe123"
-              minLength={8}
-            />
-          </label>
-          {eventId && (
-            <label className={styles.bulkLabel}>
-              Default role (when CSV has no role column):{' '}
-              <select
-                className={styles.bulkSelect}
-                value={bulkRole}
-                onChange={(e) => setBulkRole(e.target.value)}
-              >
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
-            </label>
-          )}
-          <button
-            type="button"
-            disabled={bulkCreating || bulkPassword.length < 8}
-            className={styles.importBtn}
-            onClick={() => bulkFileInputRef.current?.click()}
-          >
-            {bulkCreating ? 'Creating…' : 'Upload CSV and create accounts'}
-          </button>
-        </div>
-        {bulkResult && (
-          <div className={styles.result}>
-            <strong>Bulk create:</strong> {bulkResult.created} new accounts, {bulkResult.linked} linked to event
-            (already existed), {bulkResult.failed} failed.
-            {bulkResult.errors.length > 0 && (
-              <ul className={styles.errorList}>
-                {bulkResult.errors.map((msg, i) => (
-                  <li key={i}>{msg}</li>
-                ))}
-              </ul>
-            )}
-          </div>
-        )}
-      </section>
-
+      <section className={styles.addMemberSection}>
       <h2 className={styles.listTitle}>Add existing users to this event</h2>
       <p className={styles.hint}>
-        <strong>Search:</strong> find anyone already in the app by name or email and add them to this event (no password). Platform admin accounts are not shown.{' '}
-        <strong>CSV:</strong> <em>Add from CSV (batch)</em> — same format, <strong>no password</strong>; only existing accounts are linked; unknown emails are errors.
-        Columns: <code>full_name</code>, <code>email</code>, optional <code>title</code>/<code>job_title</code>, optional <code>company</code>/<code>organization</code>, optional <code>role</code>. Profile fields are updated when provided via CSV. Multiple roles in one CSV cell: comma-separated (e.g. <code>attendee,speaker,vendor</code>).
+        <strong>Search and add</strong>
+        <br />
+        Find anyone already in the system by name or email. They&apos;ll be linked to this event without creating a new
+        account.
       </p>
       <div className={styles.addExistingBlock}>
-        <div className={styles.addExistingSearchRow}>
-          <label htmlFor="add-existing-user-search" className={styles.addExistingFieldLabel}>
-            Search users
-          </label>
-          <input
-            id="add-existing-user-search"
-            type="search"
-            className={styles.memberSearchInput}
-            value={existingUserSearch}
-            onChange={(e) => setExistingUserSearch(e.target.value)}
-            placeholder="Name or email (min 2 characters)…"
-            autoComplete="off"
-          />
-        </div>
-        <div className={styles.addExistingRoleRow}>
-          <label htmlFor="add-existing-search-role" className={styles.addExistingFieldLabel}>
-            Role when adding from search
-          </label>
-          <select
-            id="add-existing-search-role"
-            className={styles.addExistingRoleSelect}
-            value={addExistingSearchRole}
-            onChange={(e) => setAddExistingSearchRole(e.target.value)}
-          >
-            {ROLES.map((r) => (
-              <option key={r} value={r}>{r}</option>
-            ))}
-          </select>
+        <div className={styles.addExistingFieldsRow}>
+          <div className={styles.addExistingSearchRow}>
+            <label htmlFor="add-existing-user-search" className={styles.addExistingFieldLabel}>
+              Search users
+            </label>
+            <input
+              id="add-existing-user-search"
+              type="search"
+              className={styles.memberSearchInput}
+              value={existingUserSearch}
+              onChange={(e) => setExistingUserSearch(e.target.value)}
+              placeholder="Name or email (min 2 characters)…"
+              autoComplete="off"
+            />
+          </div>
+          <div className={styles.addExistingRoleRow}>
+            <label htmlFor="add-existing-search-role" className={styles.addExistingFieldLabel}>
+              Role when adding from search
+            </label>
+            <select
+              id="add-existing-search-role"
+              className={styles.addExistingRoleSelect}
+              value={addExistingSearchRole}
+              onChange={(e) => setAddExistingSearchRole(e.target.value)}
+            >
+              {ROLES.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+          </div>
         </div>
         {addExistingSearchError ? <p className={styles.addExistingError}>{addExistingSearchError}</p> : null}
         {existingUserSearch.trim().length > 0 && existingUserSearch.trim().length < 2 ? (
@@ -1155,6 +1231,11 @@ export default function Members() {
           )}
         </div>
       )}
+      </section>
+        </div>
+      </details>
+
+      <section className={styles.membersListSection}>
       <h2 ref={membersListStartRef} className={styles.listTitle}>
         Members (
         {filteredMembers.length}
@@ -1202,7 +1283,8 @@ export default function Members() {
       )}
       {members.length === 0 ? (
         <p className={styles.empty}>
-          No members yet. Add via search, CSV, or have users join with the event code in the app.
+          No members yet. Expand <strong>Add members to this event</strong> above to create accounts, import CSV, or link
+          existing users—or have attendees join with the event code in the app.
         </p>
       ) : filteredMembers.length === 0 ? (
         <p className={styles.empty}>
@@ -1233,6 +1315,14 @@ export default function Members() {
                   <div className={styles.itemActions}>
                     <button type="button" className={styles.editBtn} onClick={() => setEditingMember(m)}>
                       Edit
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.transferBtn}
+                      onClick={() => setTransferSource(m)}
+                      title="Move all B2B meetings to another member"
+                    >
+                      Transfer meetings
                     </button>
                     <select
                       className={styles.roleSelect}
@@ -1289,6 +1379,8 @@ export default function Members() {
           ) : null}
         </>
       )}
+      </section>
+
       {editingMember && eventId ? (
         <MemberEditModal
           member={editingMember}
@@ -1297,6 +1389,15 @@ export default function Members() {
           onSaved={(row) => {
             setMembers((prev) => prev.map((m) => (m.user_id === row.user_id ? row : m)));
           }}
+        />
+      ) : null}
+      {transferSource && eventId ? (
+        <TransferMeetingsModal
+          eventId={eventId}
+          source={transferSource}
+          memberOptions={memberPickOptions}
+          onClose={() => setTransferSource(null)}
+          onDone={() => {}}
         />
       ) : null}
     </div>

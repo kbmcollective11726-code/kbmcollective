@@ -16,6 +16,7 @@ const key = SUPABASE_ANON_KEY || 'placeholder-anon-key';
 export const isSupabaseConfigured = !url.includes('placeholder');
 /** Base URL for the Supabase project (e.g. for calling Edge Functions with fetch). */
 export const supabaseUrl = url;
+export const supabaseAnonKey = key;
 
 /** Test if the device can reach Supabase (for Debug panel). Uses 10s timeout. */
 export async function testSupabaseConnection(): Promise<{ ok: boolean; message: string }> {
@@ -125,6 +126,16 @@ export const supabase = createClient(url, key, {
   },
   global: {
     fetch: safeFetch,
+  },
+});
+
+/** Auth-only client using native fetch to avoid edge hangs in recovery/setSession flows. */
+export const supabaseAuthNative = createClient(url, key, {
+  auth: {
+    storage: AsyncStorage,
+    autoRefreshToken: true,
+    persistSession: true,
+    detectSessionInUrl: false,
   },
 });
 

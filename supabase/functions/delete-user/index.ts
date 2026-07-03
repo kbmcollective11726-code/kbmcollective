@@ -71,10 +71,30 @@ Deno.serve(async (req: Request) => {
     }
   }
 
+  const { data: targetProfile } = await admin
+    .from("users")
+    .select("email, full_name")
+    .eq("id", targetUserId)
+    .maybeSingle();
+  const targetEmail = (targetProfile as { email?: string } | null)?.email ?? null;
+  const targetName = (targetProfile as { full_name?: string } | null)?.full_name ?? null;
+
   await admin.from("announcements").update({ sent_by: null }).eq("sent_by", targetUserId);
   await admin.from("events").update({ created_by: null }).eq("created_by", targetUserId);
   await admin.from("vendor_booths").update({ contact_user_id: null }).eq("contact_user_id", targetUserId);
   await admin.from("vendor_booth_reps").delete().eq("user_id", targetUserId);
+
+  await admin.rpc("insert_platform_audit_log", {
+    p_category: "admin",
+    p_action: isSelfDelete ? "account_self_delete" : "user_delete",
+    p_actor_user_id: caller.id,
+    p_target_user_id: targetUserId,
+    p_target_email: targetEmail,
+    p_target_name: targetName,
+    p_event_id: null,
+    p_ip_address: null,
+    p_details: { source: "delete-user" },
+  });
 
   const { error: deleteError } = await admin.auth.admin.deleteUser(targetUserId);
   if (deleteError) {

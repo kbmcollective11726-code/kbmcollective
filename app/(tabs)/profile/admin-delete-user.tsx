@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Search, X, UserX } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
+import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import Toast from 'react-native-toast-message';
@@ -29,6 +30,7 @@ export default function AdminDeleteUserScreen() {
   const [loading, setLoading] = useState(true);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
+  const { showPlatformAdminTools } = useRolePreviewContext();
   const isPlatformAdmin = user?.is_platform_admin === true;
 
   const fetchUsers = async () => {
@@ -116,6 +118,16 @@ export default function AdminDeleteUserScreen() {
       <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
           <Text style={styles.subtitle}>Sign in to continue.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (!showPlatformAdminTools) {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <View style={styles.placeholder}>
+          <Text style={styles.subtitle}>Exit role preview to use platform admin tools.</Text>
         </View>
       </SafeAreaView>
     );

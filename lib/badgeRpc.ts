@@ -1,4 +1,4 @@
-import { format, parseISO } from 'date-fns';
+import { formatB2BSlotRangeWallClock, formatB2BWhenLabelWallClock } from './b2bEventTime';
 import { supabase } from './supabase';
 
 export type ResolvedBadge = {
@@ -14,6 +14,11 @@ export function parseBadgeTokenFromQrData(data: string): string | null {
   const s = (data || '').trim();
   if (!s) return null;
   try {
+    if (s.startsWith('http://') || s.startsWith('https://')) {
+      const u = new URL(s);
+      const t = u.searchParams.get('t') || u.searchParams.get('token');
+      if (t?.trim()) return t.trim();
+    }
     if (s.startsWith('collectivelive://')) {
       const q = s.split('?')[1];
       if (q) {
@@ -31,13 +36,76 @@ export function parseBadgeTokenFromQrData(data: string): string | null {
   return null;
 }
 
+/** True for collectivelive://badge or https://…/badge?… landing links. */
+export function isBadgeDeepLinkUrl(url: string): boolean {
+  const s = (url || '').trim();
+  if (!s) return false;
+  if (s.startsWith('collectivelive://badge')) return true;
+  try {
+    const u = new URL(s);
+    return /\/badge\/?$/.test(u.pathname) || u.pathname.endsWith('/badge');
+  } catch {
+    return /\/badge(\?|$)/.test(s);
+  }
+}
+
+/** Map server/RPC error codes to text suitable for attendees (not raw `forbidden`, etc.). */
+export function formatBadgeScanError(code: string | undefined | null): string {
+  const raw = (code ?? '').trim();
+  const c = raw.toLowerCase();
+  switch (c) {
+    case 'forbidden':
+      return 'You are not registered for this event. Open the correct event in the app, or ask an organizer to add you as a member.';
+    case 'not_authenticated':
+      return 'Please sign in again, then retry the scan.';
+    case 'invalid_token':
+      return 'That QR code is not a valid badge. Ask the event team to generate badge tokens in cadmin.';
+    case 'not_found':
+      return 'This badge was not recognized. The token may have been revoked — generate new badge tokens in cadmin.';
+    case 'cannot_scan_own_badge':
+      return 'You cannot scan your own badge.';
+    case 'invalid_meeting':
+      return 'That meeting could not be linked to this scan. Pick a meeting from the list or try again.';
+    case 'forbidden_meeting':
+      return 'You cannot record attendance for that meeting.';
+    case 'meeting_only_when_attended':
+      return 'Mark the visit as attended before linking a meeting.';
+    case 'not_attendee_scanner':
+      return 'Only attendees and speakers can use this scan flow.';
+    case 'not_vendor_subject':
+      return 'This badge is not for a vendor booth.';
+    case 'invalid_event':
+      return 'That event could not be found.';
+    case 'invalid_response':
+      return 'Could not load badge details. Please try again.';
+    default:
+      if (!raw) return 'Something went wrong. Please try again.';
+      if (c.includes('jwt expired') || c.includes('invalid jwt')) {
+        return 'Your session expired. Sign in again, then retry the scan.';
+      }
+      if (raw.includes(' ') && raw.length > 28) return raw;
+      return 'Could not complete the scan. Please try again.';
+  }
+}
+
+function normalizeBadgeRpcErrorMessage(message: string): string {
+  const m = message.trim().toLowerCase();
+  if (!m) return '';
+  if (m.includes('jwt') || m.includes('not authenticated') || m.includes('session')) {
+    return 'not_authenticated';
+  }
+  if (m === 'forbidden' || m.includes('permission denied')) return 'forbidden';
+  return message.trim();
+}
+
 export async function resolveBadgeToken(token: string): Promise<{ data?: ResolvedBadge; error?: string }> {
   const { data, error } = await supabase.rpc('resolve_event_badge_token', { p_token: token });
-  if (error) return { error: error.message };
+  if (error) return { error: formatBadgeScanError(normalizeBadgeRpcErrorMessage(error.message)) };
   const row = data as { error?: string; subject_kind?: string } & Partial<ResolvedBadge>;
-  if (row?.error === 'cannot_scan_own_badge') return { error: 'You cannot scan your own badge.' };
-  if (row?.error) return { error: row.error };
-  if (!row?.event_id || !row?.subject || !row?.event) return { error: 'invalid_response' };
+  if (row?.error) return { error: formatBadgeScanError(row.error) };
+  if (!row?.event_id || !row?.subject || !row?.event) {
+    return { error: formatBadgeScanError('invalid_response') };
+  }
   return {
     data: {
       event_id: row.event_id,
@@ -58,9 +126,9 @@ export type BadgeMeetingOption = {
   end_time?: string;
 };
 
-/** Format slot times in the device local timezone (Postgres `label` uses server TZ and is often wrong). */
-export function formatBadgeMeetingOptionLabel(m: BadgeMeetingOption): string {
-  const range = formatMeetingSlotRangeLocal(m.start_time, m.end_time);
+/** Format slot times (wall-clock — same numbers as agenda). */
+export function formatBadgeMeetingOptionLabel(m: BadgeMeetingOption, _eventIanaZone?: string | null): string {
+  const range = formatMeetingSlotRangeWallClock(m.start_time, m.end_time);
   const vendor = (m.vendor_name || '').trim();
   if (vendor && range) return `${vendor} · ${range}`;
   if (range) return range;
@@ -68,21 +136,10 @@ export function formatBadgeMeetingOptionLabel(m: BadgeMeetingOption): string {
   return fallback || 'Meeting';
 }
 
-function formatMeetingSlotRangeLocal(start?: string, end?: string): string {
+function formatMeetingSlotRangeWallClock(start?: string, end?: string): string {
   if (!start) return '';
-  try {
-    const s = parseISO(String(start).replace(' ', 'T'));
-    if (Number.isNaN(s.getTime())) return '';
-    if (end) {
-      const e = parseISO(String(end).replace(' ', 'T'));
-      if (!Number.isNaN(e.getTime())) {
-        return `${format(s, 'EEE, MMM d · h:mm a')} – ${format(e, 'h:mm a')}`;
-      }
-    }
-    return format(s, 'EEE, MMM d · h:mm a');
-  } catch {
-    return '';
-  }
+  if (end) return formatB2BSlotRangeWallClock(start, end);
+  return formatB2BWhenLabelWallClock(start);
 }
 
 export type VendorMeetingAttendanceRow = {
@@ -108,9 +165,9 @@ export async function listAttendeeMeetingsWithScannedVendor(token: string): Prom
   error?: string;
 }> {
   const { data, error } = await supabase.rpc('list_badge_scan_attendee_with_vendor_meetings', { p_token: token });
-  if (error) return { error: error.message };
+  if (error) return { error: formatBadgeScanError(normalizeBadgeRpcErrorMessage(error.message)) };
   const pack = data as { rows?: BadgeMeetingOption[]; error?: string } | null;
-  if (pack?.error) return { error: pack.error };
+  if (pack?.error) return { error: formatBadgeScanError(pack.error) };
   const raw = pack?.rows;
   return { rows: Array.isArray(raw) ? raw : [] };
 }
@@ -121,9 +178,9 @@ export async function listBadgeMeetingOptions(token: string): Promise<{
   error?: string;
 }> {
   const { data, error } = await supabase.rpc('list_badge_scan_meeting_options', { p_token: token });
-  if (error) return { error: error.message };
+  if (error) return { error: formatBadgeScanError(normalizeBadgeRpcErrorMessage(error.message)) };
   const pack = data as { rows?: BadgeMeetingOption[]; error?: string } | null;
-  if (pack?.error) return { error: pack.error };
+  if (pack?.error) return { error: formatBadgeScanError(pack.error) };
   const raw = pack?.rows;
   const rows = Array.isArray(raw) ? raw : [];
   return { rows };
@@ -207,8 +264,8 @@ export async function upsertBadgeScan(
     p_attended_meeting: attendedMeeting,
     p_meeting_booking_id: meetingBookingId,
   });
-  if (error) return { error: error.message };
+  if (error) return { error: formatBadgeScanError(normalizeBadgeRpcErrorMessage(error.message)) };
   const row = data as { error?: string; ok?: boolean; scanner_kind?: string };
-  if (row?.error) return { error: row.error };
+  if (row?.error) return { error: formatBadgeScanError(row.error) };
   return { ok: row.ok === true, scanner_kind: row.scanner_kind };
 }

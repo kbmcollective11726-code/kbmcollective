@@ -158,7 +158,7 @@ export default function LoginScreen() {
                 Toast.show({
                   type: 'success',
                   text1: 'Check your email',
-                  text2: 'We sent a password reset link to ' + email.trim() + '. Open it from your mail app to finish.',
+                  text2: 'We sent a password reset link to ' + email.trim() + '. Check Junk/Spam too, then open it from your mail app.',
                   visibilityTime: 5500,
                 });
               }

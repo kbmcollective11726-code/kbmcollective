@@ -312,6 +312,7 @@ export default function WallPageContent() {
   const [eventName, setEventName] = useState('');
   const [eventStartDate, setEventStartDate] = useState<string | null>(null);
   const [eventEndDate, setEventEndDate] = useState<string | null>(null);
+  const [eventReminderTimezone, setEventReminderTimezone] = useState<string | null>(null);
   const [wallClockTick, setWallClockTick] = useState(0);
   const [stats, setStats] = useState({ photos: 0, likes: 0, comments: 0, participants: 0 });
   const [posts, setPosts] = useState<any[]>([]);
@@ -337,13 +338,15 @@ export default function WallPageContent() {
     if (!eventId || !supabase) return;
     supabase
       .from('events')
-      .select('name, start_date, end_date')
+      .select('name, start_date, end_date, reminder_timezone')
       .eq('id', eventId)
       .single()
       .then(({ data }: any) => {
         setEventName(data?.name ?? '');
         setEventStartDate(typeof data?.start_date === 'string' ? data.start_date : null);
         setEventEndDate(typeof data?.end_date === 'string' ? data.end_date : null);
+        const tz = typeof data?.reminder_timezone === 'string' ? data.reminder_timezone.trim() : '';
+        setEventReminderTimezone(tz || null);
       });
 
     Promise.all([
@@ -503,8 +506,8 @@ export default function WallPageContent() {
   const { nowSessions, nextSessions } = useMemo(() => {
     const list = (sessions ?? []) as SessionForNowNext[];
     if (!eventStartDate || list.length === 0) return { nowSessions: [] as SessionForNowNext[], nextSessions: [] as SessionForNowNext[] };
-    return getNowNextSessions(list, eventStartDate, eventEndDate);
-  }, [sessions, eventStartDate, eventEndDate, wallClockTick]);
+    return getNowNextSessions(list, eventStartDate, eventEndDate, eventReminderTimezone);
+  }, [sessions, eventStartDate, eventEndDate, eventReminderTimezone, wallClockTick]);
 
   const toggleFullscreen = useCallback(async () => {
     if (typeof document === 'undefined') return;
@@ -657,7 +660,7 @@ export default function WallPageContent() {
               lineHeight: 1.15,
             }}
           >
-            THANKS TO OUR SPONSORS
+            Live wall sponsored by
           </span>
           <div
             style={{

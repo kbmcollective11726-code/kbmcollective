@@ -39,7 +39,7 @@ export interface Event {
   menu_show_1on1?: boolean;
   /** In-app hamburger: show Live wall link (default true). */
   menu_show_live_wall?: boolean;
-  /** In-app hamburger: show Solution Provider (default true). */
+  /** In-app hamburger: show Solution Providers (default true). */
   menu_show_solution_providers?: boolean;
   /** In-app hamburger: show Scan badge link (default true). */
   menu_show_scan_badge?: boolean;
@@ -47,8 +47,33 @@ export interface Event {
   menu_show_agenda?: boolean;
   /** In-app hamburger: show Notes for admins / vendor reps (default true). */
   menu_show_notes?: boolean;
+  menu_show_session_check_in?: boolean;
+  /** Platform allows event admins to use Agenda in the app (they control menu_show_agenda). */
+  platform_menu_show_agenda?: boolean;
+  platform_menu_show_1on1?: boolean;
+  platform_menu_show_scan_badge?: boolean;
+  platform_menu_show_solution_providers?: boolean;
+  platform_menu_show_live_wall?: boolean;
+  platform_menu_show_notes?: boolean;
+  platform_menu_show_session_check_in?: boolean;
+  /** When true, vendors see 1:1 / unscheduled meeting check-in on badge scan (default false). */
+  vendor_scan_show_meeting_checkin?: boolean;
+  /** When true (default), vendors/admins see the pre-meeting attendee brief + "have we met before" history. */
+  vendor_brief_enabled?: boolean;
   /** Printed on attendee badges (e.g. Hosted by …). */
   badge_host_footer?: string | null;
+  /** Printed attendee badge line visibility: event name at top (default on). */
+  badge_show_event_name?: boolean;
+  /** Optional wide header for printed badges; falls back to banner_url then logo_url. */
+  badge_banner_url?: string | null;
+  /** When true, event-scoped notifications are muted (in-app + push). */
+  notifications_paused?: boolean;
+  /** Optional auto-unmute time; when elapsed, notifications resume automatically. */
+  notifications_paused_until?: string | null;
+  /** IANA zone for agenda wall-clock, Live now, and session starting-soon reminders. */
+  reminder_timezone?: string | null;
+  /** Admin console hub tiles visible to event admins (platform admins always see all). */
+  admin_console_tiles?: string[] | null;
 }
 
 /** Event sponsor: tier + placement flags (Info / hamburger). */
@@ -221,6 +246,8 @@ export interface ScheduleSession {
   is_active: boolean;
   /** When false, the app hides star rating / feedback for this session (set in web admin Schedule). */
   ratings_enabled?: boolean;
+  /** When false, hidden from mobile Session check-in list (set in web admin Schedule). */
+  check_in_enabled?: boolean;
 }
 
 export interface B2BFeedbackRow {

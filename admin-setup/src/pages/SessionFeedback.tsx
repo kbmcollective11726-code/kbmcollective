@@ -5,6 +5,20 @@ import type { Event } from '../lib/types';
 import type { SessionRatingRow } from '../lib/types';
 import styles from './SessionFeedback.module.css';
 
+function escapeCsvCell(v: string): string {
+  if (/[",\n]/.test(v)) return `"${v.replace(/"/g, '""')}"`;
+  return v;
+}
+
+function formatSubmittedAt(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  try {
+    return new Date(iso).toLocaleString();
+  } catch {
+    return iso;
+  }
+}
+
 export default function SessionFeedback() {
   const { eventId } = useParams<{ eventId: string }>();
   const [event, setEvent] = useState<Event | null>(null);
@@ -32,18 +46,60 @@ export default function SessionFeedback() {
         if (!cancelled) setLoading(false);
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+    };
   }, [eventId]);
+
+  const exportCsv = () => {
+    const header = ['Session', 'User', 'Email', 'Rating', 'Comment', 'Submitted'];
+    const lines = [
+      header.join(','),
+      ...list.map((row) =>
+        [
+          escapeCsvCell(row.session_title ?? ''),
+          escapeCsvCell(row.user_name ?? ''),
+          escapeCsvCell(row.user_email ?? ''),
+          String(row.rating),
+          escapeCsvCell(row.comment?.trim() ?? ''),
+          escapeCsvCell(formatSubmittedAt(row.created_at)),
+        ].join(',')
+      ),
+    ];
+    const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `session-feedback-${eventId?.slice(0, 8) ?? 'export'}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   if (loading) return <div className={styles.loading}>Loading…</div>;
 
   return (
     <div className={styles.page}>
-      <div className={styles.head}>
-        <Link to={`/events/${eventId}`} className={styles.back}>← Event</Link>
+      <div className={styles.toolbar}>
+        <Link to={`/events/${eventId}`} className={styles.back}>
+          ← Event
+        </Link>
+        {list.length > 0 ? (
+          <div className={styles.toolbarActions}>
+            <button type="button" className={styles.btn} onClick={() => window.print()}>
+              Print
+            </button>
+            <button type="button" className={styles.btnPrimary} onClick={exportCsv}>
+              Download CSV
+            </button>
+          </div>
+        ) : null}
       </div>
-      <h1>Session feedback — {event?.name ?? 'Event'}</h1>
-      <p className={styles.hint}>All session ratings (1–5 and comments) from attendees.</p>
+
+      <header className={styles.printHead}>
+        <h1>Session feedback — {event?.name ?? 'Event'}</h1>
+        <p className={styles.meta}>All session ratings (1–5 and comments) from attendees.</p>
+        {list.length > 0 ? <p className={styles.meta}>{list.length} rating{list.length === 1 ? '' : 's'}</p> : null}
+      </header>
 
       {error && <p className={styles.error}>{error}</p>}
 
@@ -68,8 +124,8 @@ export default function SessionFeedback() {
                   <td>{row.session_title ?? '—'}</td>
                   <td>{row.user_name ?? row.user_email ?? row.user_id}</td>
                   <td>{row.rating}/5</td>
-                  <td>{row.comment ? (row.comment.length > 60 ? row.comment.slice(0, 60) + '…' : row.comment) : '—'}</td>
-                  <td>{row.created_at ? new Date(row.created_at).toLocaleString() : '—'}</td>
+                  <td className={styles.commentCell}>{row.comment?.trim() ? row.comment : '—'}</td>
+                  <td>{formatSubmittedAt(row.created_at)}</td>
                 </tr>
               ))}
             </tbody>

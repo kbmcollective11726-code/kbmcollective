@@ -12,6 +12,11 @@ import {
   isEventAdminConsoleTileVisible,
 } from '../lib/eventAdminTiles';
 import type { Event } from '../lib/types';
+import {
+  isEventNotificationsPausedActive,
+  notifPauseDurationFromEvent,
+  type NotifPauseDuration,
+} from '../lib/eventNotificationsPaused';
 import styles from './EventDetail.module.css';
 
 export default function EventDetail() {
@@ -27,6 +32,9 @@ export default function EventDetail() {
   const [canDelete, setCanDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState('');
+  const [savingNotifMute, setSavingNotifMute] = useState(false);
+  const [notifMuteError, setNotifMuteError] = useState('');
+  const [notifPauseHours, setNotifPauseHours] = useState<NotifPauseDuration>('2');
 
   useEffect(() => {
     if (!eventId) return;
@@ -35,9 +43,9 @@ export default function EventDetail() {
       try {
         let row: Event;
         const fullSelect =
-          'id, name, description, location, venue, start_date, end_date, theme_color, event_code, is_active, created_at, admin_console_tiles';
+          'id, name, description, location, venue, start_date, end_date, theme_color, event_code, is_active, created_at, updated_at, admin_console_tiles, notifications_paused, notifications_paused_until';
         const baseSelect =
-          'id, name, description, location, venue, start_date, end_date, theme_color, event_code, is_active, created_at';
+          'id, name, description, location, venue, start_date, end_date, theme_color, event_code, is_active, created_at, updated_at, notifications_paused, notifications_paused_until';
         const { data, error: err } = await supabase.from('events').select(fullSelect).eq('id', eventId).single();
         if (err && /admin_console_tiles|schema cache/i.test(err.message)) {
           const fallback = await supabase.from('events').select(baseSelect).eq('id', eventId).single();
@@ -48,7 +56,10 @@ export default function EventDetail() {
         } else {
           row = data as Event;
         }
-        if (!cancelled) setEvent(row);
+        if (!cancelled) {
+          setEvent(row);
+          setNotifPauseHours(notifPauseDurationFromEvent(row));
+        }
 
         const [eventSuperAdmin, pa, manageTiles] = await Promise.all([
           canSuperAdminDeleteEvent(eventId),
@@ -105,6 +116,40 @@ export default function EventDetail() {
     }
   };
 
+  const notificationsPausedActive = isEventNotificationsPausedActive(event);
+
+  const pausedUntilLabel =
+    event?.notifications_paused_until && !Number.isNaN(new Date(event.notifications_paused_until).getTime())
+      ? new Date(event.notifications_paused_until).toLocaleString()
+      : '';
+
+  const handleToggleNotificationsPaused = async (next: boolean) => {
+    if (!eventId) return;
+    setNotifMuteError('');
+    setSavingNotifMute(true);
+    try {
+      const updated_at = new Date().toISOString();
+      const notifications_paused_until =
+        next && notifPauseHours !== 'indefinite'
+          ? new Date(Date.now() + Number(notifPauseHours) * 60 * 60 * 1000).toISOString()
+          : null;
+      const { error: upErr } = await supabase
+        .from('events')
+        .update({ notifications_paused: next, notifications_paused_until, updated_at })
+        .eq('id', eventId);
+      if (upErr) throw upErr;
+      const nextEvent = event
+        ? { ...event, notifications_paused: next, notifications_paused_until, updated_at }
+        : null;
+      setEvent(nextEvent);
+      if (nextEvent) setNotifPauseHours(notifPauseDurationFromEvent(nextEvent));
+    } catch (e) {
+      setNotifMuteError(postgrestErrorMessage(e) || 'Failed to update notification mute');
+    } finally {
+      setSavingNotifMute(false);
+    }
+  };
+
   if (loading) return <div className={styles.loading}>Loading…</div>;
   if (error || !event) return <div className={styles.error}>{error || 'Event not found'}</div>;
 
@@ -133,13 +178,42 @@ export default function EventDetail() {
         ) : null}
       </p>
       {event.description && <p className={styles.desc}>{event.description}</p>}
-
-      {!canManageTiles && canDelete ? (
-        <p className={styles.tileSettingsHintOnly}>
-          Which hub tiles event admins see is configured by a <strong>platform admin</strong> on the{' '}
-          <strong>Event admin tiles</strong> page.
+      <section className={styles.notifControl}>
+        <h2 className={styles.notifTitle}>Event notifications</h2>
+        <p className={styles.notifHint}>
+          Pause attendee alerts while making major schedule or meeting changes. When paused, event-scoped in-app and
+          push notifications are muted.
         </p>
-      ) : null}
+        <div className={styles.notifControlsRow}>
+          <label className={styles.notifDurationLabel}>
+            Auto-unmute
+            <select
+              value={notifPauseHours}
+              onChange={(e) => setNotifPauseHours(e.target.value as NotifPauseDuration)}
+              disabled={savingNotifMute || notificationsPausedActive}
+              className={styles.notifDurationSelect}
+            >
+              <option value="2">in 2 hours</option>
+              <option value="6">in 6 hours</option>
+              <option value="24">in 24 hours</option>
+              <option value="indefinite">manual only</option>
+            </select>
+          </label>
+        </div>
+        <label className={styles.notifToggleLabel}>
+          <input
+            type="checkbox"
+            checked={notificationsPausedActive}
+            disabled={savingNotifMute}
+            onChange={(e) => void handleToggleNotificationsPaused(e.target.checked)}
+          />
+          <span>{notificationsPausedActive ? 'Notifications paused for this event' : 'Notifications active'}</span>
+        </label>
+        {notificationsPausedActive && pausedUntilLabel ? (
+          <p className={styles.notifHint}>Auto-unmute: {pausedUntilLabel}</p>
+        ) : null}
+        {notifMuteError ? <p className={styles.notifError}>{notifMuteError}</p> : null}
+      </section>
 
       <nav className={styles.nav}>
         {visibleTiles.map((tile) => (

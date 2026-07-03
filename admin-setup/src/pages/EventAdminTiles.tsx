@@ -4,12 +4,17 @@ import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import { canManageEventAdminConsoleTiles } from '../lib/canManageEventAdminConsoleTiles';
 import {
-  EVENT_ADMIN_CONSOLE_TILES,
-  normalizeAdminConsoleTiles,
-  type EventAdminConsoleTileId,
-} from '../lib/eventAdminTiles';
+  EVENT_EXPERIENCE_CONTROLS,
+  buildPlatformSavePayload,
+  platformExperienceDraftFromEvent,
+} from '../lib/eventExperienceControls';
 import type { Event } from '../lib/types';
 import styles from './EventAdminTiles.module.css';
+
+const EVENT_SELECT =
+  'id, name, event_code, start_date, end_date, admin_console_tiles, menu_show_1on1, menu_show_live_wall, menu_show_solution_providers, menu_show_scan_badge, menu_show_notes, menu_show_agenda, menu_show_session_check_in, platform_menu_show_agenda, platform_menu_show_1on1, platform_menu_show_scan_badge, platform_menu_show_solution_providers, platform_menu_show_live_wall, platform_menu_show_notes, platform_menu_show_session_check_in';
+
+const EVENT_SELECT_BASE = 'id, name, event_code, start_date, end_date';
 
 export default function EventAdminTiles() {
   const { eventId } = useParams<{ eventId: string }>();
@@ -17,10 +22,10 @@ export default function EventAdminTiles() {
   const [loading, setLoading] = useState(true);
   const [allowed, setAllowed] = useState(false);
   const [error, setError] = useState('');
-  const [tileDraft, setTileDraft] = useState<EventAdminConsoleTileId[]>([]);
-  const [tileSaving, setTileSaving] = useState(false);
-  const [tileSaveError, setTileSaveError] = useState('');
-  const [tileSaveOk, setTileSaveOk] = useState(false);
+  const [draft, setDraft] = useState<Record<string, boolean>>({});
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [saveOk, setSaveOk] = useState(false);
 
   useEffect(() => {
     if (!eventId) return;
@@ -35,13 +40,10 @@ export default function EventAdminTiles() {
           return;
         }
 
-        const fullSelect =
-          'id, name, event_code, start_date, end_date, admin_console_tiles';
-        const baseSelect = 'id, name, event_code, start_date, end_date';
-        const { data, error: err } = await supabase.from('events').select(fullSelect).eq('id', eventId).single();
+        const { data, error: err } = await supabase.from('events').select(EVENT_SELECT).eq('id', eventId).single();
         let row: Event;
-        if (err && /admin_console_tiles|schema cache/i.test(err.message)) {
-          const fallback = await supabase.from('events').select(baseSelect).eq('id', eventId).single();
+        if (err && /admin_console_tiles|menu_show|platform_menu|schema cache/i.test(err.message)) {
+          const fallback = await supabase.from('events').select(EVENT_SELECT_BASE).eq('id', eventId).single();
           if (fallback.error) throw fallback.error;
           row = fallback.data as Event;
         } else if (err) {
@@ -51,7 +53,7 @@ export default function EventAdminTiles() {
         }
         if (!cancelled) {
           setEvent(row);
-          setTileDraft(normalizeAdminConsoleTiles(row.admin_console_tiles));
+          setDraft(platformExperienceDraftFromEvent(row));
         }
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load event');
@@ -64,37 +66,47 @@ export default function EventAdminTiles() {
     };
   }, [eventId]);
 
-  const toggleTileDraft = (id: EventAdminConsoleTileId, on: boolean) => {
-    setTileDraft((prev) => {
-      const set = new Set(prev);
-      if (on) set.add(id);
-      else set.delete(id);
-      return EVENT_ADMIN_CONSOLE_TILES.map((t) => t.id).filter((key) => set.has(key));
-    });
-    setTileSaveOk(false);
+  const toggleDraft = (id: string, on: boolean) => {
+    setDraft((prev) => ({ ...prev, [id]: on }));
+    setSaveOk(false);
   };
 
-  const saveTileSettings = async () => {
-    if (!eventId || tileSaving) return;
-    if (tileDraft.length === 0) {
-      setTileSaveError('Choose at least one tile for event admins.');
+  const saveSettings = async () => {
+    if (!eventId || saving) return;
+    const anyOn = EVENT_EXPERIENCE_CONTROLS.some((c) => draft[c.id]);
+    if (!anyOn) {
+      setSaveError('Choose at least one item for event admins.');
       return;
     }
-    setTileSaveError('');
-    setTileSaveOk(false);
-    setTileSaving(true);
+    setSaveError('');
+    setSaveOk(false);
+    setSaving(true);
     try {
+      const { admin_console_tiles, platform, menu } = buildPlatformSavePayload(draft);
       const { error: upErr } = await supabase
         .from('events')
-        .update({ admin_console_tiles: tileDraft })
+        .update({
+          admin_console_tiles,
+          ...platform,
+          ...menu,
+        })
         .eq('id', eventId);
       if (upErr) throw upErr;
-      setEvent((prev) => (prev ? { ...prev, admin_console_tiles: [...tileDraft] } : prev));
-      setTileSaveOk(true);
+      setEvent((prev) =>
+        prev
+          ? {
+              ...prev,
+              admin_console_tiles,
+              ...platform,
+              ...menu,
+            }
+          : prev
+      );
+      setSaveOk(true);
     } catch (e) {
-      setTileSaveError(postgrestErrorMessage(e) || (e instanceof Error ? e.message : 'Save failed'));
+      setSaveError(postgrestErrorMessage(e) || (e instanceof Error ? e.message : 'Save failed'));
     } finally {
-      setTileSaving(false);
+      setSaving(false);
     }
   };
 
@@ -119,33 +131,47 @@ export default function EventAdminTiles() {
       </div>
 
       <p className={styles.intro}>
-        Choose which hub tiles <strong>event admins</strong> see on the event home screen. You (platform admin) always
-        see every tile. Defaults for new events: Members, Schedule, Printable agenda, Photo book, and Announcements.
+        Choose what <strong>event admins</strong> may use on the <strong>web hub</strong> and which{' '}
+        <strong>app menu</strong> items they can turn on or off from the event home page. You always see everything.
+        Checking an <span className={styles.tagApp}>App menu</span> item allows it and turns it on initially; event admins
+        can hide it later without losing access to the web tools.
       </p>
 
       <div className={styles.panel}>
         <ul className={styles.tileCheckList}>
-          {EVENT_ADMIN_CONSOLE_TILES.map((tile) => (
-            <li key={tile.id}>
+          {EVENT_EXPERIENCE_CONTROLS.map((control) => (
+            <li key={control.id}>
               <label className={styles.tileCheckLabel}>
                 <input
                   type="checkbox"
-                  checked={tileDraft.includes(tile.id)}
-                  onChange={(e) => toggleTileDraft(tile.id, e.target.checked)}
+                  checked={draft[control.id] === true}
+                  onChange={(e) => toggleDraft(control.id, e.target.checked)}
                 />
                 <span>
-                  <strong>{tile.title}</strong>
-                  <span className={styles.tileCheckDesc}>{tile.desc}</span>
+                  <span className={styles.tileCheckTitleRow}>
+                    <strong>{control.title}</strong>
+                    <span className={styles.tagRow}>
+                      {control.tags.map((tag) => (
+                        <span
+                          key={tag}
+                          className={tag === 'Web admin' ? styles.tagWeb : styles.tagApp}
+                        >
+                          {tag}
+                        </span>
+                      ))}
+                    </span>
+                  </span>
+                  <span className={styles.tileCheckDesc}>{control.desc}</span>
                 </span>
               </label>
             </li>
           ))}
         </ul>
-        {tileSaveError ? <p className={styles.saveError}>{tileSaveError}</p> : null}
-        {tileSaveOk ? <p className={styles.saveOk}>Saved.</p> : null}
+        {saveError ? <p className={styles.saveError}>{saveError}</p> : null}
+        {saveOk ? <p className={styles.saveOk}>Saved.</p> : null}
         <div className={styles.actions}>
-          <button type="button" className={styles.saveBtn} disabled={tileSaving} onClick={saveTileSettings}>
-            {tileSaving ? 'Saving…' : 'Save tile visibility'}
+          <button type="button" className={styles.saveBtn} disabled={saving} onClick={saveSettings}>
+            {saving ? 'Saving…' : 'Save visibility'}
           </button>
           <Link to={`/events/${eventId}`} className={styles.cancelLink}>
             Done

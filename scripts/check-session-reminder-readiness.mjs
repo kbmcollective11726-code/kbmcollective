@@ -46,7 +46,7 @@ These require ALL of the following:
    CRON_SECRET must match vault cron_secret used in cron SQL.
    SUPABASE_SERVICE_ROLE_KEY set (project default).
 
-3) Session timing: notify-event-starting-soon fires when session start is ~3–9 minutes
+3) Session timing: notify-event-starting-soon fires when session start is ~2-6 minutes
    from now in the event timezone (events.reminder_timezone or Edge secret SESSION_REMINDER_TIMEZONE).
 
 4) User must be in event_members; session is_active; not already in session_reminder_sent.

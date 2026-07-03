@@ -39,3 +39,28 @@ verify_jwt = false
 
 [functions.admin-zip-event-photos]
 verify_jwt = false
+
+# JWT validated inside; uses service role for admin recipient resolution.
+[functions.send-user-report-push]
+verify_jwt = false
+
+[functions.log-auth-attempt]
+verify_jwt = false
+
+[functions.send-security-alert-email]
+verify_jwt = false
+
+[functions.process-orphan-signup-alerts]
+verify_jwt = false
+
+[functions.process-security-anomalies]
+verify_jwt = false
+
+[functions.send-registration-setup-email]
+verify_jwt = false
+
+[functions.send-registration-submitted-email]
+verify_jwt = false
+
+[functions.send-app-password-reset]
+verify_jwt = false

@@ -68,6 +68,8 @@ function formatDayKey(key: string, index: number): string {
 }
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
+import { useRolePreviewContext } from '../../hooks/useRolePreviewContext';
+import { effectiveIsEventAdmin as computeEffectiveEventAdmin } from '../../lib/rolePreview';
 import { awardPoints } from '../../lib/points';
 import { supabase, supabaseStorage, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
@@ -77,9 +79,7 @@ import CompactSponsorStrip from '../../components/CompactSponsorStrip';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
 import {
   isSessionLiveWallClockOnEventDay,
-  isSessionLiveInstant,
   isSessionNotYetEndedWallClockOnEventDay,
-  isSessionNotYetEndedInstant,
   formatB2BSlotTimeLocal,
   getDeviceLocalDateKey,
   sessionInstantOnEventDayLocal,
@@ -108,36 +108,38 @@ function isB2BItem(item: AgendaListItem): item is B2BMeetingItem {
 }
 
 /** Sort key: schedule rows use wall-clock on event day; B2B slots use real instants (same as `getNowNextSessions`). */
-function agendaItemSortKey(item: AgendaListItem, eventDateKey: string): number {
+function agendaItemSortKey(item: AgendaListItem, eventDateKey: string, eventIanaZone?: string | null): number {
   const start = parseDate(item.start_time);
   if (!start) return 0;
   if (isB2BItem(item)) return start.getTime();
-  const wall = sessionInstantOnEventDayLocal(start, eventDateKey);
+  const wall = sessionInstantOnEventDayLocal(start, eventDateKey, eventIanaZone);
   return wall?.getTime() ?? start.getTime();
 }
 
-/** Start key aligned with Agenda's wall-clock rules (schedule) vs real instant rules (B2B). */
-function agendaItemStartKey(item: AgendaListItem, eventDateKey: string): number {
+/** Start key — wall-clock on event day (sessions and B2B use the same storage model). */
+function agendaItemStartKey(item: AgendaListItem, eventDateKey: string, eventIanaZone?: string | null): number {
   const start = parseDate(item.start_time);
   if (!start) return Number.NaN;
-  if (isB2BItem(item)) return start.getTime();
-  return sessionInstantOnEventDayLocal(start, eventDateKey)?.getTime() ?? start.getTime();
+  return sessionInstantOnEventDayLocal(start, eventDateKey, eventIanaZone)?.getTime() ?? start.getTime();
 }
 
-/** End key aligned with Agenda's wall-clock rules (schedule) vs real instant rules (B2B). */
-function agendaItemEndKey(item: AgendaListItem, eventDateKey: string): number {
+/** End key — wall-clock on event day (sessions and B2B). */
+function agendaItemEndKey(item: AgendaListItem, eventDateKey: string, eventIanaZone?: string | null): number {
   const end = parseDate(item.end_time);
   if (!end) return Number.NaN;
-  if (isB2BItem(item)) return end.getTime();
-  return sessionInstantOnEventDayLocal(end, eventDateKey)?.getTime() ?? end.getTime();
+  return sessionInstantOnEventDayLocal(end, eventDateKey, eventIanaZone)?.getTime() ?? end.getTime();
 }
 
-/** Scroll target: schedule rows use wall-clock end on `eventDateKey`; B2B slots use real ISO end. */
-function agendaItemNotYetEnded(now: Date, item: AgendaListItem, eventDateKey: string): boolean {
+/** Scroll target: wall-clock end on event day. */
+function agendaItemNotYetEnded(
+  now: Date,
+  item: AgendaListItem,
+  eventDateKey: string,
+  eventIanaZone?: string | null
+): boolean {
   const end = parseDate(item.end_time);
   if (!end) return false;
-  if (isB2BItem(item)) return isSessionNotYetEndedInstant(now, end);
-  return isSessionNotYetEndedWallClockOnEventDay(now, end, eventDateKey);
+  return isSessionNotYetEndedWallClockOnEventDay(now, end, eventDateKey, eventIanaZone);
 }
 
 /**
@@ -147,7 +149,12 @@ function agendaItemNotYetEnded(now: Date, item: AgendaListItem, eventDateKey: st
  * 2) next upcoming item
  * 3) last past item
  */
-function getBestAgendaNowIndex(now: Date, list: AgendaListItem[], eventDateKey: string): number {
+function getBestAgendaNowIndex(
+  now: Date,
+  list: AgendaListItem[],
+  eventDateKey: string,
+  eventIanaZone?: string | null
+): number {
   if (list.length === 0) return -1;
 
   let bestLiveIdx = -1;
@@ -162,13 +169,11 @@ function getBestAgendaNowIndex(now: Date, list: AgendaListItem[], eventDateKey: 
     const start = parseDate(item.start_time);
     const end = parseDate(item.end_time);
     if (!start || !end) continue;
-    const startMs = agendaItemStartKey(item, eventDateKey);
-    const endMs = agendaItemEndKey(item, eventDateKey);
+    const startMs = agendaItemStartKey(item, eventDateKey, eventIanaZone);
+    const endMs = agendaItemEndKey(item, eventDateKey, eventIanaZone);
     if (Number.isNaN(startMs) || Number.isNaN(endMs)) continue;
 
-    const isLive = isB2BItem(item)
-      ? isSessionLiveInstant(now, start, end)
-      : isSessionLiveWallClockOnEventDay(now, start, end, eventDateKey);
+    const isLive = isSessionLiveWallClockOnEventDay(now, start, end, eventDateKey, eventIanaZone);
 
     if (isLive) {
       if (startMs <= now.getTime() && startMs > bestLiveStart) {
@@ -178,9 +183,7 @@ function getBestAgendaNowIndex(now: Date, list: AgendaListItem[], eventDateKey: 
       continue;
     }
 
-    const notYetEnded = isB2BItem(item)
-      ? isSessionNotYetEndedInstant(now, end)
-      : isSessionNotYetEndedWallClockOnEventDay(now, end, eventDateKey);
+    const notYetEnded = isSessionNotYetEndedWallClockOnEventDay(now, end, eventDateKey, eventIanaZone);
 
     if (notYetEnded) {
       if (startMs < bestUpcomingStart) {
@@ -296,6 +299,9 @@ export default function ScheduleScreen() {
     typeof focusSessionIdRaw === 'string' ? focusSessionIdRaw : focusSessionIdRaw?.[0];
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { previewRole, isPlatformAdmin } = useRolePreviewContext();
+  /** When set on the event, "Live now" / ordering use this IANA zone (same as 5‑min reminder Edge Function). */
+  const agendaTimeZone = currentEvent?.reminder_timezone?.trim() || null;
   const [sessions, setSessions] = useState<SessionWithBookmarked[]>([]);
   const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
@@ -304,6 +310,7 @@ export default function ScheduleScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedDayNumber, setSelectedDayNumber] = useState<number | null>(null);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
+  const effectiveIsEventAdmin = computeEffectiveEventAdmin(isEventAdmin, isPlatformAdmin, previewRole);
   const [selectedSession, setSelectedSession] = useState<SessionWithBookmarked | null>(null);
   const [showSavedOnly, setShowSavedOnly] = useState(false);
   const [b2bMeetings, setB2bMeetings] = useState<B2BMeetingItem[]>([]);
@@ -357,8 +364,8 @@ export default function ScheduleScreen() {
     if (selectedSession.ratings_enabled === false) return false;
     const sessionDayKey = getSessionDateKey(selectedSession.start_time);
     if (!sessionDayKey) return false;
-    return !agendaItemNotYetEnded(new Date(), selectedSession, sessionDayKey);
-  }, [selectedSession, liveTick]);
+    return !agendaItemNotYetEnded(new Date(), selectedSession, sessionDayKey, agendaTimeZone);
+  }, [selectedSession, liveTick, agendaTimeZone]);
 
   const fetchInProgressRef = useRef(false);
   const fetchSessions = async () => {
@@ -449,12 +456,12 @@ export default function ScheduleScreen() {
       const emRow = emAdmin as { role?: string; roles?: string[] } | null;
       const emRole = emRow?.role;
       const emRoles = Array.isArray(emRow?.roles) ? emRow.roles : [];
-      const isEventAdminUser =
-        user?.is_platform_admin === true ||
+      const realEventAdmin =
         emRole === 'admin' ||
         emRole === 'super_admin' ||
         emRoles.includes('admin') ||
         emRoles.includes('super_admin');
+      const isEventAdminUser = computeEffectiveEventAdmin(realEventAdmin, isPlatformAdmin, previewRole);
 
       if (isEventAdminUser) {
         const { data: booths } = await db
@@ -731,7 +738,7 @@ export default function ScheduleScreen() {
         setMyRating(rating ?? null);
         setRatingDraft(rating?.rating ?? null);
         setCommentDraft(rating?.comment ?? '');
-        if (isEventAdmin) {
+        if (effectiveIsEventAdmin) {
           const { data: stats } = await supabase.rpc('get_session_rating_stats', { p_session_id: selectedSession.id });
           if (!cancelled && stats) setRatingStats(stats as { avg_rating: number | null; count: number });
         }
@@ -742,13 +749,13 @@ export default function ScheduleScreen() {
       }
     })();
     return () => { cancelled = true; };
-  }, [selectedSession?.id, selectedSession?.ratings_enabled, user?.id, isEventAdmin]);
+  }, [selectedSession?.id, selectedSession?.ratings_enabled, user?.id, effectiveIsEventAdmin]);
 
   const saveSessionRating = async () => {
     if (!selectedSession || !user?.id || ratingDraft == null || ratingDraft < 1 || ratingDraft > 5) return;
     if (selectedSession.ratings_enabled === false) return;
     const sessionDayKey = getSessionDateKey(selectedSession.start_time);
-    if (!sessionDayKey || agendaItemNotYetEnded(new Date(), selectedSession, sessionDayKey)) return;
+    if (!sessionDayKey || agendaItemNotYetEnded(new Date(), selectedSession, sessionDayKey, agendaTimeZone)) return;
     setSavingRating(true);
     setRatingJustSaved(false);
     const doSave = async () => {
@@ -775,7 +782,7 @@ export default function ScheduleScreen() {
         setMyRating(updated as SessionRating);
         setRatedSessionIds((prev) => new Set(prev).add(selectedSession.id));
       }
-      if (isEventAdmin) {
+      if (effectiveIsEventAdmin) {
         const { data: stats } = await supabase.rpc('get_session_rating_stats', { p_session_id: selectedSession.id });
         if (stats) setRatingStats(stats as { avg_rating: number | null; count: number });
       }
@@ -878,9 +885,12 @@ export default function ScheduleScreen() {
     const sessionList = filteredSessions.filter((s) => getSessionDateKey(s.start_time) === selectedDateKey);
     const b2bForDay = b2bMeetings.filter((b) => b.dateKey === selectedDateKey);
     const list: AgendaListItem[] = [...sessionList, ...b2bForDay];
-    list.sort((a, b) => agendaItemSortKey(a, selectedDateKey) - agendaItemSortKey(b, selectedDateKey));
+    list.sort(
+      (a, b) =>
+        agendaItemSortKey(a, selectedDateKey, agendaTimeZone) - agendaItemSortKey(b, selectedDateKey, agendaTimeZone)
+    );
     return list;
-  }, [filteredSessions, selectedDay, eventStartDate, b2bMeetings]);
+  }, [filteredSessions, selectedDay, eventStartDate, b2bMeetings, agendaTimeZone]);
 
   /** Session IDs currently happening (for live indicator on rows). B2B items are excluded. */
   const liveSessionIds = useMemo(() => {
@@ -894,12 +904,13 @@ export default function ScheduleScreen() {
       if (isB2BItem(s)) continue;
       const start = parseDate(s.start_time);
       const end = parseDate(s.end_time);
-      if (start && end && isSessionLiveWallClockOnEventDay(now, start, end, selectedDateKey)) set.add(s.id);
+      if (start && end && isSessionLiveWallClockOnEventDay(now, start, end, selectedDateKey, agendaTimeZone))
+        set.add(s.id);
     }
     return set;
-  }, [sessionsForSelectedDay, selectedDay, eventStartDate, liveTick]);
+  }, [sessionsForSelectedDay, selectedDay, eventStartDate, liveTick, agendaTimeZone]);
 
-  /** B2B slot IDs currently happening (same instant comparison as Info home; all users see badge on their rows). */
+  /** B2B slot IDs currently happening (wall-clock, same as agenda sessions). */
   const liveB2bIds = useMemo(() => {
     const set = new Set<string>();
     const todayKey = getDeviceLocalDateKey();
@@ -912,10 +923,10 @@ export default function ScheduleScreen() {
       const start = parseDate(item.start_time);
       const end = parseDate(item.end_time);
       if (!start || !end) continue;
-      if (isSessionLiveInstant(now, start, end)) set.add(item.id);
+      if (isSessionLiveWallClockOnEventDay(now, start, end, selectedDateKey, agendaTimeZone)) set.add(item.id);
     }
     return set;
-  }, [sessionsForSelectedDay, selectedDay, eventStartDate, liveTick]);
+  }, [sessionsForSelectedDay, selectedDay, eventStartDate, liveTick, agendaTimeZone]);
 
   const dayNumbersRef = useRef<number[]>([]);
   const selectedDayRef = useRef<number | null>(null);
@@ -1104,14 +1115,14 @@ export default function ScheduleScreen() {
     const todayKey = getDeviceLocalDateKey();
     const selectedDateKey = getDateKeyForDayNumber(selectedDay, eventStartDate);
     if (!selectedDateKey || selectedDateKey !== todayKey) return;
-    const idx = getBestAgendaNowIndex(new Date(), sessionsForSelectedDay, selectedDateKey);
+    const idx = getBestAgendaNowIndex(new Date(), sessionsForSelectedDay, selectedDateKey, agendaTimeZone);
     if (idx < 0 || !listRef.current) return;
     handledNowScrollRequestRef.current = nowScrollRequestId;
     hasScrolledToNow.current = true;
     const safeIdx = Math.max(0, idx);
     pendingScrollIndexRef.current = safeIdx;
     setTimeout(() => listRef.current?.scrollToIndex({ index: safeIdx, animated: true, viewPosition: 0.12 }), 120);
-  }, [nowScrollRequestId, loading, selectedDay, eventStartDate, sessionsForSelectedDay]);
+  }, [nowScrollRequestId, loading, selectedDay, eventStartDate, sessionsForSelectedDay, agendaTimeZone]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -1142,7 +1153,7 @@ export default function ScheduleScreen() {
               </>
             )}
           </View>
-          {isEventAdmin && (
+          {effectiveIsEventAdmin && (
             <TouchableOpacity style={s.headerIconBtn} onPress={() => router.push(`/profile/admin-schedule?from=${encodeURIComponent('/(tabs)/schedule')}` as any)}>
               <Plus size={20} color={colors.primary} />
             </TouchableOpacity>
@@ -1156,9 +1167,10 @@ export default function ScheduleScreen() {
         </View>
       ),
     });
-  }, [navigation, isEventAdmin, goToNow, router, showSavedOnly, sessions.length]);
+  }, [navigation, effectiveIsEventAdmin, goToNow, router, showSavedOnly, sessions.length]);
 
   // Display session times as stored (UTC wall-clock) so they match admin/web; no device timezone conversion.
+  // "Live now" uses events.reminder_timezone when set (see agendaTimeZone) so the badge matches venue wall time.
   const formatTime = (iso: string) => {
     const d = parseDate(iso);
     if (!d || Number.isNaN(d.getTime())) return '—';
@@ -1346,7 +1358,12 @@ export default function ScheduleScreen() {
         >
           {scheduleSponsors.length > 0 ? (
             <View style={s.sponsorStripBleedEmpty}>
-              <CompactSponsorStrip sponsors={scheduleSponsors} />
+              <CompactSponsorStrip
+                sponsors={scheduleSponsors}
+                title="Mobile app sponsored by"
+                eventId={currentEvent?.id}
+                placement="schedule"
+              />
             </View>
           ) : null}
           <View style={s.emptyIconWrap}>
@@ -1392,7 +1409,12 @@ export default function ScheduleScreen() {
           ListHeaderComponent={
             scheduleSponsors.length > 0 ? (
               <View style={s.sponsorStripBleed}>
-                <CompactSponsorStrip sponsors={scheduleSponsors} />
+                <CompactSponsorStrip
+                sponsors={scheduleSponsors}
+                title="Mobile app sponsored by"
+                eventId={currentEvent?.id}
+                placement="schedule"
+              />
               </View>
             ) : null
           }
@@ -1444,7 +1466,7 @@ export default function ScheduleScreen() {
               !!user?.id &&
               session.ratings_enabled !== false &&
               !!selectedDateKeyForList &&
-              !agendaItemNotYetEnded(new Date(), session, selectedDateKeyForList);
+              !agendaItemNotYetEnded(new Date(), session, selectedDateKeyForList, agendaTimeZone);
             const sessionAlreadyRated = ratedSessionIds.has(session.id);
             const rowStyle = [s.scheduleRow, index % 2 === 1 && !isLive && s.scheduleRowAlt];
             return (
@@ -1660,7 +1682,7 @@ export default function ScheduleScreen() {
                         {ratingJustSaved && (
                           <Text style={[s.modalRatingStats, { color: colors.primary, marginTop: 6 }]}>Rating saved</Text>
                         )}
-                        {isEventAdmin && ratingStats != null && ratingStats.count > 0 && (
+                        {effectiveIsEventAdmin && ratingStats != null && ratingStats.count > 0 && (
                           <Text style={s.modalRatingStats}>
                             Average: {ratingStats.avg_rating != null ? Number(ratingStats.avg_rating).toFixed(1) : '—'} ({ratingStats.count} rating{ratingStats.count !== 1 ? 's' : ''})
                           </Text>

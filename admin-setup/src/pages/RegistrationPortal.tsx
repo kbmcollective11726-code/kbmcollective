@@ -9,6 +9,8 @@ import type {
   EventRegistrationQuestionOption,
   MatchmakingAudience,
 } from '../lib/types';
+import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
+import { DELEGATE_ALWAYS_HIDDEN_PROMPTS, REGISTRATION_HEADER_FIELD_PROMPTS, TERMS_ACCEPTANCE_PROMPT } from '../lib/registrationDefaultVisibility';
 import styles from './RegistrationPortal.module.css';
 
 type AnswerMap = Record<string, string | string[] | boolean>;
@@ -46,10 +48,10 @@ type PublicEventInfo = Pick<
 >;
 
 const validAudience = (value: string | undefined): value is MatchmakingAudience | 'speaker' =>
-  value === 'attendee' || value === 'vendor' || value === 'user' || value === 'speaker';
+  value === 'attendee' || value === 'delegate' || value === 'vendor' || value === 'user' || value === 'speaker';
 
 const resolveAudience = (value: string | undefined): MatchmakingAudience =>
-  value === 'speaker' ? 'user' : value === 'attendee' || value === 'vendor' || value === 'user' ? value : 'attendee';
+  value === 'speaker' ? 'user' : value === 'delegate' ? 'attendee' : value === 'attendee' || value === 'vendor' || value === 'user' ? value : 'attendee';
 
 const formatDateRange = (startIso?: string, endIso?: string) => {
   if (!startIso || !endIso) return '';
@@ -57,15 +59,6 @@ const formatDateRange = (startIso?: string, endIso?: string) => {
   const end = new Date(endIso);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
   return `${start.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })} - ${end.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}`;
-};
-
-const makeTemporaryPassword = () => {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%';
-  let out = '';
-  for (let i = 0; i < 12; i += 1) {
-    out += alphabet[Math.floor(Math.random() * alphabet.length)];
-  }
-  return out;
 };
 
 const fileToDataUrl = async (file: File) =>
@@ -99,9 +92,7 @@ export default function RegistrationPortal() {
     { firstName: '', lastName: '', title: '', workPhone: '', cell: '', email: '' },
   ]);
   const [vendorVirtualFallback, setVendorVirtualFallback] = useState('');
-  const [meetingTargets, setMeetingTargets] = useState<Array<{ company: string; person: string; reason: string }>>([
-    { company: '', person: '', reason: '' },
-  ]);
+  const [meetingTargets, setMeetingTargets] = useState<Array<{ company: string; person: string; reason: string }>>([{ company: '', person: '', reason: '' }]);
 
   useEffect(() => {
     if (!eventId || !validAudience(audience)) {
@@ -202,14 +193,14 @@ export default function RegistrationPortal() {
   }, [options]);
 
   const questionsForDisplay = useMemo(() => {
-    // Basic profile fields are already collected in the top grid.
-    const duplicatePrompts = new Set(['company name', 'first name', 'last name', 'e-mail address', 'email', 'job title']);
     const seenPrompts = new Set<string>();
     return questions.filter((q) => {
       const promptNorm = q.prompt.trim().toLowerCase();
-      if (duplicatePrompts.has(promptNorm)) return false;
+      if (REGISTRATION_HEADER_FIELD_PROMPTS.has(promptNorm)) return false;
       const isVendor = resolveAudience(audience) === 'vendor';
+      const isDelegate = resolveAudience(audience) === 'attendee';
       if (isVendor && VENDOR_DEPRECATED_OPERATIONS_PROMPTS.has(promptNorm)) return false;
+      if (isDelegate && DELEGATE_ALWAYS_HIDDEN_PROMPTS.has(promptNorm)) return false;
       // Prefer "Company Logo Image" and suppress legacy "Company Logo URL".
       if (isVendor && promptNorm === 'company logo url') return false;
       // Keep first occurrence only; removes accidental duplicates in event data.
@@ -218,6 +209,14 @@ export default function RegistrationPortal() {
       return true;
     });
   }, [audience, questions]);
+
+  const cellPhoneQuestion = useMemo(
+    () =>
+      resolveAudience(audience) === 'attendee'
+        ? questions.find((q) => q.prompt.trim().toLowerCase() === 'cell phone')
+        : undefined,
+    [audience, questions]
+  );
 
   const setAnswer = (questionId: string, value: string | string[] | boolean) => {
     setAnswers((prev) => ({ ...prev, [questionId]: value }));
@@ -287,6 +286,10 @@ export default function RegistrationPortal() {
     if (!email.trim()) missingBaseFields.push('Email');
     if (!companyName.trim()) missingBaseFields.push('Company');
     if ((dbAudience === 'attendee' || dbAudience === 'user') && !jobTitle.trim()) missingBaseFields.push('Job title');
+    if (dbAudience === 'attendee' && cellPhoneQuestion?.is_required) {
+      const cellValue = answers[cellPhoneQuestion.id];
+      if (String(cellValue ?? '').trim() === '') missingBaseFields.push('Cell Phone');
+    }
     const emailValue = email.trim();
     if (emailValue && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue)) {
       setError('Please enter a valid email address.');
@@ -340,6 +343,8 @@ export default function RegistrationPortal() {
     setSuccess('');
     try {
       let loginMessage = '';
+      const { data: authData } = await supabase.auth.getUser();
+      const authUserId = authData.user?.id ?? null;
       const submissionPayload = {
         event_id: eventId,
         form_id: form.id,
@@ -358,9 +363,8 @@ export default function RegistrationPortal() {
         .insert({
           id: submissionId,
           ...submissionPayload,
-          // Keep portal registrations on the public flow so RLS behaves consistently
-          // whether or not a stale browser auth session exists.
-          user_id: null,
+          // Link to auth when delegate registered an account; otherwise keep public flow (user_id null).
+          user_id: authUserId,
         })
       if (subErr) throw subErr;
 
@@ -440,39 +444,26 @@ export default function RegistrationPortal() {
       if (status === 'submitted' && email.trim()) {
         const normalizedEmail = email.trim().toLowerCase();
         const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
-        const usernameQuestion = questions.find((q) => q.prompt.toLowerCase().includes('username'));
-        const usernameValue = usernameQuestion ? (answers[usernameQuestion.id] as string | undefined) : undefined;
-        const tempPassword = makeTemporaryPassword();
-
-        const { error: signUpErr } = await supabase.auth.signUp({
-          email: normalizedEmail,
-          password: tempPassword,
-          options: {
-            data: {
-              full_name: fullName || null,
-              event_id: eventId,
-              attendee_type: dbAudience,
-            },
-          },
-        });
-
-        const { error: resetErr } = await supabase.auth.resetPasswordForEmail(normalizedEmail);
-        if (!resetErr) {
+        try {
+          await sendRegistrationSetupEmail({
+            event_id: eventId,
+            email: normalizedEmail,
+            full_name: fullName,
+            attendee_type: dbAudience,
+          });
+          loginMessage = ` We emailed ${normalizedEmail} a link to set your password and sign in.`;
+        } catch (setupErr) {
           loginMessage =
-            ` Login setup: ${usernameValue ? `Username: ${String(usernameValue)}. ` : ''}Email: ${normalizedEmail}. ` +
-            'We sent an email with instructions to set your password and log in.';
-        } else if (!signUpErr) {
-          loginMessage =
-            ` Login credentials: ${usernameValue ? `Username: ${String(usernameValue)}. ` : ''}Email: ${normalizedEmail}. ` +
-            `Temporary password: ${tempPassword}. Please log in and change your password immediately.`;
-        } else {
-          loginMessage =
-            ` Registration saved, but automatic login setup was not completed (${signUpErr.message || 'auth setup failed'}). ` +
-            'Please use Forgot Password on login to set your password.';
+            ` Registration saved, but the sign-in email could not be sent (${setupErr instanceof Error ? setupErr.message : 'email failed'}). ` +
+            'Contact the event organizer or try Register again later.';
         }
       }
 
-      setSuccess(status === 'submitted' ? `Thank you. Your registration is submitted.${loginMessage}` : 'Draft saved.');
+      const portalNote =
+        dbAudience === 'attendee' && status === 'submitted' && eventId
+          ? ` Sign in anytime at ${window.location.origin}/portal/${eventId}/delegate/login to view Welcome, Hotel, and Registration Details. Meeting Requests appear when your organizer enables them.`
+          : '';
+      setSuccess(status === 'submitted' ? `Thank you. Your registration is submitted.${loginMessage}${portalNote}` : 'Draft saved.');
       if (status === 'submitted') {
         setAnswers({});
         setMeetingTargets([{ company: '', person: '', reason: '' }]);
@@ -501,8 +492,8 @@ export default function RegistrationPortal() {
   const dateRange = formatDateRange(eventInfo?.start_date, eventInfo?.end_date);
   const heroMessage = eventInfo?.welcome_message || eventInfo?.description || '';
   const dbAudience = resolveAudience(audience);
-  const audienceTitle = dbAudience === 'vendor' ? 'Vendor registration' : dbAudience === 'attendee' ? 'Attendee registration' : 'Speaker registration';
-  const pageHeading = `${eventInfo?.name ?? 'Event'} ${dbAudience === 'vendor' ? 'Vendor' : dbAudience === 'attendee' ? 'Attendee' : 'Speaker'} Registration`.replace(/\s+/g, ' ').trim();
+  const audienceTitle = dbAudience === 'vendor' ? 'Vendor registration' : dbAudience === 'attendee' ? 'Delegate registration' : 'Speaker registration';
+  const pageHeading = `${eventInfo?.name ?? 'Event'} ${dbAudience === 'vendor' ? 'Vendor' : dbAudience === 'attendee' ? 'Delegate' : 'Speaker'} Registration`.replace(/\s+/g, ' ').trim();
   const isJobTitleRequired = dbAudience === 'attendee' || dbAudience === 'user';
   const minorityQuestion = questionsForDisplay.find((q) => q.prompt.trim().toLowerCase() === MINORITY_OWNED_PROMPT.toLowerCase());
   const minorityValue = minorityQuestion ? answers[minorityQuestion.id] : undefined;
@@ -518,13 +509,14 @@ export default function RegistrationPortal() {
       <nav className={styles.topNav}>
         <span>Welcome</span>
         <span>Registration Details</span>
-        <span>1:1 Meeting Requests</span>
-        <a href="/login" className={styles.loginBtn}>Login</a>
+        <a href={dbAudience === 'attendee' && eventId ? `/portal/${eventId}/delegate/login` : '/login'} className={styles.loginBtn}>
+          Login
+        </a>
       </nav>
 
       <section className={styles.infoCard}>
         <h2>Welcome</h2>
-        {heroMessage ? <p>{heroMessage}</p> : <p>Complete your registration details and submit your preferred 1:1 meeting requests.</p>}
+        {heroMessage ? <p>{heroMessage}</p> : <p>Complete your registration details and submit your registration.</p>}
       </section>
 
       <section className={styles.infoCard}>
@@ -583,7 +575,24 @@ export default function RegistrationPortal() {
             Job title {isJobTitleRequired ? <span className={styles.requiredStar}>*</span> : null}
             <input autoComplete="organization-title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} />
           </label>
+          {cellPhoneQuestion ? (
+            <label>
+              Cell Phone {cellPhoneQuestion.is_required ? <span className={styles.requiredStar}>*</span> : null}
+              <input
+                type="tel"
+                autoComplete="tel"
+                value={typeof answers[cellPhoneQuestion.id] === 'string' ? answers[cellPhoneQuestion.id] as string : ''}
+                onChange={(e) => setAnswer(cellPhoneQuestion.id, e.target.value)}
+              />
+            </label>
+          ) : null}
         </div>
+
+        {dbAudience === 'attendee' ? (
+          <p className={styles.hint}>
+            After you submit, we will email you a link to set your password and sign in to your delegate portal.
+          </p>
+        ) : null}
 
         <div className={styles.questionsGrid}>
           {questionsForDisplay.map((q, idx) => {
@@ -600,11 +609,17 @@ export default function RegistrationPortal() {
             const isTermsPrompt = promptNorm.includes('i have read and accept the terms and conditions');
             const isCompanyDescription = q.prompt.trim().toLowerCase() === COMPANY_DESCRIPTION_PROMPT.toLowerCase();
             const isWideQuestion = q.question_type === 'multi_select' || isAttendingField;
-            const isSolutionProviderCategory = q.question_type === 'multi_select' && (q.section_label || '').trim().toLowerCase() === 'solution provider categories';
+            const sl = (q.section_label || '').trim().toLowerCase();
+            const isSolutionProviderCategory =
+              q.question_type === 'multi_select' &&
+              (sl === 'solution provider categories' || sl === 'solution providers categories');
             const textValue = typeof value === 'string' ? value : '';
             const charCount = isCompanyDescription ? textValue.length : 0;
+            const sectionLabel = (q.section_label ?? '').trim();
             const prevSectionLabel = idx > 0 ? (questionsForDisplay[idx - 1]?.section_label ?? '').trim() : '';
-            const showSectionLabel = Boolean(q.section_label && q.section_label.trim() && q.section_label.trim() !== prevSectionLabel);
+            const showSectionLabel =
+              Boolean(sectionLabel && sectionLabel !== prevSectionLabel) &&
+              !(dbAudience === 'attendee' && sectionLabel.toLowerCase() === 'registration details');
             const labelText = isAttendingField
               ? LOGISTICS_ATTENDING_PROMPT
               : isCompanyLogoField
@@ -613,10 +628,12 @@ export default function RegistrationPortal() {
                   ? 'Speaker Headshot'
                 : isAdditionalInfoField
                   ? 'Additional Information Attachment'
-                  : q.prompt;
+                  : isTermsPrompt
+                    ? TERMS_ACCEPTANCE_PROMPT
+                    : q.prompt;
             return (
               <div key={q.id} className={`${styles.question} ${isWideQuestion ? styles.questionWide : ''}`}>
-              {showSectionLabel ? <p className={styles.section}>{q.section_label}</p> : null}
+              {showSectionLabel ? <p className={styles.section}>{sectionLabel}</p> : null}
               <label>
                 <span className={isSolutionProviderCategory ? styles.questionLabelStrong : styles.questionLabel}>
                   {labelText} {q.is_required ? <span className={styles.requiredStar}>*</span> : ''}
@@ -645,7 +662,7 @@ export default function RegistrationPortal() {
                       checked={String(value || '').toLowerCase() === 'yes'}
                       onChange={(e) => setAnswer(q.id, e.target.checked ? 'Yes' : 'No')}
                     />
-                    <span>I have read and accept the Terms and Conditions, Code of Conduct, and COVID waiver.</span>
+                    <span>{TERMS_ACCEPTANCE_PROMPT}</span>
                   </label>
                 ) : q.question_type === 'single_select' ? (
                   <select required={q.is_required} value={typeof value === 'string' ? value : ''} onChange={(e) => setAnswer(q.id, e.target.value)}>
@@ -816,7 +833,7 @@ export default function RegistrationPortal() {
           })}
         </div>
 
-        {dbAudience !== 'vendor' ? (
+        {dbAudience !== 'vendor' && dbAudience !== 'attendee' ? (
           <>
             <h2>Who would you like to meet? (optional)</h2>
             {meetingTargets.map((m, idx) => (

@@ -21,6 +21,7 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Send, ImageIcon, Users, UserPlus, UserMinus } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../../lib/supabase';
 import { createNotification, createNotificationAndPush } from '../../../../lib/notifications';
 import { sendAnnouncementPush } from '../../../../lib/pushNotifications';
@@ -55,6 +56,7 @@ export default function GroupChatScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { applyEventAdmin } = useRolePreviewContext();
   const [groupName, setGroupName] = useState('');
   const [messages, setMessages] = useState<GroupMessageRow[]>([]);
   const [input, setInput] = useState('');
@@ -89,8 +91,8 @@ export default function GroupChatScreen() {
           role === 'admin' ||
           role === 'super_admin' ||
           roles.includes('admin') ||
-          roles.includes('super_admin') ||
-          user?.is_platform_admin === true;
+          roles.includes('super_admin');
+        isEventAdminResult = applyEventAdmin(isEventAdminResult);
         setIsEventAdmin(isEventAdminResult);
       }
       const { data: groupData } = await supabase
@@ -118,7 +120,7 @@ export default function GroupChatScreen() {
       setIsMember(false);
       setLoading(false);
     }
-  }, [groupId, user?.id, user?.is_platform_admin, currentEvent?.id]);
+  }, [groupId, user?.id, currentEvent?.id, applyEventAdmin]);
 
   const fetchMessages = useCallback(async () => {
     if (!groupId || !user?.id) {

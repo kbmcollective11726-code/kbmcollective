@@ -36,27 +36,79 @@ Linked project (from MCP): **`https://noydhokbswedvltjyenr.supabase.co`**
 
 **Authentication → URL Configuration → Redirect URLs**
 
-Add **exactly** (no typos, include `https`):
+Add **all** of these (app reset and delegate portal are different):
 
-- `https://cadmin.kbmcollective.org/auth-recovery.html`  
-  (or whatever matches `EXPO_PUBLIC_PASSWORD_RESET_WEB_URL` after you deploy)
+| URL | Used for |
+|-----|----------|
+| `https://cadmin.kbmcollective.org/auth-recovery.html` | **Mobile app** forgot-password (opens app) |
+| `https://cadmin.kbmcollective.org/portal/*/delegate/set-password` | Delegate registration portal only |
+| `collectivelive://reset-password` | Direct app scheme (optional) |
 
-Also add (for dev / direct scheme):
+**Do not** set **Site URL** to the delegate portal path. Use:
 
-- `collectivelive://reset-password`
-- Any Expo Go URL you see when testing, e.g. `exp://192.168.x.x:8081/--/reset-password`
+`https://cadmin.kbmcollective.org/auth-recovery.html`
+
+If Site URL points at the delegate portal, app reset links can land on the wrong page and show “missing login data”.
 
 ### 2. Site URL
 
 **Authentication → URL Configuration → Site URL**
 
-- Set to the **same HTTPS** recovery URL **or** your main public `https://` site.  
-- **Do not** leave **`http://localhost:...`** for production users — that’s what causes the phone browser to show **localhost / null** errors.
+Set to **`https://cadmin.kbmcollective.org/auth-recovery.html`** (or your main public HTTPS cadmin URL).  
+**Do not** leave **`http://localhost:...`** for production users — that’s what causes the phone browser to show **localhost / null** errors.
 
-### 3. Custom SMTP + sender name
+### 3. Reset email content (“your user” with no email)
 
-With **Custom SMTP** enabled, set **sender display name** and **from address** in the same Auth / SMTP settings (wording varies by dashboard version).  
-If mail still says only “Supabase”, check the provider’s **From** header and any Supabase **template** overrides.
+The default Supabase **Reset password** template says “reset the password for your user:” with no address. The app now calls the **`send-app-password-reset`** edge function, which sends a branded email including **`{{ email }}`** when Resend is configured.
+
+If you rely on **Supabase SMTP only** (no `RESEND_API_KEY`), paste this into **Authentication → Email Templates → Reset password**:
+
+```html
+<h2>Reset your KBM Connect password</h2>
+<p>Hi,</p>
+<p>We received a request to reset the password for <strong>{{ .Email }}</strong>.</p>
+<p><a href="{{ .ConfirmationURL }}">Reset my password</a></p>
+<p>Open the link on the phone where KBM Connect is installed. If you did not request this, ignore this email.</p>
+```
+
+Subject: `Reset your KBM Connect password`
+
+### 3b. Delegate registration emails (Supabase SMTP, no Resend)
+
+Delegate registration uses **`send-registration-setup-email`**, not `/recover`:
+
+| Situation | Supabase template used |
+|-----------|-------------------------|
+| **New email** (no auth account yet) | **Invite user** |
+| **Email already has an account** (e.g. mobile app user) | **Magic Link** (not Reset password) |
+
+Customize both in **Authentication → Email Templates**:
+
+**Invite user** — subject example: `Complete your registration — {{ .SiteName }}`
+
+```html
+<h2>Complete your registration</h2>
+<p>Hi,</p>
+<p>Thank you for registering. Click the link below to choose your password and sign in to your delegate portal.</p>
+<p><a href="{{ .ConfirmationURL }}">Complete registration</a></p>
+<p>If you did not register, you can ignore this email.</p>
+```
+
+**Magic Link** — same wording (used when the email already exists in Auth):
+
+```html
+<h2>Complete your registration</h2>
+<p>Hi,</p>
+<p>Thank you for registering. Click the link below to choose your password and sign in to your delegate portal.</p>
+<p><a href="{{ .ConfirmationURL }}">Complete registration</a></p>
+<p>If you did not register, you can ignore this email.</p>
+```
+
+Also add redirect URL: `https://cadmin.kbmcollective.org/portal/*/delegate/set-password`
+
+### 4. Custom SMTP + sender name (reduces spam)
+
+With **Custom SMTP** enabled, set **sender display name** to **KBM Connect** and **from address** to a verified domain address (e.g. `noreply@kbmcollective.org`). Ensure SPF/DKIM are configured for that domain in your mail provider.
 
 ---
 

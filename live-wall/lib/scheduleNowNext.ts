@@ -1,4 +1,5 @@
 import { parseISO } from 'date-fns';
+import { DateTime } from 'luxon';
 
 export interface SessionForNowNext {
   id: string;
@@ -67,19 +68,40 @@ function getEventDayNumbers(startDate: string | null | undefined, endDate: strin
   return Array.from({ length: Math.max(1, Math.min(days, 365)) }, (_, i) => i + 1);
 }
 
-function sessionInstantOnEventDayLocal(timeField: Date, eventDateKey: string): Date | null {
+function sessionInstantOnEventDayLocal(
+  timeField: Date,
+  eventDateKey: string,
+  eventIanaZone?: string | null
+): Date | null {
   const m = eventDateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   const y = parseInt(m[1], 10);
   const mo = parseInt(m[2], 10);
   const d = parseInt(m[3], 10);
   if (Number.isNaN(y) || Number.isNaN(mo) || Number.isNaN(d)) return null;
-  return new Date(y, mo - 1, d, timeField.getUTCHours(), timeField.getUTCMinutes(), 0, 0);
+  const hour = timeField.getUTCHours();
+  const minute = timeField.getUTCMinutes();
+  const zone = (eventIanaZone ?? '').trim();
+  if (zone) {
+    const dt = DateTime.fromObject(
+      { year: y, month: mo, day: d, hour, minute, second: 0, millisecond: 0 },
+      { zone },
+    );
+    if (!dt.isValid) return null;
+    return dt.toJSDate();
+  }
+  return new Date(y, mo - 1, d, hour, minute, 0, 0);
 }
 
-function isSessionLiveWallClockOnEventDay(now: Date, start: Date, end: Date, eventDateKey: string): boolean {
-  const startL = sessionInstantOnEventDayLocal(start, eventDateKey);
-  const endL = sessionInstantOnEventDayLocal(end, eventDateKey);
+function isSessionLiveWallClockOnEventDay(
+  now: Date,
+  start: Date,
+  end: Date,
+  eventDateKey: string,
+  eventIanaZone?: string | null
+): boolean {
+  const startL = sessionInstantOnEventDayLocal(start, eventDateKey, eventIanaZone);
+  const endL = sessionInstantOnEventDayLocal(end, eventDateKey, eventIanaZone);
   if (!startL || !endL) return false;
   const t = now.getTime();
   if (endL.getTime() >= startL.getTime()) return t >= startL.getTime() && t <= endL.getTime();
@@ -89,7 +111,8 @@ function isSessionLiveWallClockOnEventDay(now: Date, start: Date, end: Date, eve
 export function getNowNextSessions(
   sessions: SessionForNowNext[],
   eventStartDate: string | null | undefined,
-  eventEndDate?: string | null | undefined
+  eventEndDate?: string | null | undefined,
+  eventReminderTimezone?: string | null
 ): { nowSessions: SessionForNowNext[]; nextSessions: SessionForNowNext[] } {
   if (!eventStartDate || sessions.length === 0) return { nowSessions: [], nextSessions: [] };
   const now = new Date();
@@ -103,13 +126,13 @@ export function getNowNextSessions(
   const todayNum = dayNums.find((d) => getDateKeyForDayNumber(d, eventStartDate) === todayKey) ?? null;
 
   const nowList: SessionForNowNext[] = [];
-  if (todayNum != null) {
+  if (todayNum != null && todayKey) {
     const sessionsOnTodayTab = sessions.filter((s) => getSessionDateKeyFromIso(s.start_time) === todayKey);
     for (const s of sessionsOnTodayTab) {
       const start = parseSessionDate(s.start_time);
       const end = parseSessionDate(s.end_time);
       if (!start || !end) continue;
-      if (isSessionLiveWallClockOnEventDay(now, start, end, todayKey)) nowList.push(s);
+      if (isSessionLiveWallClockOnEventDay(now, start, end, todayKey, eventReminderTimezone)) nowList.push(s);
     }
   }
 
@@ -119,7 +142,7 @@ export function getNowNextSessions(
     const start = parseSessionDate(s.start_time);
     const dateKey = getSessionDateKeyFromIso(s.start_time);
     if (!start || !dateKey) continue;
-    const startLocal = sessionInstantOnEventDayLocal(start, dateKey);
+    const startLocal = sessionInstantOnEventDayLocal(start, dateKey, eventReminderTimezone);
     if (!startLocal) continue;
     if (startLocal.getTime() > nowMs) nextList.push(s);
   }
@@ -129,8 +152,8 @@ export function getNowNextSessions(
     const dbK = getSessionDateKeyFromIso(b.start_time) ?? '';
     const sa = parseSessionDate(a.start_time);
     const sb = parseSessionDate(b.start_time);
-    const ta = sa ? sessionInstantOnEventDayLocal(sa, daK)?.getTime() ?? 0 : 0;
-    const tb = sb ? sessionInstantOnEventDayLocal(sb, dbK)?.getTime() ?? 0 : 0;
+    const ta = sa ? sessionInstantOnEventDayLocal(sa, daK, eventReminderTimezone)?.getTime() ?? 0 : 0;
+    const tb = sb ? sessionInstantOnEventDayLocal(sb, dbK, eventReminderTimezone)?.getTime() ?? 0 : 0;
     return ta - tb;
   });
 

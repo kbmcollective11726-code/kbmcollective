@@ -13,6 +13,11 @@ import {
   AppStateStatus,
 } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
+import { isAppMenuItemVisible } from '../lib/effectiveEventMenu';
+import { effectiveCanShowSessionCheckIn } from '../lib/rolePreview';
+import { useRolePreviewStore } from '../stores/rolePreviewStore';
+import { useRolePreviewContext } from '../hooks/useRolePreviewContext';
+import { RolePreviewMenuButton, RolePreviewPicker } from './RolePreviewBanner';
 import {
   Menu,
   X,
@@ -30,9 +35,11 @@ import {
   Calendar,
   Trophy,
   Store,
+  Building2,
   BookOpen,
   QrCode,
   FileText,
+  ClipboardCheck,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
@@ -42,6 +49,8 @@ import { supabase, withRetryAndRefresh } from '../lib/supabase';
 import { setAppBadgeCount } from '../lib/pushNotifications';
 import { colors } from '../constants/colors';
 import type { EventSponsor } from '../lib/types';
+import { logSponsorClick, type SponsorClickPlacement } from '../lib/logSponsorClick';
+import { openExternalUrl } from '../lib/openExternalUrl';
 import { SponsorMark } from './SponsorMark';
 
 /** New columns, when missing, follow legacy `show_in_hamburger`. */
@@ -81,10 +90,15 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
   const [isVendorRep, setIsVendorRep] = useState(false);
+  const [rolePreviewOpen, setRolePreviewOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuthStore();
   const { currentEvent, adminCheckTick } = useEventStore();
+  const previewRole = useRolePreviewStore((s) => s.previewRole);
+  const { applyEventAdmin, applyVendorRep } = useRolePreviewContext();
   const isPlatformAdmin = user?.is_platform_admin === true;
+  const effectiveIsEventAdmin = applyEventAdmin(isEventAdmin);
+  const effectiveIsVendorRep = applyVendorRep(isVendorRep);
   const [sponsorsMenuHeader, setSponsorsMenuHeader] = useState<EventSponsor[]>([]);
   const [sponsorsMenuFooter, setSponsorsMenuFooter] = useState<EventSponsor[]>([]);
 
@@ -305,6 +319,17 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   /** Match `CompactSponsorStrip` stacked row height for the drawer width. */
   const footerSponsorLogoH = Math.min(120, Math.max(72, Math.round(menuWidth / 3.35)));
 
+  const openSponsorLink = useCallback(
+    async (s: EventSponsor, placement: SponsorClickPlacement) => {
+      if (!s.website_url?.trim()) return;
+      const opened = await openExternalUrl(s.website_url);
+      if (opened && currentEvent?.id) {
+        void logSponsorClick({ eventId: currentEvent.id, sponsorId: s.id, placement });
+      }
+    },
+    [currentEvent?.id]
+  );
+
   const openMenu = () => {
     setVisible(true);
     // Refetch admin status as soon as they open the menu so "Event admin" shows for admins
@@ -342,7 +367,7 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                   <TouchableOpacity
                     key={s.id}
                     style={[styles.headerSponsorBtn, i > 0 ? { marginLeft: 8 } : null]}
-                    onPress={() => (s.website_url ? Linking.openURL(s.website_url) : undefined)}
+                    onPress={() => openSponsorLink(s, 'hamburger_header')}
                     activeOpacity={s.website_url ? 0.75 : 1}
                     disabled={!s.website_url}
                     hitSlop={{ top: 6, bottom: 6, left: 4, right: 4 }}
@@ -375,35 +400,15 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
             >
               <MenuItem icon={Home} label="Info" onPress={() => navigate('/(tabs)/home')} />
               <MenuItem icon={ImageIcon} label="Feed" onPress={() => navigate('/(tabs)/feed')} />
-              {currentEvent?.menu_show_agenda !== false && (
+              {isAppMenuItemVisible(currentEvent, 'menu_show_agenda') && (
                 <MenuItem icon={Calendar} label="Agenda" onPress={() => navigate('/(tabs)/schedule')} />
               )}
               <MenuItem icon={Users} label="Community" onPress={() => navigate('/(tabs)/community')} />
               <MenuItem icon={Trophy} label="Rank" onPress={() => navigate('/(tabs)/leaderboard')} />
-              {currentEvent?.menu_show_1on1 !== false && (
-                <MenuItem icon={Store} label="1:1 Meetings" onPress={() => navigate('/(tabs)/expo')} />
-              )}
-              {currentEvent?.menu_show_scan_badge !== false && (
+              {isAppMenuItemVisible(currentEvent, 'menu_show_solution_providers') && (
                 <MenuItem
-                  icon={QrCode}
-                  label="Scan badge"
-                  onPress={() => navigate(`/(tabs)/profile/badge-scan?from=${encodeURIComponent(returnTo)}` as any)}
-                />
-              )}
-              {currentEvent?.id &&
-                (isEventAdmin || isPlatformAdmin || isVendorRep) &&
-                currentEvent?.menu_show_notes !== false && (
-                  <MenuItem
-                    icon={FileText}
-                    label="Notes"
-                    onPress={() => navigateToProfileScreen('/profile/badge-notes')}
-                  />
-                )}
-              <MenuItem icon={LayoutGrid} label="Photo book" onPress={() => navigate('/(tabs)/photo-book')} />
-              {currentEvent?.menu_show_solution_providers !== false && (
-                <MenuItem
-                  icon={Store}
-                  label="Solution Provider"
+                  icon={Building2}
+                  label="Solution Providers"
                   onPress={() =>
                     navigate(
                       `/(tabs)/solution-providers?from=${encodeURIComponent(returnTo)}` as any
@@ -411,7 +416,36 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                   }
                 />
               )}
-              {currentEvent?.menu_show_live_wall !== false && (
+              {isAppMenuItemVisible(currentEvent, 'menu_show_1on1') && (
+                <MenuItem icon={Store} label="1:1 Meetings" onPress={() => navigate('/(tabs)/expo')} />
+              )}
+              {isAppMenuItemVisible(currentEvent, 'menu_show_scan_badge') && (
+                <MenuItem
+                  icon={QrCode}
+                  label="Scan badge"
+                  onPress={() => navigateToProfileScreen('/profile/badge-scan')}
+                />
+              )}
+              {effectiveCanShowSessionCheckIn(currentEvent, isEventAdmin, isPlatformAdmin, previewRole) && (
+                <MenuItem
+                  icon={ClipboardCheck}
+                  label="Session check-in"
+                  onPress={() =>
+                    navigate(`/(tabs)/profile/session-check-in?from=${encodeURIComponent(returnTo)}` as any)
+                  }
+                />
+              )}
+              {currentEvent?.id &&
+                (effectiveIsEventAdmin || effectiveIsVendorRep) &&
+                isAppMenuItemVisible(currentEvent, 'menu_show_notes') && (
+                  <MenuItem
+                    icon={FileText}
+                    label="Notes"
+                    onPress={() => navigateToProfileScreen('/profile/badge-notes')}
+                  />
+                )}
+              <MenuItem icon={LayoutGrid} label="Photo book" onPress={() => navigate('/(tabs)/photo-book')} />
+              {isAppMenuItemVisible(currentEvent, 'menu_show_live_wall') && (
                 <MenuItem icon={Tv} label="Live wall" onPress={openLiveWall} />
               )}
               <MenuItem
@@ -436,13 +470,19 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                 badge={unreadNotifications > 0 ? unreadNotifications : undefined}
                 onPress={() => navigateToProfileScreen('/profile/notifications')}
               />
-              {(isEventAdmin || isPlatformAdmin) && user && (
+              {effectiveIsEventAdmin && user && (
                 <MenuItem
                   icon={Shield}
                   label="Event admin"
                   onPress={() => navigateToProfileScreen('/profile/admin')}
                 />
               )}
+              {isPlatformAdmin ? (
+                <>
+                  <View style={styles.divider} />
+                  <RolePreviewMenuButton onPress={() => setRolePreviewOpen(true)} />
+                </>
+              ) : null}
               <View style={styles.divider} />
               <MenuItem
                 icon={LogOut}
@@ -453,12 +493,12 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
               {sponsorsMenuFooter.length > 0 ? (
                 <View style={styles.sponsorMenuSection}>
                   <View style={styles.sponsorMenuStrip}>
-                    <Text style={styles.sponsorMenuTitle}>Sponsored by</Text>
+                    <Text style={styles.sponsorMenuTitle}>Mobile app sponsored by</Text>
                     {sponsorsMenuFooter.map((s, i) => (
                       <TouchableOpacity
                         key={s.id}
                         style={[styles.sponsorFooterRow, i > 0 ? styles.sponsorFooterRowSpacing : null]}
-                        onPress={() => (s.website_url ? Linking.openURL(s.website_url) : undefined)}
+                        onPress={() => openSponsorLink(s, 'hamburger_footer')}
                         activeOpacity={s.website_url ? 0.75 : 1}
                         disabled={!s.website_url}
                         accessibilityLabel={s.company_name}
@@ -483,6 +523,7 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
           </Pressable>
         </Pressable>
       </Modal>
+      <RolePreviewPicker visible={rolePreviewOpen} onClose={() => setRolePreviewOpen(false)} />
     </>
   );
 }

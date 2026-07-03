@@ -1,6 +1,7 @@
 .page {
-  max-width: 900px;
-  margin: 0 auto;
+  max-width: var(--page-max-content);
+  width: 100%;
+  margin: 0;
   padding: 0 16px 48px;
 }
 
@@ -36,6 +37,118 @@
   padding: 32px;
   text-align: center;
   color: var(--color-muted);
+}
+
+.statsSection {
+  margin-bottom: 24px;
+  padding: 16px 18px;
+  border: 1px solid var(--color-border, #e5e5e5);
+  border-radius: 10px;
+  background: var(--color-surface, #fafafa);
+}
+
+.statsTitle {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+
+.statsHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+  margin-bottom: 12px;
+}
+
+.statsActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.statsActionBtn {
+  min-height: 40px;
+  padding: 10px 18px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+.statsActionBtn.btnDanger {
+  background: #fff !important;
+}
+
+.statsActionBtn.btnDanger:hover:not(:disabled) {
+  background: rgba(220, 38, 38, 0.06) !important;
+}
+
+.btnSecondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+
+.btnSecondary:disabled,
+.btnDanger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.statsHint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--color-muted, #666);
+  line-height: 1.45;
+}
+
+.statsAttendeeCount {
+  margin: 0 0 4px;
+  font-size: 14px;
+  color: var(--color-text, #111);
+}
+
+.statsAttendeeMuted {
+  color: var(--color-muted, #666);
+  font-weight: 400;
+}
+
+.statsTableWrap {
+  overflow-x: auto;
+}
+
+.statsTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.statsTable th,
+.statsTable td {
+  padding: 8px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border, #e5e5e5);
+  vertical-align: top;
+}
+
+.statsTable th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-muted, #666);
+}
+
+.statsNum {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.statsBreakdown {
+  color: var(--color-muted, #555);
+  line-height: 1.4;
+  min-width: 160px;
 }
 
 .formCard,

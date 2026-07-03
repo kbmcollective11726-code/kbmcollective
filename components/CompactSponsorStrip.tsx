@@ -4,17 +4,21 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  Linking,
   useWindowDimensions,
 } from 'react-native';
 import { colors } from '../constants/colors';
 import { theme } from '../constants/theme';
 import type { EventSponsor } from '../lib/types';
+import { logSponsorClick, type SponsorClickPlacement } from '../lib/logSponsorClick';
+import { openExternalUrl } from '../lib/openExternalUrl';
 import { SponsorMark } from './SponsorMark';
 
 type Props = {
   sponsors: EventSponsor[];
   title?: string;
+  /** Required for click analytics when a logo is tapped. */
+  eventId?: string;
+  placement?: SponsorClickPlacement;
   /**
    * `strip`: full-width band under label (Feed / Schedule).
    * `bare`: no band shell — rounded logo clips only (Info home matches cards below).
@@ -41,18 +45,28 @@ function bareInfoBannerHeight(winW: number) {
 const MAX_FLEX_ROW = 4;
 
 /**
- * Full-width white band + small label + centered logo(s), matching Feed / Info reference.
+ * Full-width white band + small label + centered logo(s); label default “Mobile app sponsored by”.
  * Used on Feed, Schedule, and Info; parent may apply negative horizontal margin to bleed past padding.
  */
-export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', layout = 'strip' }: Props) {
+export default function CompactSponsorStrip({
+  sponsors,
+  title = 'Mobile app sponsored by',
+  layout = 'strip',
+  eventId,
+  placement,
+}: Props) {
   const { width: winW } = useWindowDimensions();
   if (sponsors.length === 0) return null;
   const bare = layout === 'bare';
   /** Match Schedule / section cards on Info (`nowNext`-style tiles). */
   const logoRadius = theme.sectionRadius;
 
-  const openUrl = (url: string | null | undefined) => {
-    if (url) Linking.openURL(url);
+  const onSponsorPress = async (s: EventSponsor) => {
+    if (!s.website_url?.trim()) return;
+    const opened = await openExternalUrl(s.website_url);
+    if (opened && eventId && placement) {
+      void logSponsorClick({ eventId, sponsorId: s.id, placement });
+    }
   };
 
   if (sponsors.length === 1) {
@@ -64,7 +78,7 @@ export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', lay
           <Text style={styles.bareTitle}>{title}</Text>
           <TouchableOpacity
             style={styles.singleTouch}
-            onPress={() => openUrl(s.website_url)}
+            onPress={() => onSponsorPress(s)}
             activeOpacity={s.website_url ? 0.8 : 1}
             disabled={!s.website_url}
             accessibilityLabel={s.company_name}
@@ -94,7 +108,7 @@ export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', lay
           <Text style={styles.stripTitle}>{title}</Text>
           <TouchableOpacity
             style={styles.singleTouch}
-            onPress={() => openUrl(s.website_url)}
+            onPress={() => onSponsorPress(s)}
             activeOpacity={s.website_url ? 0.8 : 1}
             disabled={!s.website_url}
             accessibilityLabel={s.company_name}
@@ -133,7 +147,7 @@ export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', lay
                 <TouchableOpacity
                   key={s.id}
                   style={[styles.stackedRow, i > 0 ? styles.stackedRowSpacing : null]}
-                  onPress={() => openUrl(s.website_url)}
+                  onPress={() => onSponsorPress(s)}
                   activeOpacity={s.website_url ? 0.75 : 1}
                   disabled={!s.website_url}
                   accessibilityLabel={s.company_name}
@@ -171,7 +185,7 @@ export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', lay
                 <TouchableOpacity
                   key={s.id}
                   style={[styles.stackedRow, i > 0 ? styles.stackedRowSpacing : null]}
-                  onPress={() => openUrl(s.website_url)}
+                  onPress={() => onSponsorPress(s)}
                   activeOpacity={s.website_url ? 0.75 : 1}
                   disabled={!s.website_url}
                   accessibilityLabel={s.company_name}
@@ -214,7 +228,7 @@ export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', lay
                 styles.bareScrollChip,
                 { width: itemW, height: ROW_H, borderRadius: logoRadius },
               ]}
-              onPress={() => openUrl(s.website_url)}
+              onPress={() => onSponsorPress(s)}
               activeOpacity={s.website_url ? 0.75 : 1}
               disabled={!s.website_url}
               accessibilityLabel={s.company_name}
@@ -247,7 +261,7 @@ export default function CompactSponsorStrip({ sponsors, title = 'Sponsored', lay
             <TouchableOpacity
               key={s.id}
               style={[styles.scrollChip, { width: itemW, height: ROW_H }]}
-              onPress={() => openUrl(s.website_url)}
+              onPress={() => onSponsorPress(s)}
               activeOpacity={s.website_url ? 0.75 : 1}
               disabled={!s.website_url}
               accessibilityLabel={s.company_name}

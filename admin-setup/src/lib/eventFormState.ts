@@ -1,4 +1,5 @@
 import type { Event } from './types';
+import { DEFAULT_EVENT_TIMEZONE } from './eventTimezones';
 
 /** Client-side shape for create / edit event forms (matches app `Event` DB fields). */
 export type EventFormFields = {
@@ -27,7 +28,7 @@ export type EventFormFields = {
   menuShow1on1: boolean;
   /** KBM hamburger: show Live wall */
   menuShowLiveWall: boolean;
-  /** KBM hamburger: show Solution Provider */
+  /** KBM hamburger: show Solution Providers */
   menuShowSolutionProviders: boolean;
   /** KBM hamburger: show Scan badge */
   menuShowScanBadge: boolean;
@@ -35,6 +36,12 @@ export type EventFormFields = {
   menuShowNotes: boolean;
   /** KBM hamburger: show Agenda */
   menuShowAgenda: boolean;
+  /** KBM hamburger: Session check-in (room badge scan) */
+  menuShowSessionCheckIn: boolean;
+  /** IANA zone for agenda wall-clock, Live now, and session starting-soon reminders. */
+  reminderTimezone: string;
+  /** When true (default), vendors/admins see the pre-meeting attendee brief + "have we met before" history. */
+  vendorBriefEnabled: boolean;
 };
 
 export function toYYYYMMDD(d: Date): string {
@@ -66,12 +73,15 @@ export function defaultEventFormFields(startDate: string, endDate: string): Even
     whatToExpectText: '',
     pointsSectionIntro: '',
     contactPhone: '',
-    menuShow1on1: true,
-    menuShowLiveWall: true,
-    menuShowSolutionProviders: true,
-    menuShowScanBadge: true,
-    menuShowNotes: true,
+    menuShow1on1: false,
+    menuShowLiveWall: false,
+    menuShowSolutionProviders: false,
+    menuShowScanBadge: false,
+    menuShowNotes: false,
     menuShowAgenda: true,
+    menuShowSessionCheckIn: false,
+    reminderTimezone: DEFAULT_EVENT_TIMEZONE,
+    vendorBriefEnabled: true,
   };
 }
 
@@ -109,6 +119,9 @@ export function eventFormFieldsFromEvent(e: Event): EventFormFields {
     menuShowScanBadge: e.menu_show_scan_badge !== false,
     menuShowNotes: e.menu_show_notes !== false,
     menuShowAgenda: e.menu_show_agenda !== false,
+    menuShowSessionCheckIn: e.menu_show_session_check_in !== false,
+    reminderTimezone: (e.reminder_timezone ?? '').trim() || DEFAULT_EVENT_TIMEZONE,
+    vendorBriefEnabled: e.vendor_brief_enabled !== false,
   };
 }
 
@@ -149,6 +162,9 @@ export function eventInsertRowFromForm(f: EventFormFields) {
     menu_show_scan_badge: f.menuShowScanBadge,
     menu_show_notes: f.menuShowNotes,
     menu_show_agenda: f.menuShowAgenda,
+    menu_show_session_check_in: f.menuShowSessionCheckIn,
+    reminder_timezone: f.reminderTimezone.trim() || DEFAULT_EVENT_TIMEZONE,
+    vendor_brief_enabled: f.vendorBriefEnabled,
   };
 }
 
@@ -159,7 +175,12 @@ export function eventInsertRowFromForm(f: EventFormFields) {
 export function eventUpdateRowFromForm(
   f: EventFormFields,
   fallbackEventCode: string | null,
-  options?: { omitMenuLiveWall?: boolean; omitMenuShowNotes?: boolean }
+  options?: {
+    omitMenuLiveWall?: boolean;
+    omitMenuShowNotes?: boolean;
+    /** When true, omit all menu_show_* (use eventAdminMenuUpdateFromForm for event-admin toggles). */
+    omitInAppMenu?: boolean;
+  }
 ) {
   const customCode = f.eventCode.trim() ? f.eventCode.trim().toUpperCase() : null;
   return {
@@ -183,11 +204,17 @@ export function eventUpdateRowFromForm(
     what_to_expect: whatToExpectFromText(f.whatToExpectText),
     points_section_intro: f.pointsSectionIntro.trim() || null,
     contact_phone: f.contactPhone.trim() || null,
-    menu_show_1on1: f.menuShow1on1,
-    ...(options?.omitMenuLiveWall ? {} : { menu_show_live_wall: f.menuShowLiveWall }),
-    menu_show_solution_providers: f.menuShowSolutionProviders,
-    menu_show_scan_badge: f.menuShowScanBadge,
-    ...(options?.omitMenuShowNotes ? {} : { menu_show_notes: f.menuShowNotes }),
-    menu_show_agenda: f.menuShowAgenda,
+    ...(options?.omitInAppMenu
+      ? {}
+      : {
+          menu_show_1on1: f.menuShow1on1,
+          ...(options?.omitMenuLiveWall ? {} : { menu_show_live_wall: f.menuShowLiveWall }),
+          menu_show_solution_providers: f.menuShowSolutionProviders,
+          menu_show_scan_badge: f.menuShowScanBadge,
+          ...(options?.omitMenuShowNotes ? {} : { menu_show_notes: f.menuShowNotes }),
+          menu_show_agenda: f.menuShowAgenda,
+        }),
+    reminder_timezone: f.reminderTimezone.trim() || DEFAULT_EVENT_TIMEZONE,
+    vendor_brief_enabled: f.vendorBriefEnabled,
   };
 }

@@ -23,6 +23,7 @@ import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
 import { addDebugLog } from '../../../lib/debugLog';
 import { setAppBadgeCount } from '../../../lib/pushNotifications';
+import { ensureCurrentEventForId } from '../../../lib/ensureEventForNotification';
 import { colors, notificationIcons } from '../../../constants/colors';
 import { format } from 'date-fns';
 
@@ -375,7 +376,7 @@ export default function NotificationsScreen() {
 
   const unreadCount = items.filter((n) => !n.is_read).length;
 
-  const handleNotificationPress = (item: NotificationRow) => {
+  const handleNotificationPress = async (item: NotificationRow) => {
     markAsRead(item.id);
     const data = item.data ?? {};
 
@@ -417,6 +418,9 @@ export default function NotificationsScreen() {
     }
     if (item.type === 'meeting' && dataPick(data, 'booth_id', 'boothId')) {
       const boothId = dataPick(data, 'booth_id', 'boothId')!;
+      if (item.event_id) {
+        await ensureCurrentEventForId(item.event_id, user?.is_platform_admin === true);
+      }
       const slotId = dataPick(data, 'slot_id', 'slotId');
       const fromEnc = encodeURIComponent('/(tabs)/schedule');
       const rateParam = slotId ? `&rate_slot_id=${encodeURIComponent(slotId)}` : '';

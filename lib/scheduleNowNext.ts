@@ -1,4 +1,6 @@
 import { parseISO } from 'date-fns';
+import { DateTime } from 'luxon';
+import { formatB2BSlotTimeWallClock } from './b2bEventTime';
 
 /** Parses API date strings (PostgreSQL may return space instead of T). Preserves timezone (Z or +00). */
 export function parseSessionDate(iso: string | null | undefined): Date | null {
@@ -45,6 +47,26 @@ export function getDeviceLocalDateKey(d: Date = new Date()): string {
   const mo = d.getMonth() + 1;
   const da = d.getDate();
   return `${y}-${String(mo).padStart(2, '0')}-${String(da).padStart(2, '0')}`;
+}
+
+/**
+ * Whether a schedule session belongs on an Agenda / check-in day tab.
+ * Matches date key from start_time; also includes sessions tagged with day_number for that event day.
+ */
+export function sessionMatchesAgendaDay(
+  session: { start_time: string; day_number?: number | null },
+  dayNumber: number,
+  eventStartDate: string | null | undefined
+): boolean {
+  if (!eventStartDate) {
+    const dn = Number(session.day_number);
+    return !Number.isNaN(dn) && dn === dayNumber;
+  }
+  const dayKey = getDateKeyForDayNumber(dayNumber, eventStartDate);
+  const sessionKey = getSessionDateKeyFromIso(session.start_time);
+  if (dayKey && sessionKey && sessionKey === dayKey) return true;
+  const dn = Number(session.day_number);
+  return !Number.isNaN(dn) && dn >= 1 && dn === dayNumber;
 }
 
 /** UTC calendar yyyy-MM-dd from session timestamp — must match Agenda tab filter (`schedule.tsx`). */
@@ -174,16 +196,33 @@ export interface SessionForNowNext {
  * Never compare raw start.getTime() to Date.now() — e.g. 11 AM Eastern is 15:00 UTC, which falls inside 13:00–17:00Z
  * ("1–5 PM" on the badge) and marks the wrong session "Live" in release/TestFlight builds.
  *
- * Build local instants on the event calendar day (same as "next session" ordering) and compare getTime().
+ * When `eventIanaZone` is set (same as `events.reminder_timezone` / Edge `notify-event-starting-soon`),
+ * interpret that wall clock on `eventDateKey` in that zone so "Live now" matches the venue, not the device TZ.
+ * When omitted, use the device local calendar (legacy behavior).
  */
-export function sessionInstantOnEventDayLocal(timeField: Date, eventDateKey: string): Date | null {
+export function sessionInstantOnEventDayLocal(
+  timeField: Date,
+  eventDateKey: string,
+  eventIanaZone?: string | null
+): Date | null {
   const m = eventDateKey.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m) return null;
   const y = parseInt(m[1], 10);
   const mo = parseInt(m[2], 10);
   const d = parseInt(m[3], 10);
   if (Number.isNaN(y) || Number.isNaN(mo) || Number.isNaN(d)) return null;
-  return new Date(y, mo - 1, d, timeField.getUTCHours(), timeField.getUTCMinutes(), 0, 0);
+  const hour = timeField.getUTCHours();
+  const minute = timeField.getUTCMinutes();
+  const zone = (eventIanaZone ?? '').trim();
+  if (zone) {
+    const dt = DateTime.fromObject(
+      { year: y, month: mo, day: d, hour, minute, second: 0, millisecond: 0 },
+      { zone },
+    );
+    if (!dt.isValid) return null;
+    return dt.toJSDate();
+  }
+  return new Date(y, mo - 1, d, hour, minute, 0, 0);
 }
 
 /**
@@ -212,10 +251,11 @@ export function isSessionLiveWallClockOnEventDay(
   now: Date,
   start: Date,
   end: Date,
-  eventDateKey: string
+  eventDateKey: string,
+  eventIanaZone?: string | null
 ): boolean {
-  const startL = sessionInstantOnEventDayLocal(start, eventDateKey);
-  const endL = sessionInstantOnEventDayLocal(end, eventDateKey);
+  const startL = sessionInstantOnEventDayLocal(start, eventDateKey, eventIanaZone);
+  const endL = sessionInstantOnEventDayLocal(end, eventDateKey, eventIanaZone);
   if (!startL || !endL) return false;
   const t = now.getTime();
   if (endL.getTime() >= startL.getTime()) {
@@ -224,7 +264,7 @@ export function isSessionLiveWallClockOnEventDay(
   return t >= startL.getTime() || t <= endL.getTime();
 }
 
-/** B2B meeting_slots use real UTC instants (`toISOString()` from pickers). Compare with true timestamps. */
+/** @deprecated Real-instant compare; B2B now uses wall-clock like sessions. */
 export function isSessionLiveInstant(now: Date, start: Date, end: Date): boolean {
   const t = now.getTime();
   return t >= start.getTime() && t <= end.getTime();
@@ -236,10 +276,28 @@ export function isSessionNotYetEndedInstant(now: Date, end: Date): boolean {
 }
 
 /** Scroll / "not past": schedule session end as local instant on event day. */
-export function isSessionNotYetEndedWallClockOnEventDay(now: Date, end: Date, eventDateKey: string): boolean {
-  const endL = sessionInstantOnEventDayLocal(end, eventDateKey);
+export function isSessionNotYetEndedWallClockOnEventDay(
+  now: Date,
+  end: Date,
+  eventDateKey: string,
+  eventIanaZone?: string | null
+): boolean {
+  const endL = sessionInstantOnEventDayLocal(end, eventDateKey, eventIanaZone);
   if (!endL) return false;
   return now.getTime() <= endL.getTime();
+}
+
+/** B2B slot ended at venue (wall-clock storage + reminder_timezone for live/past). */
+export function isB2BSlotPastWallClock(
+  startIso: string,
+  endIso: string,
+  eventIanaZone?: string | null
+): boolean {
+  const end = parseSessionDate(endIso);
+  if (!end) return false;
+  const dateKey = getSessionDateKeyFromIso(startIso);
+  if (!dateKey) return false;
+  return !isSessionNotYetEndedWallClockOnEventDay(new Date(), end, dateKey, eventIanaZone);
 }
 
 /**
@@ -250,7 +308,8 @@ export function isSessionNotYetEndedWallClockOnEventDay(now: Date, end: Date, ev
 export function getNowNextSessions(
   sessions: SessionForNowNext[],
   eventStartDate: string | null | undefined,
-  eventEndDate?: string | null | undefined
+  eventEndDate?: string | null | undefined,
+  eventReminderTimezone?: string | null
 ): { nowSessions: SessionForNowNext[]; nextSessions: SessionForNowNext[] } {
   if (!eventStartDate || sessions.length === 0) return { nowSessions: [], nextSessions: [] };
   const now = new Date();
@@ -271,7 +330,7 @@ export function getNowNextSessions(
       const start = parseSessionDate(s.start_time);
       const end = parseSessionDate(s.end_time);
       if (!start || !end) continue;
-      if (isSessionLiveWallClockOnEventDay(now, start, end, todayKey)) {
+      if (isSessionLiveWallClockOnEventDay(now, start, end, todayKey, eventReminderTimezone)) {
         nowList.push(s);
       }
     }
@@ -284,7 +343,7 @@ export function getNowNextSessions(
     if (!start) continue;
     const dateKey = getSessionDateKeyFromIso(s.start_time);
     if (!dateKey) continue;
-    const startLocal = sessionInstantOnEventDayLocal(start, dateKey);
+    const startLocal = sessionInstantOnEventDayLocal(start, dateKey, eventReminderTimezone);
     if (!startLocal) continue;
     if (startLocal.getTime() > nowMs) {
       nextList.push(s);
@@ -295,8 +354,8 @@ export function getNowNextSessions(
     const dbK = getSessionDateKeyFromIso(b.start_time) ?? '';
     const sa = parseSessionDate(a.start_time);
     const sb = parseSessionDate(b.start_time);
-    const ta = sa ? sessionInstantOnEventDayLocal(sa, daK)?.getTime() ?? 0 : 0;
-    const tb = sb ? sessionInstantOnEventDayLocal(sb, dbK)?.getTime() ?? 0 : 0;
+    const ta = sa ? sessionInstantOnEventDayLocal(sa, daK, eventReminderTimezone)?.getTime() ?? 0 : 0;
+    const tb = sb ? sessionInstantOnEventDayLocal(sb, dbK, eventReminderTimezone)?.getTime() ?? 0 : 0;
     return ta - tb;
   });
   return { nowSessions: nowList, nextSessions: nextList.slice(0, 2) };
@@ -316,18 +375,9 @@ export function formatSessionTime(iso: string): string {
   return `${hour12}:${String(m).padStart(2, '0')} ${ampm}`;
 }
 
-/**
- * B2B meeting_slots store real instants. Show time in the user's local timezone.
- * (Agenda schedule rows use formatSessionTime = UTC components for schedule_sessions only.)
- */
-export function formatB2BSlotTimeLocal(iso: string): string {
-  const d = parseSessionDate(iso);
-  if (!d || Number.isNaN(d.getTime())) return '—';
-  const h = d.getHours();
-  const m = d.getMinutes();
-  const ampm = h >= 12 ? 'PM' : 'AM';
-  const hour12 = h % 12 === 0 ? 12 : h % 12;
-  return `${hour12}:${String(m).padStart(2, '0')} ${ampm}`;
+/** B2B slots use the same wall-clock display as agenda sessions. */
+export function formatB2BSlotTimeLocal(iso: string, _eventIanaZone?: string | null): string {
+  return formatB2BSlotTimeWallClock(iso);
 }
 
 /** One line for admin session cards: matches Agenda tab wall-clock (UTC field) display. */

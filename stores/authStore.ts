@@ -2,9 +2,11 @@ import { create } from 'zustand';
 import type { User as AuthUser } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
 import { supabase } from '../lib/supabase';
-import { getPasswordResetRedirectUrl } from '../lib/passwordResetRedirect';
+import { requestAppPasswordReset } from '../lib/appPasswordReset';
 import { registerPushToken } from '../lib/pushNotifications';
+import { logAuthAttempt } from '../lib/logAuthAttempt';
 import { useEventStore } from './eventStore';
+import { useRolePreviewStore } from './rolePreviewStore';
 import { User } from '../lib/types';
 
 /**
@@ -67,6 +69,7 @@ function bindSupabaseAuthListener(
   supabase.auth.onAuthStateChange(async (event, session) => {
     if (event === 'SIGNED_OUT') {
       useEventStore.getState().clearForLogout();
+      void useRolePreviewStore.getState().resetPreview();
       set({
         session: null,
         user: null,
@@ -127,7 +130,33 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       ]);
 
       if (session?.user) {
-        const profile = await fetchOrCreatePublicUser(session.user);
+        const profile = await Promise.race([
+          fetchOrCreatePublicUser(session.user),
+          timeout(6000),
+        ]).catch(async () => {
+          try {
+            return await fetchOrCreatePublicUser(session.user);
+          } catch {
+            const email = (session.user.email ?? '').trim().toLowerCase();
+            const now = new Date().toISOString();
+            return {
+              id: session.user.id,
+              email: email || 'unknown@local',
+              full_name: email.split('@')[0] || 'User',
+              avatar_url: null,
+              title: null,
+              company: null,
+              linkedin_url: null,
+              bio: null,
+              phone: null,
+              push_token: null,
+              session_reminder_skip_same_room: true,
+              is_active: true,
+              created_at: now,
+              updated_at: now,
+            } satisfies User;
+          }
+        });
 
         set({
           session,
@@ -160,9 +189,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       if (!get().isAuthenticated) {
         set({ isLoading: false });
       }
+    } finally {
+      if (get().isLoading) {
+        set({ isLoading: false });
+      }
+      bindSupabaseAuthListener(set, get);
     }
-
-    bindSupabaseAuthListener(set, get);
   },
 
   login: async (email, password) => {
@@ -173,12 +205,34 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       );
 
     const doLogin = async () => {
+      const normalizedEmail = email.trim().toLowerCase();
+      const anonKey =
+        (Constants.expoConfig as { extra?: { SUPABASE_ANON_KEY?: string } } | null)?.extra
+          ?.SUPABASE_ANON_KEY ??
+        process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
+        '';
       const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
+        email: normalizedEmail,
         password,
       });
-      if (error) return { error: error.message };
+      if (error) {
+        logAuthAttempt({
+          email: normalizedEmail,
+          success: false,
+          source: 'mobile',
+          errorMessage: error.message,
+          anonKey: anonKey.trim(),
+        });
+        return { error: error.message };
+      }
       if (data?.session?.user) {
+        logAuthAttempt({
+          email: normalizedEmail,
+          success: true,
+          source: 'mobile',
+          userId: data.session.user.id,
+          anonKey: anonKey.trim(),
+        });
         const profile = await fetchOrCreatePublicUser(data.session.user);
         set({
           session: data.session,
@@ -344,21 +398,13 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   resetPassword: async (email) => {
-    try {
-      const redirectTo = getPasswordResetRedirectUrl();
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-        redirectTo,
-      });
-      if (error) return { error: error.message };
-      return { error: null };
-    } catch (err: any) {
-      return { error: err.message || 'Failed to send reset email' };
-    }
+    return requestAppPasswordReset(email);
   },
 
   logout: async () => {
     // Clear event store so next user never sees previous user's event
     useEventStore.getState().clearForLogout();
+    void useRolePreviewStore.getState().resetPreview();
     // Clear state first so UI updates immediately; signOut in background so logout never "hangs"
     set({
       user: null,

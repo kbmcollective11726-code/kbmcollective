@@ -26,6 +26,9 @@ import { addDebugLog } from '../../../lib/debugLog';
 import { colors } from '../../../constants/colors';
 import Avatar from '../../../components/Avatar';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
+import { RolePreviewMenuButton, RolePreviewPicker } from '../../../components/RolePreviewBanner';
+import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
+import { effectiveMyRoles } from '../../../lib/rolePreview';
 
 const RESUME_REFETCH_DEBOUNCE_MS = 12000;
 
@@ -55,6 +58,8 @@ export default function ProfileScreen() {
   const [isEventAdmin, setIsEventAdmin] = useState(false);
   const [myRoles, setMyRoles] = useState<string[]>(['attendee']);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [rolePreviewOpen, setRolePreviewOpen] = useState(false);
+  const { applyEventAdmin, isPlatformAdmin, isPreviewing, previewRole } = useRolePreviewContext();
 
   const fetchPointsAndRole = useCallback(async (): Promise<boolean> => {
     if (!user?.id) return false;
@@ -122,6 +127,9 @@ export default function ProfileScreen() {
     setMyRoles(['attendee']);
     return true;
   }, [user?.id, user?.is_platform_admin, currentEvent?.id]);
+
+  const effectiveIsEventAdmin = applyEventAdmin(isEventAdmin);
+  const displayRoles = effectiveMyRoles(myRoles, isPlatformAdmin, previewRole);
 
   const loadInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
@@ -377,11 +385,14 @@ export default function ProfileScreen() {
               <Text style={styles.roleLabel}>My roles for this event</Text>
               <View style={styles.roleRow}>
                 <Text style={styles.roleValue} numberOfLines={2}>
-                  {myRoles.length ? myRoles.map(roleLabel).join(', ') : 'None'}
+                  {displayRoles.length ? displayRoles.map(roleLabel).join(', ') : 'None'}
+                  {isPreviewing ? ' (preview)' : ''}
                 </Text>
               </View>
               <Text style={styles.roleHint}>
-                Only event or platform admins can change roles. They can do that in Event admin → Manage members.
+                {isPreviewing
+                  ? 'Role preview is on — use Preview as role below or the hamburger menu to switch back.'
+                  : 'Only event or platform admins can change roles. They can do that in Event admin → Manage members.'}
               </Text>
             </View>
           </>
@@ -456,7 +467,7 @@ export default function ProfileScreen() {
             <Text style={[styles.menuText, { color: colors.danger }]}>Delete account</Text>
             <ChevronRight size={20} color={colors.textMuted} />
           </TouchableOpacity>
-          {(isEventAdmin || user?.is_platform_admin) && (
+          {effectiveIsEventAdmin && (
             <TouchableOpacity
               style={styles.menuRow}
               onPress={() => router.push('/(tabs)/profile/groups/new')}
@@ -467,17 +478,22 @@ export default function ProfileScreen() {
               <ChevronRight size={20} color={colors.textMuted} />
             </TouchableOpacity>
           )}
-          {(isEventAdmin || user?.is_platform_admin) && (
+          {effectiveIsEventAdmin && (
             <TouchableOpacity
               style={styles.menuRow}
               onPress={() => router.push('/profile/admin')}
               activeOpacity={0.7}
             >
-              <Shield size={22} color={isEventAdmin && currentEvent ? colors.primary : colors.textSecondary} />
+              <Shield size={22} color={effectiveIsEventAdmin && currentEvent ? colors.primary : colors.textSecondary} />
               <Text style={styles.menuText}>Event admin</Text>
               <ChevronRight size={20} color={colors.textMuted} />
             </TouchableOpacity>
           )}
+          {isPlatformAdmin ? (
+            <View style={styles.previewMenuWrap}>
+              <RolePreviewMenuButton onPress={() => setRolePreviewOpen(true)} />
+            </View>
+          ) : null}
         </View>
 
         <TouchableOpacity
@@ -503,6 +519,7 @@ export default function ProfileScreen() {
           </Text>
         ) : null}
       </ScrollView>
+      <RolePreviewPicker visible={rolePreviewOpen} onClose={() => setRolePreviewOpen(false)} />
     </SafeAreaView>
   );
 }
@@ -605,6 +622,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     overflow: 'hidden',
     marginBottom: 24,
+  },
+  previewMenuWrap: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
   },
   menuRow: {
     flexDirection: 'row',

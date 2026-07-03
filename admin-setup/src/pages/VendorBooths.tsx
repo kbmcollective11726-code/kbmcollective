@@ -3,6 +3,7 @@ import { useParams, Link, useLocation, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import type { VendorBooth } from '../lib/types';
+import { VENDOR_BOOTH_LOGO_HINT } from '../lib/logoUploadHints';
 import styles from './VendorBooths.module.css';
 
 type LocationState = { vendorBoothFlash?: string };
@@ -56,13 +57,15 @@ export default function VendorBooths() {
         <Link to={`/events/${eventId}`} className={styles.back}>
           ← Event
         </Link>
-        <h1>Vendor booths (1:1 Meeting)</h1>
+        <h1>Solution Providers</h1>
         <p className={styles.hint}>
-          Add booths here, then use <strong>Meetings</strong> to assign 1:1 Meetings (time per attendee) and notify them — aligned with the mobile app.
+          Add and edit booths for the in-app <strong>Solution Providers</strong> list and 1:1 Meetings, then use{' '}
+          <strong>Meetings</strong> to assign times per attendee and notify them — same as the mobile app.
         </p>
+        <p className={styles.logoHint}>{VENDOR_BOOTH_LOGO_HINT}</p>
         <Link to={`/events/${eventId}/vendor-booths/new`} className={styles.addBtn}>
           <span className={styles.addIcon}>+</span>
-          Add vendor booth
+          Add booth
         </Link>
       </div>
 
@@ -73,9 +76,9 @@ export default function VendorBooths() {
         <div className={styles.loading}>Loading booths…</div>
       ) : booths.length === 0 ? (
         <div className={styles.empty}>
-          <p>No vendor booths yet.</p>
+          <p>No booths yet.</p>
           <p className={styles.emptySub}>
-            Tap &quot;Add vendor booth&quot; to add one, then assign meetings under Meetings.
+            Tap &quot;Add booth&quot; to add one, then assign meetings under Meetings.
           </p>
         </div>
       ) : (

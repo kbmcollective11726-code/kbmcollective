@@ -16,12 +16,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../../../lib/supabase';
+import {
+  PUBLISHED_ANNOUNCEMENT_OR_FILTER,
+  announcementDisplayTime,
+  sortAnnouncementsNewestFirst,
+  type AnnouncementListRow,
+} from '../../../lib/announcementVisibility';
 import { colors } from '../../../constants/colors';
 import { format } from 'date-fns';
 import { Megaphone } from 'lucide-react-native';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 
-type AnnouncementRow = { id: string; title: string; content: string; created_at: string };
+type AnnouncementRow = AnnouncementListRow;
 
 export default function AnnouncementsScreen() {
   const router = useRouter();
@@ -63,12 +69,13 @@ export default function AnnouncementsScreen() {
       await withRetryAndRefresh(async () => {
         const { data, error } = await supabase
           .from('announcements')
-          .select('id, title, content, created_at')
+          .select('id, title, content, created_at, sent_at, scheduled_at')
           .eq('event_id', currentEvent.id)
+          .or(PUBLISHED_ANNOUNCEMENT_OR_FILTER)
           .order('created_at', { ascending: false })
           .limit(50);
         if (error) throw error;
-        setItems((data ?? []) as AnnouncementRow[]);
+        setItems(sortAnnouncementsNewestFirst((data ?? []) as AnnouncementRow[]));
       });
       setFetchError(null);
     } catch (err) {
@@ -205,7 +212,7 @@ export default function AnnouncementsScreen() {
           <View style={styles.card}>
             <Text style={styles.cardTitle}>{String(item.title)}</Text>
             <Text style={styles.cardContent}>{String(item.content)}</Text>
-            <Text style={styles.cardDate}>{format(new Date(item.created_at), 'MMM d, yyyy · h:mm a')}</Text>
+            <Text style={styles.cardDate}>{format(new Date(announcementDisplayTime(item)), 'MMM d, yyyy · h:mm a')}</Text>
           </View>
         )}
       />

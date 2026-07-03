@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
@@ -15,6 +15,11 @@ import type {
   MatchmakingAudience,
   MatchmakingQuestionType,
 } from '../lib/types';
+import {
+  isRegistrationQuestionHiddenByDefault,
+  normalizeRegistrationPrompt,
+  VENDOR_ALWAYS_HIDDEN_PROMPTS,
+} from '../lib/registrationDefaultVisibility';
 import styles from './EventMatchmaking.module.css';
 
 const QUESTION_TYPE_OPTIONS: MatchmakingQuestionType[] = [
@@ -68,7 +73,7 @@ const CATEGORY_OPTIONS = {
 };
 
 const ATTENDEE_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
-  { prompt: 'Company Name', question_type: 'text', is_required: true, section_label: 'Registration details' },
+  { prompt: 'Company Name', question_type: 'text', is_required: true },
   { prompt: 'First Name', question_type: 'text', is_required: true },
   { prompt: 'Last Name', question_type: 'text', is_required: true },
   { prompt: 'Job Title', question_type: 'text', is_required: true },
@@ -111,7 +116,7 @@ const ATTENDEE_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
   { prompt: "Are you responsible for managing your company's rewards and benefits?", question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
   { prompt: 'Are you interested in a solution that makes it easy to create short-form, TikTok-style videos to improve employee experience — from onboarding and training to recognition and employee communication?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
   { prompt: 'Are you a minority owned organization?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'Coaching', question_type: 'multi_select', section_label: 'Solution provider categories', options: CATEGORY_OPTIONS.coaching },
+  { prompt: 'Coaching', question_type: 'multi_select', section_label: 'Solution providers categories', options: CATEGORY_OPTIONS.coaching },
   { prompt: 'Consulting & Services', question_type: 'multi_select', options: CATEGORY_OPTIONS.consulting },
   { prompt: 'Culture, Engagement & Wellness', question_type: 'multi_select', options: CATEGORY_OPTIONS.cultureWellness },
   { prompt: 'Technologies', question_type: 'multi_select', options: CATEGORY_OPTIONS.technologies },
@@ -127,7 +132,7 @@ const ATTENDEE_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
   { prompt: 'Talent / Human Capital Management (HCM)', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentHcm },
   { prompt: 'Talent Acquisition & Management', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentAcquisition },
   { prompt: 'Other Provider Offerings Not Listed', question_type: 'textarea' },
-  { prompt: 'I have read and accept the Terms and Conditions, Code of Conduct & COVID waiver', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
+  { prompt: 'I have read and accept the Terms and Conditions and Code of Conduct', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
 ];
 
 const VENDOR_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
@@ -144,7 +149,7 @@ const VENDOR_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
   { prompt: 'Additional Information PDF URL', question_type: 'text' },
   { prompt: 'Are you a minority owned organization?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo, section_label: 'Diversity profile' },
   { prompt: 'Specify your minority owned business', question_type: 'text' },
-  { prompt: 'Coaching', question_type: 'multi_select', section_label: 'Solution provider categories', options: CATEGORY_OPTIONS.coaching },
+  { prompt: 'Coaching', question_type: 'multi_select', section_label: 'Solution providers categories', options: CATEGORY_OPTIONS.coaching },
   { prompt: 'Consulting & Services', question_type: 'multi_select', options: CATEGORY_OPTIONS.consulting },
   { prompt: 'Culture, Engagement & Wellness', question_type: 'multi_select', options: CATEGORY_OPTIONS.cultureWellness },
   { prompt: 'Technologies', question_type: 'multi_select', options: CATEGORY_OPTIONS.technologies },
@@ -159,12 +164,12 @@ const VENDOR_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
   { prompt: 'Organizational Culture', question_type: 'multi_select', options: CATEGORY_OPTIONS.organizationalCulture },
   { prompt: 'Talent / Human Capital Management (HCM)', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentHcm },
   { prompt: 'Talent Acquisition & Management', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentAcquisition },
-  { prompt: 'Other Provider Offerings Not Listed', question_type: 'textarea', section_label: 'Solution provider categories' },
+  { prompt: 'Other Provider Offerings Not Listed', question_type: 'textarea', section_label: 'Solution providers categories' },
   { prompt: 'Are you sending representatives to the event onsite?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo, section_label: 'Logistics' },
   { prompt: 'Will your team take meetings virtually?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
 ];
 const SPEAKER_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
-  { prompt: 'Company Name', question_type: 'text', is_required: true, section_label: 'Registration details' },
+  { prompt: 'Company Name', question_type: 'text', is_required: true },
   { prompt: 'First Name', question_type: 'text', is_required: true },
   { prompt: 'Last Name', question_type: 'text', is_required: true },
   { prompt: 'Job Title', question_type: 'text', is_required: true },
@@ -212,34 +217,90 @@ const SPEAKER_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
   { prompt: 'Training', question_type: 'multi_select', options: CATEGORY_OPTIONS.training },
   { prompt: 'Workforce & Leadership Development', question_type: 'multi_select', options: CATEGORY_OPTIONS.workforceLeadership },
   { prompt: 'Other Provider Offerings Not Listed', question_type: 'textarea', section_label: 'Solution interests' },
-  { prompt: 'I have read and accept the Terms and Conditions, Code of Conduct & COVID waiver', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
+  { prompt: 'I have read and accept the Terms and Conditions and Code of Conduct', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
 ];
 const KBM_ATTENDEE_FORM_NAME = 'KBM Attendee Registration';
 const KBM_VENDOR_FORM_NAME = 'KBM Vendor Registration';
 const SPEAKER_FORM_NAME = 'Speaker Registration';
-const VENDOR_DEPRECATED_PROMPTS = [
-  'Are you attending the event?',
-  'Use Availability',
-  'Number Diaries (maximum meetings per slot)',
-  'Maximum Meetings',
-  'Max Reps',
-  'Max Hotel Days',
-  "Available for 1-on-1's",
-  'Approved status (Y/N/P)',
-  'Company Logo URL',
-];
-
 function titleizeAudience(audience: MatchmakingAudience) {
   if (audience === 'user') return 'Speaker';
   if (audience === 'vendor') return 'Vendor';
-  return 'Attendee';
+  return 'Delegate';
 }
 
 function toDisplayFormName(form: EventRegistrationForm) {
-  if (form.audience === 'attendee') return 'Attendee Registration';
+  if (form.audience === 'attendee') return 'Delegate Registration';
   if (form.audience === 'vendor') return 'Vendor Registration';
   if (form.audience === 'user') return 'Speaker Registration';
   return form.name;
+}
+
+function normalizeSectionLabel(sectionLabel: string | null | undefined) {
+  const trimmed = (sectionLabel ?? '').trim();
+  return trimmed || 'General';
+}
+
+function normalizePrompt(prompt: string) {
+  return prompt.trim().toLowerCase();
+}
+
+function canonicalSectionLabel(sectionLabel: string | null | undefined) {
+  const label = normalizeSectionLabel(sectionLabel);
+  if (/^solution provider categories$/i.test(label) || /^solution providers categories$/i.test(label)) {
+    return 'Solution providers categories';
+  }
+  return label;
+}
+
+/** Stored section_label for DB: null means uncategorized / General in UI */
+function sectionLabelForDatabase(rollingHeading: string | null): string | null {
+  if (!rollingHeading?.trim()) return null;
+  const canon = canonicalSectionLabel(rollingHeading.trim());
+  return canon === 'General' ? null : canon;
+}
+
+/** Ordered section headings from template inheritance (for admin picklists) */
+function collectInheritedSectionLabels(templateQuestions: TemplateQuestion[]): string[] {
+  const ordered: string[] = [];
+  const seen = new Set<string>();
+  let rolling: string | null = null;
+  templateQuestions.forEach((q) => {
+    if (q.section_label?.trim()) rolling = q.section_label.trim();
+    if (!rolling?.trim()) return;
+    const canon = canonicalSectionLabel(rolling.trim());
+    if (canon === 'General' || seen.has(canon)) return;
+    seen.add(canon);
+    ordered.push(canon);
+  });
+  return ordered;
+}
+
+function buildPromptSectionMap(templateQuestions: TemplateQuestion[]) {
+  const map = new Map<string, string>();
+  let currentSection = 'General';
+  templateQuestions.forEach((q) => {
+    if (q.section_label?.trim()) currentSection = q.section_label.trim();
+    map.set(normalizePrompt(q.prompt), canonicalSectionLabel(currentSection));
+  });
+  return map;
+}
+
+const ATTENDEE_PROMPT_SECTION_MAP = buildPromptSectionMap(ATTENDEE_TEMPLATE_QUESTIONS);
+const VENDOR_PROMPT_SECTION_MAP = buildPromptSectionMap(VENDOR_TEMPLATE_QUESTIONS);
+const SPEAKER_PROMPT_SECTION_MAP = buildPromptSectionMap(SPEAKER_TEMPLATE_QUESTIONS);
+
+const ATTENDEE_TEMPLATE_SECTION_PICKLIST = collectInheritedSectionLabels(ATTENDEE_TEMPLATE_QUESTIONS);
+const VENDOR_TEMPLATE_SECTION_PICKLIST = collectInheritedSectionLabels(VENDOR_TEMPLATE_QUESTIONS);
+const SPEAKER_TEMPLATE_SECTION_PICKLIST = collectInheritedSectionLabels(SPEAKER_TEMPLATE_QUESTIONS);
+
+function sectionMapForAudience(audience: MatchmakingAudience) {
+  if (audience === 'vendor') return VENDOR_PROMPT_SECTION_MAP;
+  if (audience === 'user') return SPEAKER_PROMPT_SECTION_MAP;
+  return ATTENDEE_PROMPT_SECTION_MAP;
+}
+
+function questionMatchesSectionHeading(q: EventRegistrationQuestion, uiHeading: string) {
+  return canonicalSectionLabel(q.section_label) === canonicalSectionLabel(uiHeading);
 }
 
 function isLegacyMeetMaxName(name: string) {
@@ -302,6 +363,11 @@ export default function EventMatchmaking() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [registrationOpen, setRegistrationOpen] = useState(false);
+  const [meetingRequestsOpen, setMeetingRequestsOpen] = useState(false);
+  const [delegateHotelVisible, setDelegateHotelVisible] = useState(true);
+  const [delegateHotelContent, setDelegateHotelContent] = useState('');
+  const [registrationNotifyTeamEmails, setRegistrationNotifyTeamEmails] = useState('');
+  const [savingPortalSettings, setSavingPortalSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
 
   const [newFormName, setNewFormName] = useState('');
@@ -312,11 +378,34 @@ export default function EventMatchmaking() {
   const [questionPrompt, setQuestionPrompt] = useState('');
   const [questionType, setQuestionType] = useState<MatchmakingQuestionType>('text');
   const [questionRequired, setQuestionRequired] = useState(false);
+  const [questionSectionLabel, setQuestionSectionLabel] = useState('');
+  /** '' = General; '__custom__' = use questionSectionLabel */
+  const [questionSectionPick, setQuestionSectionPick] = useState<string>('');
   const [savingQuestion, setSavingQuestion] = useState(false);
   const [questionError, setQuestionError] = useState('');
+  const [sectionFromLabel, setSectionFromLabel] = useState('');
+  const [sectionRenameLabel, setSectionRenameLabel] = useState('');
+  const [sectionFilterLabel, setSectionFilterLabel] = useState<'all' | string>('all');
+  const [questionSearchQuery, setQuestionSearchQuery] = useState('');
+  const [duplicatingQuestionId, setDuplicatingQuestionId] = useState('');
+  const [sectionBusy, setSectionBusy] = useState(false);
+  const [repairingSections, setRepairingSections] = useState(false);
   const [templateError, setTemplateError] = useState('');
   const [selectedQuestionId, setSelectedQuestionId] = useState('');
+  const [editingQuestionPrompt, setEditingQuestionPrompt] = useState('');
+  const [editingQuestionType, setEditingQuestionType] = useState<MatchmakingQuestionType>('text');
+  const [editingQuestionRequired, setEditingQuestionRequired] = useState(false);
+  const [editingQuestionSectionLabel, setEditingQuestionSectionLabel] = useState('');
+  const [savingQuestionEdit, setSavingQuestionEdit] = useState(false);
+  /** Avoid resetting edit fields when `questions` refreshes (e.g. section repair) while the user is typing. */
+  const editHydratedForQuestionIdRef = useRef<string | null>(null);
+  /** True after the user changes any edit-panel field; cleared on save or when switching questions. */
+  const questionEditTouchedRef = useRef(false);
+  const questionEditorAnchorRef = useRef<HTMLDivElement | null>(null);
   const [newOptionLabel, setNewOptionLabel] = useState('');
+  const [editingOptionId, setEditingOptionId] = useState('');
+  const [editingOptionLabel, setEditingOptionLabel] = useState('');
+  const [savingOptionEdit, setSavingOptionEdit] = useState(false);
   const [optionError, setOptionError] = useState('');
   const [subFilter, setSubFilter] = useState<'all' | 'submitted' | 'draft'>('all');
   const [audienceFilter, setAudienceFilter] = useState<'all' | MatchmakingAudience>('all');
@@ -325,6 +414,7 @@ export default function EventMatchmaking() {
   const [scheduleStart, setScheduleStart] = useState('');
   const [scheduleEnd, setScheduleEnd] = useState('');
   const [scheduleLocation, setScheduleLocation] = useState('');
+  const [deletingSubmissionId, setDeletingSubmissionId] = useState('');
 
   const visibleForms = useMemo(() => toPrimaryForms(forms), [forms]);
   const activeForm = useMemo(
@@ -344,6 +434,71 @@ export default function EventMatchmaking() {
         .sort((a, b) => a.sort_order - b.sort_order),
     [questionOptions, selectedQuestionId]
   );
+  const templateSectionPicklist = useMemo(() => {
+    if (!activeForm) return ATTENDEE_TEMPLATE_SECTION_PICKLIST;
+    if (activeForm.audience === 'vendor') return VENDOR_TEMPLATE_SECTION_PICKLIST;
+    if (activeForm.audience === 'user') return SPEAKER_TEMPLATE_SECTION_PICKLIST;
+    return ATTENDEE_TEMPLATE_SECTION_PICKLIST;
+  }, [activeForm]);
+
+  const activeSectionGroups = useMemo(() => {
+    const groups = new Map<string, EventRegistrationQuestion[]>();
+    activeQuestions.forEach((q) => {
+      const key = canonicalSectionLabel(q.section_label);
+      const list = groups.get(key) ?? [];
+      list.push(q);
+      groups.set(key, list);
+    });
+    return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
+  }, [activeQuestions]);
+  const sectionChoices = useMemo(
+    () => Array.from(new Set(activeQuestions.map((q) => canonicalSectionLabel(q.section_label)))),
+    [activeQuestions]
+  );
+
+  const addQuestionSectionPickOptions = useMemo(() => {
+    const merged = new Set<string>(templateSectionPicklist);
+    sectionChoices.forEach((s) => {
+      if (s !== 'General') merged.add(s);
+    });
+    return Array.from(merged).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+  }, [templateSectionPicklist, sectionChoices]);
+  const visibleSectionGroups = useMemo(
+    () => (sectionFilterLabel === 'all' ? activeSectionGroups : activeSectionGroups.filter((group) => group.label === sectionFilterLabel)),
+    [activeSectionGroups, sectionFilterLabel]
+  );
+  const questionSearchNorm = questionSearchQuery.trim().toLowerCase();
+  const filteredQuestionSectionGroups = useMemo(() => {
+    if (!questionSearchNorm) return visibleSectionGroups;
+    return visibleSectionGroups
+      .map((g) => ({
+        ...g,
+        items: g.items.filter(
+          (q) =>
+            q.prompt.toLowerCase().includes(questionSearchNorm) ||
+            q.question_type.toLowerCase().includes(questionSearchNorm) ||
+            canonicalSectionLabel(q.section_label).toLowerCase().includes(questionSearchNorm)
+        ),
+      }))
+      .filter((g) => g.items.length > 0);
+  }, [visibleSectionGroups, questionSearchNorm]);
+
+  const editFormDirty = useMemo(() => {
+    if (!selectedQuestion) return false;
+    return (
+      editingQuestionPrompt.trim() !== selectedQuestion.prompt.trim() ||
+      editingQuestionType !== selectedQuestion.question_type ||
+      editingQuestionRequired !== Boolean(selectedQuestion.is_required) ||
+      editingQuestionSectionLabel.trim() !== (selectedQuestion.section_label ?? '').trim()
+    );
+  }, [
+    selectedQuestion,
+    editingQuestionPrompt,
+    editingQuestionType,
+    editingQuestionRequired,
+    editingQuestionSectionLabel,
+  ]);
+
   const filteredSubmissions = useMemo(
     () =>
       submissions.filter((row) => {
@@ -442,7 +597,7 @@ export default function EventMatchmaking() {
           .limit(200),
         supabase
           .from('event_matchmaking_settings')
-          .select('registration_open')
+          .select('registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, registration_notify_team_emails')
           .eq('event_id', eventId)
           .maybeSingle(),
         supabase
@@ -469,6 +624,16 @@ export default function EventMatchmaking() {
       if (reviewErr) throw reviewErr;
       if (schedErr) throw schedErr;
       setRegistrationOpen(Boolean((settingsRow as { registration_open?: boolean } | null)?.registration_open));
+      const settings = settingsRow as {
+        meeting_requests_open?: boolean;
+        delegate_portal_hotel_visible?: boolean;
+        delegate_hotel_content?: string | null;
+        registration_notify_team_emails?: string | null;
+      } | null;
+      setMeetingRequestsOpen(Boolean(settings?.meeting_requests_open));
+      setDelegateHotelVisible(settings?.delegate_portal_hotel_visible !== false);
+      setDelegateHotelContent(settings?.delegate_hotel_content ?? '');
+      setRegistrationNotifyTeamEmails(settings?.registration_notify_team_emails ?? '');
 
       const nextFormsRaw = (formRows as EventRegistrationForm[]) ?? [];
       const nextForms = await normalizeLegacyFormNames(nextFormsRaw);
@@ -593,6 +758,10 @@ export default function EventMatchmaking() {
       setQuestionError('Question prompt is required.');
       return;
     }
+    if (questionSectionPick === '__custom__' && !questionSectionLabel.trim()) {
+      setQuestionError('Choose a section from the list or enter a custom section name.');
+      return;
+    }
     setSavingQuestion(true);
     setQuestionError('');
     try {
@@ -605,6 +774,12 @@ export default function EventMatchmaking() {
           prompt,
           question_type: questionType,
           is_required: questionRequired,
+          section_label:
+            questionSectionPick === '__custom__'
+              ? sectionLabelForDatabase(questionSectionLabel)
+              : questionSectionPick === ''
+                ? null
+                : sectionLabelForDatabase(questionSectionPick),
           is_base_question: false,
           sort_order: nextSort,
         })
@@ -616,10 +791,96 @@ export default function EventMatchmaking() {
       setQuestionPrompt('');
       setQuestionType('text');
       setQuestionRequired(false);
+      setQuestionSectionPick('');
+      setQuestionSectionLabel('');
     } catch (e) {
       setQuestionError(postgrestErrorMessage(e) || 'Could not add question');
     } finally {
       setSavingQuestion(false);
+    }
+  };
+
+  const setSectionHidden = async (sectionLabel: string, nextHidden: boolean) => {
+    if (!activeForm) return;
+    const ids = activeQuestions.filter((q) => questionMatchesSectionHeading(q, sectionLabel)).map((q) => q.id);
+    if (ids.length === 0) return;
+    setSectionBusy(true);
+    setQuestionError('');
+    try {
+      const { error: updErr } = await supabase.from('event_registration_questions').update({ is_hidden: nextHidden }).in('id', ids);
+      if (updErr) throw updErr;
+      setQuestions((prev) => prev.map((q) => (ids.includes(q.id) ? { ...q, is_hidden: nextHidden } : q)));
+    } catch (e) {
+      setQuestionError(postgrestErrorMessage(e) || 'Could not update section visibility');
+    } finally {
+      setSectionBusy(false);
+    }
+  };
+
+  const renameSection = async () => {
+    if (!activeForm) return;
+    const fromLabel = sectionFromLabel.trim();
+    const toLabel = sectionRenameLabel.trim();
+    if (!fromLabel || fromLabel === 'General') {
+      setQuestionError('Select a named section to rename.');
+      return;
+    }
+    if (!toLabel) {
+      setQuestionError('New section name is required.');
+      return;
+    }
+    setSectionBusy(true);
+    setQuestionError('');
+    try {
+      const ids = activeQuestions.filter((q) => questionMatchesSectionHeading(q, fromLabel)).map((q) => q.id);
+      if (ids.length === 0) return;
+      const { error: updErr } = await supabase.from('event_registration_questions').update({ section_label: toLabel }).in('id', ids);
+      if (updErr) throw updErr;
+      setQuestions((prev) => prev.map((q) => (ids.includes(q.id) ? { ...q, section_label: toLabel } : q)));
+      setSectionFromLabel(toLabel);
+      setSectionRenameLabel('');
+    } catch (e) {
+      setQuestionError(postgrestErrorMessage(e) || 'Could not rename section');
+    } finally {
+      setSectionBusy(false);
+    }
+  };
+
+  const deleteSection = async (sectionLabel: string) => {
+    if (!activeForm) return;
+    if (sectionLabel === 'General') {
+      setQuestionError('General section cannot be deleted.');
+      return;
+    }
+    const inSection = activeQuestions.filter((q) => questionMatchesSectionHeading(q, sectionLabel));
+    if (inSection.length === 0) return;
+    if (!window.confirm(`Delete section "${sectionLabel}"? Custom questions will be deleted and base questions hidden.`)) return;
+    setSectionBusy(true);
+    setQuestionError('');
+    try {
+      const deletableIds = inSection.filter((q) => !q.is_base_question).map((q) => q.id);
+      const hideIds = inSection.filter((q) => q.is_base_question).map((q) => q.id);
+      if (deletableIds.length > 0) {
+        const { error: delErr } = await supabase.from('event_registration_questions').delete().in('id', deletableIds);
+        if (delErr) throw delErr;
+      }
+      if (hideIds.length > 0) {
+        const { error: hideErr } = await supabase.from('event_registration_questions').update({ is_hidden: true }).in('id', hideIds);
+        if (hideErr) throw hideErr;
+      }
+      setQuestions((prev) =>
+        prev
+          .filter((q) => !deletableIds.includes(q.id))
+          .map((q) => (hideIds.includes(q.id) ? { ...q, is_hidden: true } : q))
+      );
+      if (deletableIds.includes(selectedQuestionId)) setSelectedQuestionId('');
+      if (sectionFilterLabel !== 'all' && canonicalSectionLabel(sectionFilterLabel) === canonicalSectionLabel(sectionLabel)) {
+        setSectionFilterLabel('all');
+      }
+    } catch (e) {
+      setQuestionError(postgrestErrorMessage(e) || 'Could not delete section');
+    } finally {
+      setSectionBusy(false);
     }
   };
 
@@ -654,6 +915,53 @@ export default function EventMatchmaking() {
     }
   };
 
+  const duplicateQuestion = async (sourceId: string) => {
+    const src = questions.find((item) => item.id === sourceId);
+    if (!src) return;
+    setDuplicatingQuestionId(sourceId);
+    setQuestionError('');
+    try {
+      const formQs = questions.filter((q) => q.form_id === src.form_id);
+      const nextSort = formQs.length > 0 ? Math.max(...formQs.map((q) => q.sort_order)) + 1 : 0;
+      const { data: row, error: insErr } = await supabase
+        .from('event_registration_questions')
+        .insert({
+          form_id: src.form_id,
+          prompt: `${src.prompt.trim()} (copy)`,
+          question_type: src.question_type,
+          is_required: src.is_required,
+          section_label: src.section_label,
+          is_base_question: false,
+          sort_order: nextSort,
+        })
+        .select('*')
+        .single();
+      if (insErr) throw insErr;
+      const created = row as EventRegistrationQuestion;
+
+      const srcOpts = questionOptions.filter((o) => o.question_id === sourceId).sort((a, b) => a.sort_order - b.sort_order);
+      if (srcOpts.length > 0) {
+        const payload = srcOpts.map((o, idx) => ({
+          question_id: created.id,
+          label: o.label,
+          value: o.value,
+          sort_order: idx,
+        }));
+        const { data: newOpts, error: optErr } = await supabase.from('event_registration_question_options').insert(payload).select('*');
+        if (optErr) throw optErr;
+        const inserted = (newOpts as EventRegistrationQuestionOption[]) ?? [];
+        setQuestionOptions((prev) => [...prev, ...inserted]);
+      }
+
+      setQuestions((prev) => [...prev, created]);
+      setSelectedQuestionId(created.id);
+    } catch (e) {
+      setQuestionError(postgrestErrorMessage(e) || 'Could not duplicate question');
+    } finally {
+      setDuplicatingQuestionId('');
+    }
+  };
+
   const saveSettings = async (nextOpen: boolean) => {
     if (!eventId) return;
     setSavingSettings(true);
@@ -670,6 +978,28 @@ export default function EventMatchmaking() {
       setError(postgrestErrorMessage(e) || 'Could not save registration settings');
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  const savePortalSettings = async () => {
+    if (!eventId) return;
+    setSavingPortalSettings(true);
+    setError('');
+    try {
+      const { error: upsertErr } = await supabase.from('event_matchmaking_settings').upsert({
+        event_id: eventId,
+        registration_open: registrationOpen,
+        meeting_requests_open: meetingRequestsOpen,
+        delegate_portal_hotel_visible: delegateHotelVisible,
+        delegate_hotel_content: delegateHotelContent.trim() || null,
+        registration_notify_team_emails: registrationNotifyTeamEmails.trim() || null,
+        updated_at: new Date().toISOString(),
+      });
+      if (upsertErr) throw upsertErr;
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not save delegate portal settings');
+    } finally {
+      setSavingPortalSettings(false);
     }
   };
 
@@ -716,6 +1046,112 @@ export default function EventMatchmaking() {
     }
   };
 
+  const beginEditOption = (option: EventRegistrationQuestionOption) => {
+    setEditingOptionId(option.id);
+    setEditingOptionLabel(option.label);
+    setOptionError('');
+  };
+
+  const saveOptionEdit = async () => {
+    if (!editingOptionId) return;
+    const label = editingOptionLabel.trim();
+    if (!label) {
+      setOptionError('Option label is required.');
+      return;
+    }
+    setSavingOptionEdit(true);
+    setOptionError('');
+    try {
+      const { error: updErr } = await supabase
+        .from('event_registration_question_options')
+        .update({ label, value: label })
+        .eq('id', editingOptionId);
+      if (updErr) throw updErr;
+      setQuestionOptions((prev) => prev.map((o) => (o.id === editingOptionId ? { ...o, label, value: label } : o)));
+      setEditingOptionId('');
+      setEditingOptionLabel('');
+    } catch (e) {
+      setOptionError(postgrestErrorMessage(e) || 'Could not save option');
+    } finally {
+      setSavingOptionEdit(false);
+    }
+  };
+
+  const deleteOption = async (optionId: string) => {
+    if (!window.confirm('Delete this option?')) return;
+    setOptionError('');
+    try {
+      const { error: delErr } = await supabase.from('event_registration_question_options').delete().eq('id', optionId);
+      if (delErr) throw delErr;
+      setQuestionOptions((prev) => prev.filter((o) => o.id !== optionId));
+      if (editingOptionId === optionId) {
+        setEditingOptionId('');
+        setEditingOptionLabel('');
+      }
+    } catch (e) {
+      setOptionError(postgrestErrorMessage(e) || 'Could not delete option');
+    }
+  };
+
+  const moveOption = async (optionId: string, dir: -1 | 1) => {
+    const list = selectedQuestionOptions;
+    const idx = list.findIndex((o) => o.id === optionId);
+    const swapIdx = idx + dir;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= list.length) return;
+    const a = list[idx];
+    const b = list[swapIdx];
+    if (!a || !b) return;
+    setOptionError('');
+    try {
+      const { error: errA } = await supabase.from('event_registration_question_options').update({ sort_order: b.sort_order }).eq('id', a.id);
+      if (errA) throw errA;
+      const { error: errB } = await supabase.from('event_registration_question_options').update({ sort_order: a.sort_order }).eq('id', b.id);
+      if (errB) throw errB;
+      setQuestionOptions((prev) =>
+        prev.map((o) => {
+          if (o.id === a.id) return { ...o, sort_order: b.sort_order };
+          if (o.id === b.id) return { ...o, sort_order: a.sort_order };
+          return o;
+        })
+      );
+    } catch (e) {
+      setOptionError(postgrestErrorMessage(e) || 'Could not reorder option');
+    }
+  };
+
+  const saveQuestionEdits = async () => {
+    if (!selectedQuestion) return;
+    const prompt = editingQuestionPrompt.trim();
+    if (!prompt) {
+      setQuestionError('Question prompt is required.');
+      return;
+    }
+    setSavingQuestionEdit(true);
+    setQuestionError('');
+    try {
+      const patch = {
+        prompt,
+        question_type: editingQuestionType,
+        is_required: editingQuestionRequired,
+        section_label: sectionLabelForDatabase(editingQuestionSectionLabel.trim()),
+      };
+      const { data: updatedRow, error: updErr } = await supabase
+        .from('event_registration_questions')
+        .update(patch)
+        .eq('id', selectedQuestion.id)
+        .select('*')
+        .single();
+      if (updErr) throw updErr;
+      const merged = updatedRow as EventRegistrationQuestion;
+      questionEditTouchedRef.current = false;
+      setQuestions((prev) => prev.map((q) => (q.id === selectedQuestion.id ? { ...q, ...merged } : q)));
+    } catch (e) {
+      setQuestionError(postgrestErrorMessage(e) || 'Could not save question edits');
+    } finally {
+      setSavingQuestionEdit(false);
+    }
+  };
+
   const exportSubmissionsCsv = () => {
     const rows = filteredSubmissions.map((row) => [
       row.first_name ?? '',
@@ -739,6 +1175,32 @@ export default function EventMatchmaking() {
     a.download = `event-${eventId}-registrations.csv`;
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  const deleteSubmission = async (submission: EventRegistrationSubmission) => {
+    const name =
+      [submission.first_name, submission.last_name].filter(Boolean).join(' ') || submission.email || 'this registrant';
+    const confirmed = window.confirm(
+      `Delete registration for "${name}"?\n\nThis removes their answers, meeting requests, match reviews, and scheduled meetings. This cannot be undone.`
+    );
+    if (!confirmed) return;
+    setDeletingSubmissionId(submission.id);
+    setError('');
+    try {
+      const { error: delErr } = await supabase.from('event_registration_submissions').delete().eq('id', submission.id);
+      if (delErr) throw delErr;
+      const id = submission.id;
+      setSubmissions((prev) => prev.filter((s) => s.id !== id));
+      setAnswers((prev) => prev.filter((a) => a.submission_id !== id));
+      setMeetingRequests((prev) => prev.filter((r) => r.submission_id !== id));
+      setReviews((prev) => prev.filter((r) => r.from_submission_id !== id && r.to_submission_id !== id));
+      setScheduledMeetings((prev) => prev.filter((m) => m.submission_a_id !== id && m.submission_b_id !== id));
+      if (selectedSubmissionId === id) setSelectedSubmissionId('');
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not delete registration');
+    } finally {
+      setDeletingSubmissionId('');
+    }
   };
 
   const setReviewStatus = async (toSubmissionId: string, score: number, status: 'approved' | 'rejected') => {
@@ -895,7 +1357,13 @@ export default function EventMatchmaking() {
         const existingQuestions = questions.filter((q) => q.form_id === form.id);
         const existingByPrompt = new Map(existingQuestions.map((q) => [q.prompt.trim().toLowerCase(), q]));
 
+        let rollingSectionHeading: string | null = null;
         for (const [idx, q] of templateQuestions.entries()) {
+          if (q.section_label?.trim()) {
+            rollingSectionHeading = q.section_label.trim();
+          }
+          const sectionForDb = sectionLabelForDatabase(rollingSectionHeading);
+
           const existing = existingByPrompt.get(q.prompt.trim().toLowerCase());
           if (existing) {
             // Keep base template questions aligned with KBM wording/type/required flags.
@@ -904,7 +1372,7 @@ export default function EventMatchmaking() {
               .update({
                 question_type: q.question_type,
                 is_required: q.is_required ?? false,
-                section_label: q.section_label ?? null,
+                section_label: sectionForDb,
                 is_base_question: true,
                 sort_order: idx,
               })
@@ -952,8 +1420,9 @@ export default function EventMatchmaking() {
               prompt: q.prompt,
               question_type: q.question_type,
               is_required: q.is_required ?? false,
-              section_label: q.section_label ?? null,
+              section_label: sectionForDb,
               is_base_question: true,
+              is_hidden: isRegistrationQuestionHiddenByDefault(audience, q.prompt),
               sort_order: idx,
             })
             .select('*')
@@ -972,13 +1441,15 @@ export default function EventMatchmaking() {
           }
         }
 
-        if (audience === 'vendor') {
-          const deprecatedPromptSet = new Set(VENDOR_DEPRECATED_PROMPTS.map((p) => p.trim().toLowerCase()));
-          const toHide = existingQuestions.filter((q) => deprecatedPromptSet.has(q.prompt.trim().toLowerCase()) && !q.is_hidden);
-          for (const q of toHide) {
-            const { error: hideErr } = await supabase.from('event_registration_questions').update({ is_hidden: true }).eq('id', q.id);
-            if (hideErr) throw hideErr;
-          }
+        const toHideDeprecated = existingQuestions.filter(
+          (q) =>
+            q.is_base_question &&
+            VENDOR_ALWAYS_HIDDEN_PROMPTS.has(normalizeRegistrationPrompt(q.prompt)) &&
+            !q.is_hidden
+        );
+        for (const q of toHideDeprecated) {
+          const { error: hideErr } = await supabase.from('event_registration_questions').update({ is_hidden: true }).eq('id', q.id);
+          if (hideErr) throw hideErr;
         }
       };
 
@@ -1001,6 +1472,108 @@ export default function EventMatchmaking() {
     }
   }, [eventId, loading, didInitialDefaultSync, ensuringDefaults]);
 
+  useEffect(() => {
+    if (!selectedQuestionId) {
+      editHydratedForQuestionIdRef.current = null;
+      questionEditTouchedRef.current = false;
+      setEditingQuestionPrompt('');
+      setEditingQuestionType('text');
+      setEditingQuestionRequired(false);
+      setEditingQuestionSectionLabel('');
+      return;
+    }
+    const q = questions.find((item) => item.id === selectedQuestionId);
+    if (!q) return;
+
+    const alreadyHydrated = editHydratedForQuestionIdRef.current === selectedQuestionId;
+    if (!alreadyHydrated) {
+      editHydratedForQuestionIdRef.current = selectedQuestionId;
+      questionEditTouchedRef.current = false;
+      setEditingQuestionPrompt(q.prompt);
+      setEditingQuestionType(q.question_type);
+      setEditingQuestionRequired(Boolean(q.is_required));
+      setEditingQuestionSectionLabel(q.section_label ?? '');
+      return;
+    }
+
+    if (!questionEditTouchedRef.current) {
+      setEditingQuestionPrompt(q.prompt);
+      setEditingQuestionType(q.question_type);
+      setEditingQuestionRequired(Boolean(q.is_required));
+      setEditingQuestionSectionLabel(q.section_label ?? '');
+    }
+  }, [selectedQuestionId, questions]);
+
+  useEffect(() => {
+    if (!selectedQuestionId) return;
+    const frame = requestAnimationFrame(() => {
+      const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      questionEditorAnchorRef.current?.scrollIntoView({
+        behavior: reduceMotion ? 'auto' : 'smooth',
+        block: 'start',
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [selectedQuestionId]);
+
+  useEffect(() => {
+    setQuestionSectionPick('');
+    setQuestionSectionLabel('');
+    setQuestionSearchQuery('');
+  }, [selectedFormId]);
+
+  useEffect(() => {
+    if (!editFormDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [editFormDirty]);
+
+  useEffect(() => {
+    if (!activeForm || activeQuestions.length === 0 || repairingSections) return;
+    const sectionMap = sectionMapForAudience(activeForm.audience);
+    const toRepair = activeQuestions
+      .map((q) => {
+        const expectedSection = sectionMap.get(normalizePrompt(q.prompt));
+        const nextSection = expectedSection ?? canonicalSectionLabel(q.section_label);
+        const currentSection = canonicalSectionLabel(q.section_label);
+        if (nextSection === currentSection) return null;
+        return { id: q.id, section_label: nextSection === 'General' ? null : nextSection };
+      })
+      .filter((item): item is { id: string; section_label: string | null } => Boolean(item));
+    if (toRepair.length === 0) return;
+
+    let cancelled = false;
+    setRepairingSections(true);
+    setQuestionError('');
+    void (async () => {
+      try {
+        for (const repair of toRepair) {
+          const { error: updErr } = await supabase
+            .from('event_registration_questions')
+            .update({ section_label: repair.section_label })
+            .eq('id', repair.id);
+          if (updErr) throw updErr;
+        }
+        if (cancelled) return;
+        const patchMap = new Map(toRepair.map((item) => [item.id, item.section_label]));
+        setQuestions((prev) =>
+          prev.map((q) => (patchMap.has(q.id) ? { ...q, section_label: patchMap.get(q.id) ?? null } : q))
+        );
+      } catch (e) {
+        if (!cancelled) setQuestionError(postgrestErrorMessage(e) || 'Could not auto-organize legacy sections');
+      } finally {
+        if (!cancelled) setRepairingSections(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeForm, activeQuestions, repairingSections]);
+
   if (!eventId) return <div className={styles.error}>Missing event</div>;
   if (loading) return <div className={styles.loading}>Loading…</div>;
 
@@ -1012,7 +1585,7 @@ export default function EventMatchmaking() {
         </Link>
         <h1>Matchmaking setup — {event?.name ?? 'Event'}</h1>
         <p className={styles.hint}>
-          Phase 1 foundations: build attendee/vendor registration forms, capture signups, and prep meeting request data.
+          Configure delegate/vendor/speaker registration forms and collect submissions for admin review.
         </p>
       </div>
       {error ? <p className={styles.error}>{error}</p> : null}
@@ -1020,7 +1593,7 @@ export default function EventMatchmaking() {
       <section className={styles.section}>
         <h2>Registration portal</h2>
         <p className={styles.hint}>
-          Share links with attendees/vendors/speakers. Toggle registration access per event.
+          Share links with delegates/vendors/speakers. Toggle registration access per event.
         </p>
         <div className={styles.inlineForm}>
           <label className={styles.checkboxInline}>
@@ -1032,17 +1605,59 @@ export default function EventMatchmaking() {
             />
             Registration open
           </label>
-          <code>{`${window.location.origin}/register/${eventId}/attendee`}</code>
+          <code>{`${window.location.origin}/register/${eventId}/delegate`}</code>
           <code>{`${window.location.origin}/register/${eventId}/vendor`}</code>
           <code>{`${window.location.origin}/register/${eventId}/speaker`}</code>
+          <code>{`${window.location.origin}/portal/${eventId}/delegate/login`}</code>
+        </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2>Delegate portal (after registration)</h2>
+        <p className={styles.hint}>
+          Delegates sign in at the portal link above. Meeting Requests stays hidden until you enable it below. Hotel tab can be hidden per
+          event. Admins and team emails receive notification when someone submits registration.
+        </p>
+        <div className={styles.inlineForm} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12 }}>
+          <label className={styles.checkboxInline}>
+            <input type="checkbox" checked={meetingRequestsOpen} onChange={(e) => setMeetingRequestsOpen(e.target.checked)} />
+            Meeting requests open (shows Meeting Requests menu with Request Meeting / Sent)
+          </label>
+          <label className={styles.checkboxInline}>
+            <input type="checkbox" checked={delegateHotelVisible} onChange={(e) => setDelegateHotelVisible(e.target.checked)} />
+            Show Hotel tab in delegate portal
+          </label>
+          <label>
+            Hotel tab content
+            <textarea
+              value={delegateHotelContent}
+              onChange={(e) => setDelegateHotelContent(e.target.value)}
+              rows={6}
+              placeholder="Hotel address, included nights, booking link, check-in/out times, confirmation notes…"
+              style={{ width: '100%', marginTop: 6 }}
+            />
+          </label>
+          <label>
+            Team notification emails (comma-separated)
+            <input
+              value={registrationNotifyTeamEmails}
+              onChange={(e) => setRegistrationNotifyTeamEmails(e.target.value)}
+              placeholder="ops@example.com, events@example.com"
+              style={{ width: '100%', marginTop: 6 }}
+            />
+          </label>
+          <button type="button" onClick={() => void savePortalSettings()} disabled={savingPortalSettings}>
+            {savingPortalSettings ? 'Saving…' : 'Save delegate portal settings'}
+          </button>
         </div>
       </section>
 
       <section className={styles.section}>
         <h2>Registration forms</h2>
         <p className={styles.hint}>
-          Attendee/vendor/speaker templates are applied by default. Event admins can add custom questions and hide non-needed
-          base questions per event.
+          Delegate, vendor, and speaker templates install automatically with a lean default (contact info, terms, and role-specific
+          essentials). Eligibility surveys, solution categories, logistics extras, and legacy fields start hidden — use Show or
+          Show section to enable them for a specific event.
         </p>
         {templateError ? <p className={styles.error}>{templateError}</p> : null}
         <div className={styles.inlineForm}>
@@ -1052,7 +1667,7 @@ export default function EventMatchmaking() {
             placeholder="e.g. Vendor onboarding"
           />
           <select value={newFormAudience} onChange={(e) => setNewFormAudience(e.target.value as MatchmakingAudience)}>
-            <option value="attendee">Attendee</option>
+            <option value="attendee">Delegate</option>
             <option value="vendor">Vendor</option>
             <option value="user">Speaker</option>
           </select>
@@ -1062,7 +1677,7 @@ export default function EventMatchmaking() {
         </div>
         {formError ? <p className={styles.error}>{formError}</p> : null}
         {forms.length === 0 ? (
-          <p className={styles.hint}>No forms yet. Create an attendee/vendor/speaker form to begin.</p>
+          <p className={styles.hint}>No forms yet. Create a delegate/vendor/speaker form to begin.</p>
         ) : (
           <div className={styles.formsGrid}>
             {visibleForms.map((form) => (
@@ -1086,81 +1701,402 @@ export default function EventMatchmaking() {
         {!activeForm ? (
           <p className={styles.hint}>Select a form to add questions.</p>
         ) : (
-          <>
-            <div className={styles.inlineForm}>
-              <input
-                value={questionPrompt}
-                onChange={(e) => setQuestionPrompt(e.target.value)}
-                placeholder="e.g. Please list your top 5 priorities for 2026"
-              />
-              <select value={questionType} onChange={(e) => setQuestionType(e.target.value as MatchmakingQuestionType)}>
-                {QUESTION_TYPE_OPTIONS.map((qt) => (
-                  <option value={qt} key={qt}>
-                    {qt}
-                  </option>
-                ))}
-              </select>
-              <label className={styles.checkboxInline}>
-                <input
-                  type="checkbox"
-                  checked={questionRequired}
-                  onChange={(e) => setQuestionRequired(e.target.checked)}
-                />
-                Required
-              </label>
-              <button type="button" onClick={() => void addQuestion()} disabled={savingQuestion}>
-                {savingQuestion ? 'Adding…' : 'Add question'}
-              </button>
-            </div>
-            {questionError ? <p className={styles.error}>{questionError}</p> : null}
-            {activeQuestions.length === 0 ? (
-              <p className={styles.hint}>No questions yet for this form.</p>
-            ) : (
-              <ul className={styles.list}>
-                {activeQuestions.map((q) => (
-                  <li key={q.id}>
-                    <button type="button" className={styles.qSelectBtn} onClick={() => setSelectedQuestionId(q.id)}>
-                      <strong>{q.prompt}</strong>{' '}
-                      <span>({q.question_type})</span>{' '}
-                      {q.is_required ? <em>required</em> : null}
-                      {q.is_base_question ? <em className={styles.baseTag}>base</em> : null}
-                    </button>
-                    <span className={styles.qMoveBtns}>
-                      <button type="button" onClick={() => void toggleQuestionHidden(q.id, !Boolean(q.is_hidden))}>
-                        {q.is_hidden ? 'Show' : 'Hide'}
-                      </button>
-                      <button type="button" onClick={() => void moveQuestion(q.id, -1)}>↑</button>
-                      <button type="button" onClick={() => void moveQuestion(q.id, 1)}>↓</button>
-                      {!q.is_base_question ? (
-                        <button type="button" onClick={() => void deleteQuestion(q.id)}>Delete</button>
-                      ) : null}
+          <div className={styles.workbench}>
+            <div className={`${styles.panel} ${styles.panelPrimary}`}>
+              <div className={styles.panelHead}>
+                <span className={styles.panelTitle}>Add question</span>
+                <span className={styles.panelHint}>Choose answer type and section, then add your wording.</span>
+              </div>
+              <div className={styles.panelBody}>
+                <div className={styles.fieldGrid}>
+                  <label className={styles.field}>
+                    <span>Question text</span>
+                    <input
+                      value={questionPrompt}
+                      onChange={(e) => setQuestionPrompt(e.target.value)}
+                      placeholder="e.g. Please list your top 5 priorities for 2026"
+                    />
+                  </label>
+                  <label className={styles.field}>
+                    <span>Answer type</span>
+                    <select value={questionType} onChange={(e) => setQuestionType(e.target.value as MatchmakingQuestionType)}>
+                      {QUESTION_TYPE_OPTIONS.map((qt) => (
+                        <option value={qt} key={qt}>
+                          {qt}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className={`${styles.field} ${styles.fieldCheckbox}`}>
+                    <span>Required</span>
+                    <span className={styles.checkboxRow}>
+                      <input
+                        type="checkbox"
+                        checked={questionRequired}
+                        onChange={(e) => setQuestionRequired(e.target.checked)}
+                        id="new-q-required"
+                      />
+                      <label htmlFor="new-q-required">Must answer to submit</label>
                     </span>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {selectedQuestion && (selectedQuestion.question_type === 'single_select' || selectedQuestion.question_type === 'multi_select') ? (
-              <div className={styles.optionEditor}>
-                <h3>Options — {selectedQuestion.prompt}</h3>
-                <div className={styles.inlineForm}>
-                  <input
-                    value={newOptionLabel}
-                    onChange={(e) => setNewOptionLabel(e.target.value)}
-                    placeholder="Add option label"
-                  />
-                  <button type="button" onClick={() => void addOptionToSelected()}>
-                    Add option
+                  </div>
+                  <label className={styles.field}>
+                    <span>Section</span>
+                    <select
+                      value={questionSectionPick}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setQuestionSectionPick(v);
+                        if (v !== '__custom__') setQuestionSectionLabel('');
+                      }}
+                      aria-label="Section for new question"
+                    >
+                      <option value="">General</option>
+                      {addQuestionSectionPickOptions.map((label) => (
+                        <option key={label} value={label}>
+                          {label}
+                        </option>
+                      ))}
+                      <option value="__custom__">Custom section…</option>
+                    </select>
+                  </label>
+                  {questionSectionPick === '__custom__' ? (
+                    <label className={styles.field}>
+                      <span>Custom section name</span>
+                      <input
+                        value={questionSectionLabel}
+                        onChange={(e) => setQuestionSectionLabel(e.target.value)}
+                        placeholder="New section name"
+                        aria-label="Custom section name"
+                      />
+                    </label>
+                  ) : null}
+                </div>
+                <div className={styles.panelActions}>
+                  <button type="button" className={styles.btnPrimary} onClick={() => void addQuestion()} disabled={savingQuestion}>
+                    {savingQuestion ? 'Adding…' : 'Add question'}
                   </button>
                 </div>
-                {optionError ? <p className={styles.error}>{optionError}</p> : null}
-                <ul className={styles.optionList}>
-                  {selectedQuestionOptions.map((opt) => (
-                    <li key={opt.id}>{opt.label}</li>
-                  ))}
-                </ul>
               </div>
-            ) : null}
-          </>
+            </div>
+
+            <div className={styles.panel}>
+              <div className={styles.panelHead}>
+                <span className={styles.panelTitle}>Find & filter</span>
+              </div>
+              <div className={`${styles.panelBody} ${styles.filterRow}`}>
+                <label className={`${styles.field} ${styles.fieldGrow}`}>
+                  <span>Search</span>
+                  <input
+                    type="search"
+                    value={questionSearchQuery}
+                    onChange={(e) => setQuestionSearchQuery(e.target.value)}
+                    placeholder="Search question text, type, or section…"
+                    className={styles.searchInput}
+                  />
+                </label>
+                <label className={`${styles.field} ${styles.fieldShrink}`}>
+                  <span>Show section</span>
+                  <select value={sectionFilterLabel} onChange={(e) => setSectionFilterLabel(e.target.value)}>
+                    <option value="all">All sections</option>
+                    {sectionChoices.map((label) => (
+                      <option key={label} value={label}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            {repairingSections ? <p className={styles.hint}>Auto-organizing legacy questions into the right sections…</p> : null}
+
+            <div className={`${styles.panel} ${styles.panelMuted}`}>
+              <div className={styles.panelHead}>
+                <span className={styles.panelTitle}>Section tools</span>
+                <span className={styles.panelHint}>Apply to every question in that section.</span>
+              </div>
+              <div className={styles.panelBody}>
+                <div className={styles.inlineForm}>
+                  <select value={sectionFromLabel} onChange={(e) => setSectionFromLabel(e.target.value)}>
+                    <option value="">Select section</option>
+                    {sectionChoices.map((label) => (
+                      <option key={label} value={label}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    value={sectionRenameLabel}
+                    onChange={(e) => setSectionRenameLabel(e.target.value)}
+                    placeholder="Rename section to…"
+                  />
+                  <button type="button" className={styles.btnSecondary} onClick={() => void renameSection()} disabled={sectionBusy}>
+                    Rename
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    onClick={() => void setSectionHidden(sectionFromLabel, true)}
+                    disabled={sectionBusy || !sectionFromLabel}
+                  >
+                    Hide all
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    onClick={() => void setSectionHidden(sectionFromLabel, false)}
+                    disabled={sectionBusy || !sectionFromLabel}
+                  >
+                    Show all
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.btnDangerOutline}
+                    onClick={() => void deleteSection(sectionFromLabel)}
+                    disabled={sectionBusy || !sectionFromLabel}
+                  >
+                    Delete section
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {questionError ? <p className={styles.error}>{questionError}</p> : null}
+
+            <div className={styles.questionsEditorSplit}>
+              <div className={styles.questionsListColumn}>
+                {activeQuestions.length === 0 ? (
+                  <p className={styles.hint}>No questions yet for this form.</p>
+                ) : filteredQuestionSectionGroups.length === 0 ? (
+                  <p className={styles.hint}>No questions match your search or filters. Clear search or choose “All sections”.</p>
+                ) : (
+                  <div className={styles.sectionStack}>
+                    {filteredQuestionSectionGroups.map((group) => (
+                      <div key={group.label} className={styles.sectionBlock}>
+                        <div className={styles.sectionHead}>
+                          <h3>{group.label}</h3>
+                          <div className={styles.sectionHeadActions}>
+                            <button type="button" className={styles.btnSecondary} onClick={() => { setSectionFromLabel(group.label); void setSectionHidden(group.label, true); }} disabled={sectionBusy}>
+                              Hide section
+                            </button>
+                            <button type="button" className={styles.btnSecondary} onClick={() => { setSectionFromLabel(group.label); void setSectionHidden(group.label, false); }} disabled={sectionBusy}>
+                              Show section
+                            </button>
+                            <button type="button" className={styles.btnDangerOutline} onClick={() => { setSectionFromLabel(group.label); void deleteSection(group.label); }} disabled={sectionBusy}>
+                              Delete section
+                            </button>
+                          </div>
+                        </div>
+                        <ul className={styles.list}>
+                          {group.items.map((q) => (
+                            <li key={q.id} className={`${styles.questionRow} ${selectedQuestionId === q.id ? styles.questionRowSelected : ''}`}>
+                              <div className={styles.questionRowMain}>
+                                <button type="button" className={styles.qSelectBtn} onClick={() => setSelectedQuestionId(q.id)}>
+                                  <strong>{q.prompt}</strong>
+                                  <span className={styles.questionMeta}>
+                                    <span className={styles.typePill}>{q.question_type}</span>
+                                    {q.is_required ? <span className={styles.requiredPill}>Required</span> : null}
+                                    {q.is_base_question ? <span className={styles.baseTag}>base</span> : null}
+                                    {q.is_hidden ? <span className={styles.hiddenPill}>Hidden</span> : null}
+                                  </span>
+                                </button>
+                              </div>
+                              <div className={styles.questionRowActions}>
+                                <button type="button" className={styles.btnSecondary} onClick={() => setSelectedQuestionId(q.id)}>
+                                  Edit
+                                </button>
+                                <button
+                                  type="button"
+                                  className={styles.btnSecondary}
+                                  disabled={Boolean(duplicatingQuestionId)}
+                                  onClick={() => void duplicateQuestion(q.id)}
+                                >
+                                  {duplicatingQuestionId === q.id ? 'Copying…' : 'Duplicate'}
+                                </button>
+                                <button type="button" className={styles.btnSecondary} onClick={() => void toggleQuestionHidden(q.id, !Boolean(q.is_hidden))}>
+                                  {q.is_hidden ? 'Show' : 'Hide'}
+                                </button>
+                                <button type="button" className={styles.btnIcon} onClick={() => void moveQuestion(q.id, -1)} aria-label="Move up">↑</button>
+                                <button type="button" className={styles.btnIcon} onClick={() => void moveQuestion(q.id, 1)} aria-label="Move down">↓</button>
+                                {!q.is_base_question ? (
+                                  <button type="button" className={styles.btnDangerOutline} onClick={() => void deleteQuestion(q.id)}>Delete</button>
+                                ) : null}
+                              </div>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div ref={questionEditorAnchorRef} className={styles.questionEditorColumn}>
+                {!selectedQuestion ? (
+                  <div className={`${styles.panel} ${styles.panelMuted}`}>
+                    <div className={styles.panelHead}>
+                      <span className={styles.panelTitle}>Question editor</span>
+                    </div>
+                    <div className={styles.panelBody}>
+                      <p className={styles.hint}>
+                        Choose <strong>Edit</strong> or click a question row. On wide screens this panel stays beside the list while you scroll.
+                      </p>
+                    </div>
+                  </div>
+                ) : null}
+                {selectedQuestion ? (
+                  <div className={`${styles.panel} ${styles.panelAccent}`}>
+                    <div className={styles.panelHead}>
+                      <span className={styles.panelTitle}>Edit selected question</span>
+                      {editFormDirty ? (
+                        <span className={styles.unsavedPill} role="status">
+                          Unsaved changes — click Save question
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className={styles.panelBody}>
+                      <div className={styles.fieldGrid}>
+                        <label className={styles.field}>
+                          <span>Question text</span>
+                          <input
+                            value={editingQuestionPrompt}
+                            onChange={(e) => {
+                              questionEditTouchedRef.current = true;
+                              setEditingQuestionPrompt(e.target.value);
+                            }}
+                            placeholder="Question prompt"
+                          />
+                        </label>
+                        <label className={styles.field}>
+                          <span>Answer type</span>
+                          <select
+                            value={editingQuestionType}
+                            onChange={(e) => {
+                              questionEditTouchedRef.current = true;
+                              setEditingQuestionType(e.target.value as MatchmakingQuestionType);
+                            }}
+                          >
+                            {QUESTION_TYPE_OPTIONS.map((qt) => (
+                              <option value={qt} key={qt}>
+                                {qt}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <div className={`${styles.field} ${styles.fieldCheckbox}`}>
+                          <span>Required</span>
+                          <span className={styles.checkboxRow}>
+                            <input
+                              type="checkbox"
+                              checked={editingQuestionRequired}
+                              onChange={(e) => {
+                                questionEditTouchedRef.current = true;
+                                setEditingQuestionRequired(e.target.checked);
+                              }}
+                              id="edit-q-required"
+                            />
+                            <label htmlFor="edit-q-required">Must answer to submit</label>
+                          </span>
+                        </div>
+                        <label className={styles.field}>
+                          <span>Quick section</span>
+                          <select
+                            key={selectedQuestion.id}
+                            defaultValue=""
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              if (!v) return;
+                              questionEditTouchedRef.current = true;
+                              setEditingQuestionSectionLabel(v === '__general__' ? '' : v);
+                            }}
+                            aria-label="Apply a preset section"
+                          >
+                            <option value="">Choose preset…</option>
+                            <option value="__general__">General</option>
+                            {addQuestionSectionPickOptions.map((label) => (
+                              <option key={label} value={label}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className={styles.field}>
+                          <span>Section label</span>
+                          <input
+                            value={editingQuestionSectionLabel}
+                            onChange={(e) => {
+                              questionEditTouchedRef.current = true;
+                              setEditingQuestionSectionLabel(e.target.value);
+                            }}
+                            placeholder="Section (optional)"
+                          />
+                        </label>
+                      </div>
+                      <div className={styles.panelActions}>
+                        <button type="button" className={styles.btnPrimary} onClick={() => void saveQuestionEdits()} disabled={savingQuestionEdit}>
+                          {savingQuestionEdit ? 'Saving…' : 'Save question'}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+                {selectedQuestion && (selectedQuestion.question_type === 'single_select' || selectedQuestion.question_type === 'multi_select') ? (
+                  <div className={`${styles.panel} ${styles.optionPanel}`}>
+                    <div className={styles.panelHead}>
+                      <span className={styles.panelTitle}>Answer choices</span>
+                      <span className={styles.panelHint}>{selectedQuestion.prompt}</span>
+                    </div>
+                    <div className={`${styles.optionEditor} ${styles.panelBody}`}>
+                      <div className={styles.inlineForm}>
+                        <input
+                          value={newOptionLabel}
+                          onChange={(e) => setNewOptionLabel(e.target.value)}
+                          placeholder="Add option label"
+                        />
+                        <button type="button" onClick={() => void addOptionToSelected()}>
+                          Add option
+                        </button>
+                      </div>
+                      {optionError ? <p className={styles.error}>{optionError}</p> : null}
+                      <ul className={styles.optionList}>
+                        {selectedQuestionOptions.map((opt) => (
+                          <li key={opt.id} className={styles.optionRow}>
+                            {editingOptionId === opt.id ? (
+                              <>
+                                <input
+                                  value={editingOptionLabel}
+                                  onChange={(e) => setEditingOptionLabel(e.target.value)}
+                                  placeholder="Option label"
+                                />
+                                <span className={styles.qMoveBtns}>
+                                  <button type="button" onClick={() => void saveOptionEdit()} disabled={savingOptionEdit}>
+                                    {savingOptionEdit ? 'Saving…' : 'Save'}
+                                  </button>
+                                  <button type="button" onClick={() => { setEditingOptionId(''); setEditingOptionLabel(''); }}>
+                                    Cancel
+                                  </button>
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <span>{opt.label}</span>
+                                <span className={styles.qMoveBtns}>
+                                  <button type="button" onClick={() => void moveOption(opt.id, -1)}>↑</button>
+                                  <button type="button" onClick={() => void moveOption(opt.id, 1)}>↓</button>
+                                  <button type="button" onClick={() => beginEditOption(opt)}>Edit</button>
+                                  <button type="button" onClick={() => void deleteOption(opt.id)}>Delete</button>
+                                </span>
+                              </>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </div>
         )}
       </section>
 
@@ -1174,7 +2110,7 @@ export default function EventMatchmaking() {
           </select>
           <select value={audienceFilter} onChange={(e) => setAudienceFilter(e.target.value as 'all' | MatchmakingAudience)}>
             <option value="all">All audiences</option>
-            <option value="attendee">Attendee</option>
+            <option value="attendee">Delegate</option>
             <option value="vendor">Vendor</option>
             <option value="user">Speaker</option>
           </select>
@@ -1192,6 +2128,7 @@ export default function EventMatchmaking() {
                   <th>Email</th>
                   <th>Role</th>
                   <th>Status</th>
+                  <th aria-label="Actions" />
                 </tr>
               </thead>
               <tbody>
@@ -1206,6 +2143,19 @@ export default function EventMatchmaking() {
                     <td>{row.email ?? '—'}</td>
                     <td>{titleizeAudience(row.attendee_type)}</td>
                     <td>{row.status}</td>
+                    <td className={styles.rowActions}>
+                      <button
+                        type="button"
+                        className={styles.btnDangerOutline}
+                        disabled={deletingSubmissionId === row.id}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void deleteSubmission(row);
+                        }}
+                      >
+                        {deletingSubmissionId === row.id ? 'Deleting…' : 'Delete'}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1221,9 +2171,19 @@ export default function EventMatchmaking() {
         ) : (
           <div className={styles.detailGrid}>
             <div>
-              <h3>
-                {[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Registrant'}
-              </h3>
+              <div className={styles.detailHead}>
+                <h3>
+                  {[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Registrant'}
+                </h3>
+                <button
+                  type="button"
+                  className={styles.btnDangerOutline}
+                  disabled={deletingSubmissionId === selectedSubmission.id}
+                  onClick={() => void deleteSubmission(selectedSubmission)}
+                >
+                  {deletingSubmissionId === selectedSubmission.id ? 'Deleting…' : 'Delete registration'}
+                </button>
+              </div>
               <p className={styles.hint}>
                 {selectedSubmission.company_name ?? '—'} · {titleizeAudience(selectedSubmission.attendee_type)} ·{' '}
                 {selectedSubmission.status}

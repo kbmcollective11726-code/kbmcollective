@@ -3,6 +3,14 @@ import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import {
+  addMinutesToDatetimeLocalWallClock,
+  datetimeLocalToUtcIsoWallClock,
+  formatB2BSlotRangeWallClock,
+  formatB2BWhenLabelWallClock,
+  isB2BSlotPastWallClock,
+  utcIsoToDatetimeLocalWallClock,
+} from '../lib/b2bEventTime';
+import {
   notifyMeetingAssigned,
   notifyMeetingReassignedAway,
   notifyMeetingStatusToAttendee,
@@ -12,6 +20,7 @@ import { refreshSupabaseSessionIfNeeded } from '../lib/refreshSupabaseSession';
 import type { Event } from '../lib/types';
 import type { VendorBooth } from '../lib/types';
 import type { EventRole } from '../lib/types';
+import MemberSearchSelect from '../components/MemberSearchSelect';
 import styles from './BulkB2BAssign.module.css';
 
 type MemberOption = { user_id: string; role: EventRole; user?: { id: string; full_name: string; email: string } };
@@ -32,49 +41,8 @@ function newRow(): AssignRow {
   };
 }
 
-function formatWhenLabel(start: Date): string {
-  return start.toLocaleString(undefined, {
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
-function formatSlotRange(startIso: string, endIso: string): string {
-  try {
-    const s = new Date(startIso);
-    const e = new Date(endIso);
-    if (isNaN(s.getTime()) || isNaN(e.getTime())) return `${startIso} – ${endIso}`;
-    return `${s.toLocaleString(undefined, { dateStyle: 'short', timeStyle: 'short' })} – ${e.toLocaleTimeString()}`;
-  } catch {
-    return `${startIso} – ${endIso}`;
-  }
-}
-
-/** True after the slot end time (organizers often treat the meeting as “past” once it ends). */
-function isSlotPast(endIso: string): boolean {
-  const t = new Date(endIso).getTime();
-  return !isNaN(t) && t < Date.now();
-}
-
-/** `datetime-local` value (YYYY-MM-DDTHH:mm) → same format, +minutes (browser local time). */
-function addMinutesToDatetimeLocal(startValue: string, minutes: number): string {
-  if (!startValue) return '';
-  const d = new Date(startValue);
-  if (isNaN(d.getTime())) return '';
-  d.setMinutes(d.getMinutes() + minutes);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
-
-/** DB ISO timestamp → `datetime-local` string in the browser's local timezone. */
-function isoToDatetimeLocal(iso: string): string {
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return '';
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+function memberDisplayName(userId: string, memberList: MemberOption[]): string | undefined {
+  return memberList.find((m) => m.user_id === userId)?.user?.full_name?.trim() || undefined;
 }
 
 type EditDraft = {
@@ -302,7 +270,7 @@ export default function BulkB2BAssign() {
 
   const load = useCallback(async (): Promise<MemberOption[]> => {
     if (!eventId) return [];
-    const { data: eventData } = await supabase.from('events').select('id, name').eq('id', eventId).single();
+    const { data: eventData } = await supabase.from('events').select('id, name, reminder_timezone').eq('id', eventId).single();
     setEvent((eventData as Event) ?? null);
 
     const { data: boothData } = await supabase
@@ -419,13 +387,13 @@ export default function BulkB2BAssign() {
     }
 
     for (const { r, i } of filled) {
-      const start = new Date(r.startLocal);
-      const end = new Date(r.endLocal);
-      if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+      const startIso = datetimeLocalToUtcIsoWallClock(r.startLocal);
+      const endIso = datetimeLocalToUtcIsoWallClock(r.endLocal);
+      if (!startIso || !endIso) {
         setError(`Row ${i + 1}: invalid date/time.`);
         return;
       }
-      if (end <= start) {
+      if (endIso <= startIso) {
         setError(`Row ${i + 1}: end must be after start.`);
         return;
       }
@@ -439,15 +407,15 @@ export default function BulkB2BAssign() {
     await refreshSupabaseSessionIfNeeded();
 
     for (const { r, i } of filled) {
-      const start = new Date(r.startLocal);
-      const end = new Date(r.endLocal);
+      const startIso = datetimeLocalToUtcIsoWallClock(r.startLocal)!;
+      const endIso = datetimeLocalToUtcIsoWallClock(r.endLocal)!;
       try {
         const { data: slotRow, error: slotErr } = await supabase
           .from('meeting_slots')
           .insert({
             booth_id: selectedBoothId,
-            start_time: start.toISOString(),
-            end_time: end.toISOString(),
+            start_time: startIso,
+            end_time: endIso,
             is_available: true,
           })
           .select('id')
@@ -465,13 +433,14 @@ export default function BulkB2BAssign() {
           throw bookErr;
         }
 
-        const whenLabel = formatWhenLabel(start);
+        const whenLabel = formatB2BWhenLabelWallClock(startIso);
         const { error: nErr, pushError } = await notifyMeetingAssigned(
           r.attendeeId,
           eventId,
           vendorName,
           selectedBoothId,
-          whenLabel
+          whenLabel,
+          memberDisplayName(r.attendeeId, members)
         );
         if (nErr) {
           pushNotes.push(`Row ${i + 1}: notification not saved — ${nErr}`);
@@ -499,8 +468,8 @@ export default function BulkB2BAssign() {
       boothId: row.boothId,
       bookingId: row.booking?.id ?? null,
       attendeeId: row.booking?.attendee_id ?? '',
-      startLocal: isoToDatetimeLocal(row.start_time),
-      endLocal: isoToDatetimeLocal(row.end_time),
+      startLocal: utcIsoToDatetimeLocalWallClock(row.start_time),
+      endLocal: utcIsoToDatetimeLocalWallClock(row.end_time),
       previousAttendeeId: row.booking?.attendee_id ?? null,
     });
   };
@@ -517,13 +486,13 @@ export default function BulkB2BAssign() {
     setError('');
 
     const { slotId, bookingId, attendeeId, startLocal, endLocal, previousAttendeeId } = editDraft;
-    const start = new Date(startLocal);
-    const end = new Date(endLocal);
-    if (isNaN(start.getTime()) || isNaN(end.getTime())) {
+    const startIso = datetimeLocalToUtcIsoWallClock(startLocal);
+    const endIso = datetimeLocalToUtcIsoWallClock(endLocal);
+    if (!startIso || !endIso) {
       setError('Invalid start or end time.');
       return;
     }
-    if (end <= start) {
+    if (endIso <= startIso) {
       setError('End must be after start.');
       return;
     }
@@ -539,8 +508,8 @@ export default function BulkB2BAssign() {
       const { error: slotErr } = await supabase
         .from('meeting_slots')
         .update({
-          start_time: start.toISOString(),
-          end_time: end.toISOString(),
+          start_time: startIso,
+          end_time: endIso,
         })
         .eq('id', slotId);
       if (slotErr) throw slotErr;
@@ -555,22 +524,43 @@ export default function BulkB2BAssign() {
 
       const boothMeta = booths.find((b) => b.id === boothId);
       const vendorName = boothMeta?.vendor_name ?? 'Vendor';
-      const whenLabel = formatWhenLabel(start);
+      const whenLabel = formatB2BWhenLabelWallClock(startIso);
 
       let notifyWarn = '';
       if (bookingId && attendeeId) {
         const prev = previousAttendeeId;
         if (prev && prev !== attendeeId) {
           const parts: string[] = [];
-          const away = await notifyMeetingReassignedAway(prev, eventId, vendorName, boothId);
+          const away = await notifyMeetingReassignedAway(
+            prev,
+            eventId,
+            vendorName,
+            boothId,
+            whenLabel,
+            memberDisplayName(prev, members)
+          );
           if (away.error) parts.push(`Previous attendee: ${away.error}`);
           else if (away.pushError) parts.push(`Previous attendee push: ${away.pushError}`);
-          const assigned = await notifyMeetingAssigned(attendeeId, eventId, vendorName, boothId, whenLabel);
+          const assigned = await notifyMeetingAssigned(
+            attendeeId,
+            eventId,
+            vendorName,
+            boothId,
+            whenLabel,
+            memberDisplayName(attendeeId, members)
+          );
           if (assigned.error) parts.push(`New attendee: ${assigned.error}`);
           else if (assigned.pushError) parts.push(`New attendee push: ${assigned.pushError}`);
           notifyWarn = parts.join(' ');
         } else {
-          const upd = await notifyMeetingUpdated(attendeeId, eventId, vendorName, boothId, whenLabel);
+          const upd = await notifyMeetingUpdated(
+            attendeeId,
+            eventId,
+            vendorName,
+            boothId,
+            whenLabel,
+            memberDisplayName(attendeeId, members)
+          );
           if (upd.error) notifyWarn = upd.error;
           else if (upd.pushError) notifyWarn = `Push: ${upd.pushError}`;
         }
@@ -598,7 +588,16 @@ export default function BulkB2BAssign() {
       if (err) throw err;
       if (eventId && boothId && attendeeId) {
         const vendorName = row?.vendorName ?? selectedBooth?.vendor_name ?? 'Vendor';
-        const n = await notifyMeetingStatusToAttendee(attendeeId, eventId, vendorName, boothId, 'cancelled');
+        const whenLabel = row?.start_time ? formatB2BWhenLabelWallClock(row.start_time) : undefined;
+        const n = await notifyMeetingStatusToAttendee(
+          attendeeId,
+          eventId,
+          vendorName,
+          boothId,
+          'cancelled',
+          row?.booking?.full_name ?? memberDisplayName(attendeeId, members),
+          whenLabel
+        );
         if (n.error) {
           setError(`Meeting cancelled, but in-app notification failed: ${n.error}`);
         } else if (n.pushError) {
@@ -613,11 +612,15 @@ export default function BulkB2BAssign() {
     }
   };
 
-  /** Deletes the slot; booking rows cascade away (incl. cancelled). */
+  /** Deletes the slot; booking rows cascade away (any status). */
   const handleDeleteSlot = async (slotId: string) => {
+    const row = existingRows.find((r) => r.slotId === slotId);
+    const hasActiveBooking = row?.booking && row.booking.status !== 'cancelled';
     if (
       !window.confirm(
-        'Delete this time slot permanently? Any booking on it (including cancelled) will be removed. This cannot be undone.'
+        hasActiveBooking
+          ? 'Delete this meeting permanently? The time slot and booking will be removed and the attendee may be notified. This cannot be undone.'
+          : 'Delete this time slot permanently? Any booking on it (including cancelled) will be removed. This cannot be undone.'
       )
     ) {
       return;
@@ -631,12 +634,15 @@ export default function BulkB2BAssign() {
       const vendorName = row?.vendorName ?? selectedBooth?.vendor_name ?? 'Vendor';
       let pushNote: string | undefined;
       if (eventId && boothId && row?.booking && row.booking.status !== 'cancelled') {
+        const whenLabel = row.start_time ? formatB2BWhenLabelWallClock(row.start_time) : undefined;
         const n = await notifyMeetingStatusToAttendee(
           row.booking.attendee_id,
           eventId,
           vendorName,
           boothId,
-          'slot_removed'
+          'slot_removed',
+          row.booking.full_name ?? memberDisplayName(row.booking.attendee_id, members),
+          whenLabel
         );
         if (n.error) {
           setError(`Could not save in-app notification (${n.error}). Slot was not deleted.`);
@@ -731,6 +737,10 @@ export default function BulkB2BAssign() {
       )}
 
       <h2 className={styles.sectionTitle}>Add new meetings</h2>
+      <p className={styles.hint} style={{ marginBottom: 12 }}>
+        Meeting times work like the <strong>agenda</strong>: enter the clock time at the venue (e.g. 1:05 PM). That same
+        time shows for everyone — Florida admin, California attendee, and cadmin — with no timezone conversion.
+      </p>
 
       <form onSubmit={handleSubmit}>
         <div className={styles.templateCard}>
@@ -748,7 +758,7 @@ export default function BulkB2BAssign() {
                 onChange={(e) => {
                   const v = e.target.value;
                   setTemplateStart(v);
-                  setTemplateEnd(v ? addMinutesToDatetimeLocal(v, 30) : '');
+                  setTemplateEnd(v ? addMinutesToDatetimeLocalWallClock(v, 30) : '');
                 }}
               />
             </label>
@@ -785,19 +795,13 @@ export default function BulkB2BAssign() {
               {rows.map((row, idx) => (
                 <tr key={row.key}>
                   <td>{idx + 1}</td>
-                  <td>
-                    <select
+                  <td className={styles.attendeeCell}>
+                    <MemberSearchSelect
+                      members={members}
                       value={row.attendeeId}
-                      onChange={(e) => updateRow(row.key, { attendeeId: e.target.value })}
-                      aria-label={`Attendee row ${idx + 1}`}
-                    >
-                      <option value="">— Member —</option>
-                      {members.map((m) => (
-                        <option key={m.user_id} value={m.user_id}>
-                          {m.user?.full_name ?? m.user?.email ?? m.user_id}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(attendeeId) => updateRow(row.key, { attendeeId })}
+                      ariaLabel={`Attendee row ${idx + 1}`}
+                    />
                   </td>
                   <td>
                     <input
@@ -807,7 +811,7 @@ export default function BulkB2BAssign() {
                         const v = e.target.value;
                         updateRow(row.key, {
                           startLocal: v,
-                          endLocal: v ? addMinutesToDatetimeLocal(v, 30) : '',
+                          endLocal: v ? addMinutesToDatetimeLocalWallClock(v, 30) : '',
                         });
                       }}
                       aria-label={`Start row ${idx + 1}`}
@@ -863,7 +867,7 @@ export default function BulkB2BAssign() {
           )}
           {resultSummary.pushNotes.length > 0 && (
             <>
-              <p className={styles.warn}>Notification / push notes</p>
+              <p className={styles.warn}>Notification notes</p>
               <ul>
                 {resultSummary.pushNotes.map((n, idx) => (
                   <li key={idx}>{n}</li>
@@ -878,7 +882,7 @@ export default function BulkB2BAssign() {
         <>
           <h2 className={styles.sectionTitle}>
             {showAllEventMeetings
-              ? 'Scheduled meetings — all vendor booths'
+              ? 'Scheduled meetings — all booths'
               : `Scheduled meetings — ${selectedBooth?.vendor_name ?? 'this booth'}`}
             <button
               type="button"
@@ -894,7 +898,9 @@ export default function BulkB2BAssign() {
               ? 'Every time slot across booths for this event, sorted by start time. Creating new meetings still uses the booth selected above.'
               : 'Every time slot for this booth. Assigned rows show who is booked; open slots have no attendee yet.'}{' '}
             Use <strong>Edit</strong> to change time or reassign an attendee for upcoming slots (notifications are sent when you save).
-            Use <strong>Cancel meeting</strong> only before the slot ends. Past meetings show as <strong>Ended</strong> (no cancel). Cancelled meetings appear in a separate section below.
+            Use <strong>Cancel meeting</strong> to mark a booking cancelled while keeping the time slot. Use <strong>Delete</strong> to
+            remove the slot and booking permanently (available for upcoming, past, and cancelled meetings). Past meetings show as{' '}
+            <strong>Ended</strong> in the status column.
           </p>
           {existingFetchError ? <p className={styles.error}>{existingFetchError}</p> : null}
           {loadingExisting && existingRows.length === 0 && !existingFetchError ? (
@@ -921,7 +927,7 @@ export default function BulkB2BAssign() {
                   <tbody>
                     {activeExistingRows.map((row) => {
                       const isEditing = editingSlotId === row.slotId && editDraft?.slotId === row.slotId;
-                      const past = isSlotPast(row.end_time);
+                      const past = isB2BSlotPastWallClock(row.start_time, row.end_time, event?.reminder_timezone);
                       const canEditSlot = !past;
                       return (
                         <tr key={row.slotId} className={past ? styles.rowPast : undefined}>
@@ -935,7 +941,7 @@ export default function BulkB2BAssign() {
                                   onChange={(e) => {
                                     const v = e.target.value;
                                     setEditDraft((d) =>
-                                      d ? { ...d, startLocal: v, endLocal: v ? addMinutesToDatetimeLocal(v, 30) : d.endLocal } : d
+                                      d ? { ...d, startLocal: v, endLocal: v ? addMinutesToDatetimeLocalWallClock(v, 30) : d.endLocal } : d
                                     );
                                   }}
                                   aria-label="Edit start"
@@ -950,22 +956,16 @@ export default function BulkB2BAssign() {
                                   aria-label="Edit end"
                                 />
                               </td>
-                              <td>
+                              <td className={styles.attendeeCell}>
                                 {editDraft.bookingId ? (
-                                  <select
+                                  <MemberSearchSelect
+                                    members={members}
                                     value={editDraft.attendeeId}
-                                    onChange={(e) =>
-                                      setEditDraft((d) => (d ? { ...d, attendeeId: e.target.value } : d))
+                                    onChange={(attendeeId) =>
+                                      setEditDraft((d) => (d ? { ...d, attendeeId } : d))
                                     }
-                                    aria-label="Edit attendee"
-                                  >
-                                    <option value="">— Member —</option>
-                                    {members.map((m) => (
-                                      <option key={m.user_id} value={m.user_id}>
-                                        {m.user?.full_name ?? m.user?.email ?? m.user_id}
-                                      </option>
-                                    ))}
-                                  </select>
+                                    ariaLabel="Edit attendee"
+                                  />
                                 ) : (
                                   <span className={styles.mutedCell}>— Open slot (time only) —</span>
                                 )}
@@ -998,7 +998,7 @@ export default function BulkB2BAssign() {
                           ) : (
                             <>
                               {showAllEventMeetings ? <td>{row.vendorName}</td> : null}
-                              <td>{formatSlotRange(row.start_time, row.end_time)}</td>
+                              <td>{formatB2BSlotRangeWallClock(row.start_time, row.end_time)}</td>
                               <td>
                                 {row.booking ? (
                                   <>
@@ -1028,18 +1028,28 @@ export default function BulkB2BAssign() {
                                     </button>
                                   ) : null}
                                   {row.booking ? (
-                                    past ? (
-                                      <span className={styles.actionEnded}>Ended</span>
-                                    ) : (
+                                    <>
+                                      {past ? (
+                                        <span className={styles.actionEnded}>Ended</span>
+                                      ) : (
+                                        <button
+                                          type="button"
+                                          className={`${styles.btn} ${styles.btnDanger}`}
+                                          disabled={cancellingId === row.booking.id || !!savingEditSlotId || deletingSlotId === row.slotId}
+                                          onClick={() => handleCancelBooking(row.booking!.id)}
+                                        >
+                                          {cancellingId === row.booking.id ? '…' : 'Cancel meeting'}
+                                        </button>
+                                      )}
                                       <button
                                         type="button"
                                         className={`${styles.btn} ${styles.btnDanger}`}
-                                        disabled={cancellingId === row.booking.id || !!savingEditSlotId}
-                                        onClick={() => handleCancelBooking(row.booking!.id)}
+                                        disabled={deletingSlotId === row.slotId || !!savingEditSlotId || cancellingId === row.booking.id}
+                                        onClick={() => handleDeleteSlot(row.slotId)}
                                       >
-                                        {cancellingId === row.booking.id ? '…' : 'Cancel meeting'}
+                                        {deletingSlotId === row.slotId ? '…' : 'Delete'}
                                       </button>
-                                    )
+                                    </>
                                   ) : (
                                     <button
                                       type="button"
@@ -1064,8 +1074,8 @@ export default function BulkB2BAssign() {
                 <>
                   <h3 className={styles.cancelledSectionTitle}>Cancelled meetings</h3>
                   <p className={styles.sectionHint}>
-                    These time slots still exist; only the booking was cancelled. Use Delete to remove the slot and
-                    record permanently.
+                    These bookings were cancelled but the time slots still exist. You can delete them here or from the main
+                    table above after refreshing.
                   </p>
                   <div className={styles.tableWrap}>
                     <table className={`${styles.table} ${styles.tableCancelled}`}>
@@ -1082,7 +1092,7 @@ export default function BulkB2BAssign() {
                         {cancelledExistingRows.map((row) => (
                           <tr key={row.slotId} className={styles.rowCancelled}>
                             {showAllEventMeetings ? <td>{row.vendorName}</td> : null}
-                            <td>{formatSlotRange(row.start_time, row.end_time)}</td>
+                            <td>{formatB2BSlotRangeWallClock(row.start_time, row.end_time)}</td>
                             <td>
                               {row.booking ? (
                                 <>
@@ -1118,7 +1128,7 @@ export default function BulkB2BAssign() {
 
       {booths.length === 0 && (
         <p className={styles.hint}>
-          No active vendor booths. Add booths under <Link to={`/events/${eventId}/vendor-booths`}>Vendor booths</Link> first.
+          No active booths. Add them under <Link to={`/events/${eventId}/vendor-booths`}>Solution Providers</Link> first.
         </p>
       )}
     </div>

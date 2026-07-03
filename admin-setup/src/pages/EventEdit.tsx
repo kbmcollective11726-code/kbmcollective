@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Event } from '../lib/types';
-import { uploadEventImage } from '../lib/uploadEventImage';
+import { normalizeExistingBannerFromUrl, uploadEventImage } from '../lib/uploadEventImage';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import { eventFormFieldsFromEvent, eventUpdateRowFromForm, type EventFormFields } from '../lib/eventFormState';
+import { eventAdminMenuUpdateFromForm, platformMenuFromEvent } from '../lib/eventExperienceControls';
 import EventFormBody from '../components/EventFormBody';
-import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import styles from './EventForm.module.css';
 
 export default function EventEdit() {
@@ -18,7 +18,6 @@ export default function EventEdit() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [uploadingBanner, setUploadingBanner] = useState(false);
-  const [platformAdmin, setPlatformAdmin] = useState(false);
 
   useEffect(() => {
     if (!eventId) return;
@@ -44,14 +43,6 @@ export default function EventEdit() {
     })();
     return () => { cancelled = true; };
   }, [eventId]);
-
-  useEffect(() => {
-    let cancelled = false;
-    isCurrentUserPlatformAdmin().then((v) => {
-      if (!cancelled) setPlatformAdmin(v);
-    });
-    return () => { cancelled = true; };
-  }, []);
 
   const persistBanner = useCallback(
     async (banner_url: string | null) => {
@@ -93,6 +84,22 @@ export default function EventEdit() {
     }
   };
 
+  const onRefitBanner = async () => {
+    const url = form?.bannerUrl?.trim();
+    if (!url || !eventId) return;
+    setError('');
+    setUploadingBanner(true);
+    try {
+      const newUrl = await normalizeExistingBannerFromUrl(url, eventId);
+      setForm((f) => (f ? { ...f, bannerUrl: newUrl } : f));
+      await persistBanner(newUrl);
+    } catch (err) {
+      setError(postgrestErrorMessage(err) || 'Banner re-fit failed');
+    } finally {
+      setUploadingBanner(false);
+    }
+  };
+
   const setFormFields = useCallback((action: React.SetStateAction<EventFormFields>) => {
     setForm((prev) => {
       if (prev === null) return prev;
@@ -107,14 +114,17 @@ export default function EventEdit() {
     setSaving(true);
     try {
       const row = eventUpdateRowFromForm(form, event?.event_code ?? null, {
-        omitMenuLiveWall: !platformAdmin,
-        omitMenuShowNotes: !Object.prototype.hasOwnProperty.call(event as object, 'menu_show_notes'),
+        omitInAppMenu: true,
       });
+      const menuRow = event
+        ? eventAdminMenuUpdateFromForm(form, platformMenuFromEvent(event))
+        : {};
       const updatedAt = new Date().toISOString();
       let { error: err } = await supabase
         .from('events')
         .update({
           ...row,
+          ...menuRow,
           updated_at: updatedAt,
         })
         .eq('id', eventId);
@@ -156,11 +166,12 @@ export default function EventEdit() {
         <EventFormBody
           form={form}
           setForm={setFormFields}
-          canEditLiveWallMenu={platformAdmin}
+          eventForPlatformMenu={event}
           bannerUpload={{
             uploadingBanner,
             onBannerFile,
             onClearBanner,
+            onRefitBanner,
             bannerPreviewSrc: form.bannerUrl,
           }}
         />

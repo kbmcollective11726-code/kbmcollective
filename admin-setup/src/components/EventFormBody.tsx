@@ -1,11 +1,22 @@
-import { useRef } from 'react';
+import { useMemo, useRef } from 'react';
 import type { EventFormFields } from '../lib/eventFormState';
+import {
+  EVENT_ADMIN_APP_MENU_TOGGLES,
+  EVENT_ADMIN_MENU_FORM_FIELD,
+  platformMenuFromEvent,
+  type PlatformMenuDraft,
+} from '../lib/eventExperienceControls';
+import type { Event } from '../lib/types';
+import { BANNER_FILE_ACCEPT, EVENT_BANNER_HINT, EVENT_BANNER_SIZE_LABEL } from '../lib/eventBannerHints';
+import { EVENT_TIMEZONE_OPTIONS } from '../lib/eventTimezones';
 import styles from '../pages/EventForm.module.css';
 
 export type BannerUploadProps = {
   uploadingBanner: boolean;
   onBannerFile: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onClearBanner: () => void;
+  /** Re-letterbox saved banner to 1200×750 (Edit event only). */
+  onRefitBanner?: () => void;
   /** Saved banner URL or a temporary object URL for a file chosen before the event exists. */
   bannerPreviewSrc: string;
 };
@@ -14,21 +25,30 @@ type Props = {
   form: EventFormFields;
   setForm: React.Dispatch<React.SetStateAction<EventFormFields>>;
   bannerUpload: BannerUploadProps;
-  /** When false, Live wall visibility is read-only (only platform admins may change it). */
-  canEditLiveWallMenu?: boolean;
+  /** When set (Edit event), show in-app menu toggles allowed by the platform. */
+  eventForPlatformMenu?: Event | null;
 };
 
 export default function EventFormBody({
   form,
   setForm,
   bannerUpload,
-  canEditLiveWallMenu = true,
+  eventForPlatformMenu,
 }: Props) {
   const bannerInputRef = useRef<HTMLInputElement>(null);
 
   const patch = (partial: Partial<EventFormFields>) => {
     setForm((s) => ({ ...s, ...partial }));
   };
+
+  const platformMenu: PlatformMenuDraft | null = eventForPlatformMenu
+    ? platformMenuFromEvent(eventForPlatformMenu)
+    : null;
+
+  const appMenuToggles = useMemo(() => {
+    if (!platformMenu) return [];
+    return EVENT_ADMIN_APP_MENU_TOGGLES.filter((t) => platformMenu[t.platformKey]);
+  }, [platformMenu]);
 
   return (
     <>
@@ -74,6 +94,38 @@ export default function EventFormBody({
         />
       </label>
       <label className={styles.label}>
+        Event timezone
+        <select
+          value={form.reminderTimezone}
+          onChange={(e) => patch({ reminderTimezone: e.target.value })}
+          className={styles.input}
+        >
+          {EVENT_TIMEZONE_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <span className={styles.fieldHint}>
+          Venue wall-clock for the agenda, Live now badge, and session starting-soon reminders (~5 min before).
+        </span>
+      </label>
+      <label className={styles.checkboxLabel}>
+        <input
+          type="checkbox"
+          checked={form.vendorBriefEnabled}
+          onChange={(e) => patch({ vendorBriefEnabled: e.target.checked })}
+        />
+        <span>
+          <strong>Vendor "Prior interactions" history</strong>
+          <span className={styles.menuItemDesc}>
+            Shows vendors/admins whether their company has met an attendee at a past event (prior meetings &amp;
+            notes), in the pre-meeting brief. Turn off to hide this history for this event. Vendors can still open
+            the brief and add notes either way. Attendees never see it.
+          </span>
+        </span>
+      </label>
+      <label className={styles.label}>
         Event code (optional)
         <input
           type="text"
@@ -116,11 +168,14 @@ export default function EventFormBody({
           className={styles.colorInput}
         />
       </label>
-      <p className={styles.fieldHint}>Event banner — shown at the top of the in-app Info screen. Upload a JPG or PNG (stored like the mobile app).</p>
+      <p className={styles.fieldHint}>{EVENT_BANNER_HINT}</p>
+      <p className={styles.bannerSizeCallout}>
+        Recommended size: <strong>{EVENT_BANNER_SIZE_LABEL}</strong> (8:5 wide). Other wide images are auto-fitted on upload.
+      </p>
       <input
         ref={bannerInputRef}
         type="file"
-        accept="image/*"
+        accept={BANNER_FILE_ACCEPT}
         className={styles.hiddenFile}
         onChange={bannerUpload.onBannerFile}
         aria-hidden
@@ -149,79 +204,56 @@ export default function EventFormBody({
                 : 'Upload banner'}
           </button>
           {bannerUpload.bannerPreviewSrc ? (
-            <button
-              type="button"
-              className={styles.clearBtn}
-              disabled={bannerUpload.uploadingBanner}
-              onClick={bannerUpload.onClearBanner}
-            >
-              Remove
-            </button>
+            <>
+              {bannerUpload.onRefitBanner ? (
+                <button
+                  type="button"
+                  className={styles.uploadBtn}
+                  disabled={bannerUpload.uploadingBanner}
+                  onClick={bannerUpload.onRefitBanner}
+                >
+                  {bannerUpload.uploadingBanner ? 'Working…' : 'Re-fit for app'}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className={styles.clearBtn}
+                disabled={bannerUpload.uploadingBanner}
+                onClick={bannerUpload.onClearBanner}
+              >
+                Remove
+              </button>
+            </>
           ) : null}
         </div>
       </div>
 
-      <h2 className={styles.sectionTitle}>In-app menu (KBM hamburger)</h2>
-      <p className={styles.fieldHint}>
-        Uncheck to hide these links from the side menu. <strong>Agenda</strong> also controls the Agenda tab in the
-        bottom bar when off. <strong>Notes</strong> is only shown to event admins and vendor booth reps; uncheck to hide
-        it for them too.
-      </p>
-      <label className={styles.checkboxLabel}>
-        <input
-          type="checkbox"
-          checked={form.menuShowAgenda}
-          onChange={(e) => patch({ menuShowAgenda: e.target.checked })}
-        />
-        <span>Show <strong>Agenda</strong></span>
-      </label>
-      <label className={styles.checkboxLabel}>
-        <input
-          type="checkbox"
-          checked={form.menuShow1on1}
-          onChange={(e) => patch({ menuShow1on1: e.target.checked })}
-        />
-        <span>Show <strong>1:1 Meetings</strong></span>
-      </label>
-      <label className={styles.checkboxLabel}>
-        <input
-          type="checkbox"
-          checked={form.menuShowScanBadge}
-          onChange={(e) => patch({ menuShowScanBadge: e.target.checked })}
-        />
-        <span>Show <strong>Scan badge</strong></span>
-      </label>
-      <label className={styles.checkboxLabel}>
-        <input
-          type="checkbox"
-          checked={form.menuShowNotes}
-          onChange={(e) => patch({ menuShowNotes: e.target.checked })}
-        />
-        <span>Show <strong>Notes</strong></span>
-      </label>
-      <label className={`${styles.checkboxLabel} ${!canEditLiveWallMenu ? styles.checkboxDisabled : ''}`}>
-        <input
-          type="checkbox"
-          checked={form.menuShowLiveWall}
-          disabled={!canEditLiveWallMenu}
-          onChange={(e) => patch({ menuShowLiveWall: e.target.checked })}
-        />
-        <span>Show <strong>Live wall</strong></span>
-      </label>
-      {!canEditLiveWallMenu ? (
-        <p className={styles.fieldHint}>
-          Only platform administrators can show or hide the Live wall link in the mobile app menu and the web admin top
-          bar.
-        </p>
+      {appMenuToggles.length > 0 ? (
+        <>
+          <h2 className={styles.sectionTitle}>In-app menu (mobile)</h2>
+          <p className={styles.fieldHint}>
+            Turn items on or off for attendees in the KBM app. Only options your platform admin enabled appear
+            here.
+          </p>
+          {appMenuToggles.map((item) => {
+            const field = EVENT_ADMIN_MENU_FORM_FIELD[item.id];
+            if (!field) return null;
+            return (
+              <label key={item.id} className={styles.checkboxLabel}>
+                <input
+                  type="checkbox"
+                  checked={form[field]}
+                  onChange={(e) => patch({ [field]: e.target.checked } as Partial<EventFormFields>)}
+                />
+                <span>
+                  <strong>{item.title}</strong>
+                  <span className={styles.menuItemDesc}>{item.desc}</span>
+                </span>
+              </label>
+            );
+          })}
+        </>
       ) : null}
-      <label className={styles.checkboxLabel}>
-        <input
-          type="checkbox"
-          checked={form.menuShowSolutionProviders}
-          onChange={(e) => patch({ menuShowSolutionProviders: e.target.checked })}
-        />
-        <span>Show <strong>Solution Provider</strong></span>
-      </label>
 
       <h2 className={styles.sectionTitle}>Info page (home screen)</h2>
       <p className={styles.fieldHint}>These fields power the in-app Info / home content (same as the mobile admin Info page).</p>

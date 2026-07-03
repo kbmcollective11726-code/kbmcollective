@@ -85,7 +85,7 @@ export default function SolutionProvidersScreen() {
 
   return (
     <SafeAreaView style={s.container} edges={[]}>
-      <Stack.Screen options={{ title: 'Solution Provider', headerLeft: () => <HamburgerMenu /> }} />
+      <Stack.Screen options={{ title: 'Solution Providers', headerLeft: () => <HamburgerMenu /> }} />
       {error ? (
         <View style={s.errorBanner}>
           <Text style={s.errorText}>{error}</Text>

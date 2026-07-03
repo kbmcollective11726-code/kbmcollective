@@ -202,7 +202,9 @@ export default function AdminInfoPageScreen() {
               <ImagePlus size={32} color={colors.textMuted} />
             )}
             <Text style={styles.bannerPlaceholderText}>Upload event banner</Text>
-            <Text style={styles.bannerPlaceholderHint}>Recommended: wide image, e.g. 1200×600</Text>
+            <Text style={styles.bannerPlaceholderHint}>
+              Use cadmin Edit event → Re-fit for app (1200×750) so the banner fills the hero without cropping.
+            </Text>
           </TouchableOpacity>
         )}
 
@@ -306,7 +308,12 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, marginTop: 8, marginBottom: 12 },
   label: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 8 },
   bannerPreviewWrap: { marginBottom: 20 },
-  bannerPreview: { width: '100%', height: 160, borderRadius: 12, backgroundColor: colors.borderLight },
+  bannerPreview: {
+    width: '100%',
+    aspectRatio: 8 / 5,
+    borderRadius: 12,
+    backgroundColor: '#0c1f3d',
+  },
   bannerActions: { flexDirection: 'row', gap: 12, marginTop: 10 },
   bannerBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 10, borderWidth: 1, borderColor: colors.primary },
   bannerBtnDisabled: { opacity: 0.6 },

@@ -1,9 +1,12 @@
 import { Stack } from 'expo-router';
 import { colors } from '../../constants/colors';
 import { flatNativeStackHeaderStyle } from '../../constants/headerStyle';
+import DeepLinkHandler from '../../components/DeepLinkHandler';
 
 export default function AuthLayout() {
   return (
+    <>
+    <DeepLinkHandler />
     <Stack
       screenOptions={{
         headerShown: true,
@@ -21,5 +24,6 @@ export default function AuthLayout() {
       <Stack.Screen name="change-password" options={{ title: 'Change password', headerBackVisible: false, gestureEnabled: false }} />
       <Stack.Screen name="reset-password" options={{ title: 'Reset password', headerShown: false }} />
     </Stack>
+    </>
   );
 }

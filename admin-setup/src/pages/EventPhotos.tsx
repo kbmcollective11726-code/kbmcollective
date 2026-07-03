@@ -5,9 +5,9 @@ import { refreshSupabaseSessionIfNeeded } from '../lib/refreshSupabaseSession';
 import type { Event } from '../lib/types';
 import styles from './EventPhotos.module.css';
 
-const PAGE_SIZE = 24;
+const PAGE_SIZE = 50;
 /** Must match Edge Function `admin-zip-event-photos` */
-const MAX_BULK_ZIP = 40;
+const MAX_BULK_ZIP = 50;
 const ALL_IDS_PAGE_SIZE = 1000;
 
 type PhotoPost = {
@@ -78,6 +78,7 @@ export default function EventPhotos() {
   const [dlNote, setDlNote] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const [bulkDownloading, setBulkDownloading] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<string | null>(null);
   const [bulkError, setBulkError] = useState<string | null>(null);
   const [allDownloading, setAllDownloading] = useState(false);
   const [allProgress, setAllProgress] = useState<string | null>(null);
@@ -199,44 +200,6 @@ export default function EventPhotos() {
     if (!result.ok) setDlNote(result.message);
   };
 
-  const handleBulkZip = async () => {
-    if (!eventId || selectedIds.size === 0) return;
-    if (selectedIds.size > MAX_BULK_ZIP) {
-      setBulkError(`Select at most ${MAX_BULK_ZIP} photos per ZIP.`);
-      return;
-    }
-    setBulkError(null);
-    setBulkDownloading(true);
-    try {
-      await refreshSupabaseSessionIfNeeded();
-      const token = await getEdgeFunctionAccessToken();
-      if (!token || !supabaseUrl) throw new Error('Not signed in or missing Supabase URL.');
-      const res = await fetch(`${supabaseUrl}/functions/v1/admin-zip-event-photos`, {
-        method: 'POST',
-        headers: edgeFunctionHeaders(token),
-        body: JSON.stringify({ event_id: eventId, post_ids: [...selectedIds] }),
-      });
-      if (!res.ok) {
-        const j = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(j.error || `ZIP failed (${res.status})`);
-      }
-      const blob = await res.blob();
-      const objectUrl = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = objectUrl;
-      a.download = `event-photos-${eventId.slice(0, 8)}.zip`;
-      a.rel = 'noopener';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(objectUrl);
-    } catch (e) {
-      setBulkError(e instanceof Error ? e.message : 'ZIP download failed');
-    } finally {
-      setBulkDownloading(false);
-    }
-  };
-
   const fetchAllFilteredPostIds = useCallback(async (): Promise<string[]> => {
     if (!eventId) return [];
     const ids: string[] = [];
@@ -294,6 +257,33 @@ export default function EventPhotos() {
     a.remove();
     URL.revokeObjectURL(objectUrl);
   }, []);
+
+  const handleBulkZip = async () => {
+    if (!eventId || selectedIds.size === 0) return;
+    const ids = [...selectedIds];
+    setBulkError(null);
+    setBulkProgress(null);
+    setBulkDownloading(true);
+    try {
+      const totalParts = Math.ceil(ids.length / MAX_BULK_ZIP);
+      for (let i = 0; i < totalParts; i += 1) {
+        const partIds = ids.slice(i * MAX_BULK_ZIP, (i + 1) * MAX_BULK_ZIP);
+        setBulkProgress(
+          totalParts > 1 ? `Building ZIP ${i + 1} of ${totalParts}…` : 'Building ZIP…'
+        );
+        const blob = await requestZipBlob(partIds);
+        const suffix = totalParts > 1 ? `-part-${String(i + 1).padStart(2, '0')}` : '';
+        triggerBlobDownload(blob, `event-photos-${eventId.slice(0, 8)}${suffix}.zip`);
+      }
+      setBulkProgress(
+        `Downloaded ${ids.length} photo${ids.length === 1 ? '' : 's'} in ${totalParts} ZIP file${totalParts === 1 ? '' : 's'}.`
+      );
+    } catch (e) {
+      setBulkError(e instanceof Error ? e.message : 'ZIP download failed');
+    } finally {
+      setBulkDownloading(false);
+    }
+  };
 
   const executeDownloadAll = async (allIds: string[]) => {
     if (!eventId) return;
@@ -367,7 +357,7 @@ export default function EventPhotos() {
     );
   }
 
-  const bulkOverLimit = selectedIds.size > MAX_BULK_ZIP;
+  const selectedZipParts = Math.ceil(selectedIds.size / MAX_BULK_ZIP);
 
   return (
     <div className={styles.page}>
@@ -379,9 +369,9 @@ export default function EventPhotos() {
       <h1>Photo book — {event?.name ?? 'Event'}</h1>
       <p className={styles.hint}>
         Downloads go through a secure server so R2/CDN links work in the browser. Select photos with the checkboxes, then{' '}
-        <strong>Download ZIP</strong> (up to {MAX_BULK_ZIP} at a time). You can also use <strong>Download all</strong>, which
-        automatically creates multiple ZIP files in batches of {MAX_BULK_ZIP}. Selection is kept when you change pages until you
-        clear it. Open in new tab still works if you prefer to save manually.
+        <strong>Download ZIP</strong> (up to {MAX_BULK_ZIP} per ZIP; larger selections split into multiple files automatically).
+        You can also use <strong>Download all</strong> for every photo matching your filters. Selection is kept when you change
+        pages until you clear it.
       </p>
 
       <div className={styles.toolbar}>
@@ -415,14 +405,14 @@ export default function EventPhotos() {
             </button>
             <span className={styles.bulkMeta}>
               {selectedIds.size} selected
-              {bulkOverLimit ? (
-                <span className={styles.bulkWarn}> (max {MAX_BULK_ZIP} per ZIP)</span>
+              {selectedZipParts > 1 ? (
+                <span className={styles.bulkWarn}> ({selectedZipParts} ZIP files)</span>
               ) : null}
             </span>
             <button
               type="button"
               className={styles.bulkZipBtn}
-              disabled={selectedIds.size === 0 || bulkOverLimit || bulkDownloading}
+              disabled={selectedIds.size === 0 || bulkDownloading || allDownloading}
               onClick={handleBulkZip}
             >
               {bulkDownloading ? 'Building ZIP…' : `Download ZIP (${selectedIds.size})`}
@@ -437,6 +427,7 @@ export default function EventPhotos() {
             </button>
           </div>
           {bulkError ? <p className={styles.error}>{bulkError}</p> : null}
+          {bulkProgress ? <p className={styles.meta}>{bulkProgress}</p> : null}
           {allProgress ? <p className={styles.meta}>{allProgress}</p> : null}
 
           <div className={styles.grid}>

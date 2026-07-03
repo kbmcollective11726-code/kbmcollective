@@ -18,6 +18,7 @@ import { useFocusEffect, useIsFocused } from '@react-navigation/native';
 import { Users, PlusCircle } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
+import { useRolePreviewContext } from '../../../../hooks/useRolePreviewContext';
 import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../../lib/supabase';
 import { addDebugLog } from '../../../../lib/debugLog';
 import { colors } from '../../../../constants/colors';
@@ -40,6 +41,7 @@ export default function GroupsListScreen() {
   const isFocused = useIsFocused();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const { applyEventAdmin } = useRolePreviewContext();
   const lastResumeRefetchAt = useRef<number>(0);
   const [groups, setGroups] = useState<ChatGroup[]>([]);
 
@@ -79,11 +81,12 @@ export default function GroupsListScreen() {
       role === 'admin' ||
       role === 'super_admin' ||
       roles.includes('admin') ||
-      roles.includes('super_admin') ||
-      user?.is_platform_admin === true;
+      roles.includes('super_admin');
     setIsEventAdmin(admin);
     return admin;
-  }, [user?.id, user?.is_platform_admin, currentEvent?.id]);
+  }, [user?.id, currentEvent?.id]);
+
+  const effectiveIsEventAdmin = applyEventAdmin(isEventAdmin);
 
   const fetchInProgressRef = useRef(false);
   const autoRetryScheduledRef = useRef(false);
@@ -320,7 +323,7 @@ export default function GroupsListScreen() {
           </TouchableOpacity>
         </View>
       ) : null}
-      {isEventAdmin && (
+      {effectiveIsEventAdmin && (
         <TouchableOpacity
           style={styles.createBtn}
           onPress={() => router.push('/(tabs)/profile/groups/new')}
@@ -342,7 +345,7 @@ export default function GroupsListScreen() {
         ListEmptyComponent={
           <View style={styles.placeholder}>
             <Text style={styles.placeholderText}>
-              {isEventAdmin ? 'No groups yet. Create one to get started.' : 'You’re not in any groups yet.'}
+              {effectiveIsEventAdmin ? 'No groups yet. Create one to get started.' : 'You’re not in any groups yet.'}
             </Text>
             {!fetchError && currentEvent?.name ? (
               <>
@@ -380,7 +383,7 @@ export default function GroupsListScreen() {
           </TouchableOpacity>
         )}
       />
-      {isEventAdmin && (
+      {effectiveIsEventAdmin && (
         <TouchableOpacity
           style={styles.manageLink}
           onPress={() => router.push('/(tabs)/profile/admin')}

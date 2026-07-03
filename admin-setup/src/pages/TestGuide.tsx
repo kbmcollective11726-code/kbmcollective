@@ -134,7 +134,7 @@ Use this guide for every release. Priority order: P0 smoke -> P1 core flows -> P
 ### Media/content areas
 - [ ] Event photos upload/list/delete works
 - [ ] Sponsors CRUD works
-- [ ] Vendor booths CRUD works
+- [ ] Solution Providers (booths) CRUD works
 - [ ] Matchmaking settings pages load/save
 - [ ] Badges pages load and actions succeed
 

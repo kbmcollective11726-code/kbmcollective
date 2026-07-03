@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase, isConfigured } from '../lib/supabase';
+import { logAuthAttempt } from '../lib/logAuthAttempt';
 import styles from './Login.module.css';
 
 export default function Login() {
@@ -19,28 +20,48 @@ export default function Login() {
       return;
     }
     setLoading(true);
+    const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string)?.trim() ?? '';
     try {
       const { data, error: err } = await supabase.auth.signInWithPassword({
         email: trimmedEmail,
         password,
       });
-      if (err) throw err;
+      if (err) {
+        logAuthAttempt({
+          email: trimmedEmail,
+          success: false,
+          source: 'cadmin',
+          errorMessage: err.message,
+          anonKey,
+        });
+        throw err;
+      }
       const user = data?.user;
       if (!user?.id) {
+        logAuthAttempt({
+          email: trimmedEmail,
+          success: false,
+          source: 'cadmin',
+          errorMessage: 'Login failed',
+          anonKey,
+        });
         setError('Login failed.');
         setLoading(false);
         return;
       }
+      logAuthAttempt({
+        email: trimmedEmail,
+        success: true,
+        source: 'cadmin',
+        userId: user.id,
+        anonKey,
+      });
       const { data: profile } = await supabase
         .from('users')
         .select('is_platform_admin')
         .eq('id', user.id)
         .single();
       const isPlatformAdmin = (profile as { is_platform_admin?: boolean } | null)?.is_platform_admin === true;
-      if (isPlatformAdmin) {
-        navigate('/', { replace: true });
-        return;
-      }
       const { data: memberRows } = await supabase
         .from('event_members')
         .select('event_id, role, roles')
@@ -51,7 +72,7 @@ export default function Login() {
           r.role === 'super_admin' ||
           (Array.isArray(r.roles) && (r.roles.includes('admin') || r.roles.includes('super_admin')))
       );
-      if (hasEventAdminRole) {
+      if (isPlatformAdmin || hasEventAdminRole) {
         navigate('/', { replace: true });
         return;
       }
