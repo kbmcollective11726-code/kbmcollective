@@ -16,6 +16,31 @@ export type VendorBoothSummary = {
   booth_location: string | null;
 };
 
+/** Booth ids where user is primary contact and/or vendor_booth_reps (always union both). */
+export async function fetchVendorRepBoothIds(
+  eventId: string,
+  userId: string,
+  client: typeof supabase = supabase
+): Promise<string[]> {
+  const [repRes, contactRes] = await Promise.all([
+    client
+      .from('vendor_booth_reps')
+      .select('booth_id, vendor_booths!inner(event_id)')
+      .eq('user_id', userId)
+      .eq('vendor_booths.event_id', eventId),
+    client.from('vendor_booths').select('id').eq('event_id', eventId).eq('contact_user_id', userId),
+  ]);
+
+  const ids = new Set<string>();
+  for (const row of repRes.data ?? []) {
+    ids.add((row as { booth_id: string }).booth_id);
+  }
+  for (const row of contactRes.data ?? []) {
+    ids.add((row as { id: string }).id);
+  }
+  return [...ids];
+}
+
 /** Booths where this user is primary contact or listed in vendor_booth_reps. */
 export async function fetchVendorBoothsForUser(
   eventId: string,

@@ -33,7 +33,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, supabaseStorage } from '../../../lib/supabase';
 import { ensureCurrentEventForId } from '../../../lib/ensureEventForNotification';
-import { fetchBoothRepresentatives, type BoothRepresentative } from '../../../lib/vendorBoothReps';
+import { fetchBoothRepresentatives, fetchVendorRepBoothIds, type BoothRepresentative } from '../../../lib/vendorBoothReps';
 import MeetingRepresentatives from '../../../components/MeetingRepresentatives';
 import { awardPoints } from '../../../lib/points';
 import {
@@ -147,22 +147,10 @@ export default function BoothDetailScreen() {
   const [briefName, setBriefName] = useState('');
   const [briefMeetings, setBriefMeetings] = useState<{ start: string; end: string }[]>([]);
 
-  const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
-    const repsRes = await client
-      .from('vendor_booth_reps')
-      .select('booth_id, vendor_booths!inner(event_id)')
-      .eq('user_id', uid)
-      .eq('vendor_booths.event_id', eventId);
-    if (!repsRes.error) {
-      return (repsRes.data ?? []).map((r: { booth_id: string }) => r.booth_id);
-    }
-    const legacy = await client
-      .from('vendor_booths')
-      .select('id')
-      .eq('event_id', eventId)
-      .eq('contact_user_id', uid);
-    return (legacy.data ?? []).map((b: { id: string }) => b.id);
-  }, []);
+  const fetchRepBoothIds = useCallback(
+    (eventId: string, uid: string, client: typeof supabase) => fetchVendorRepBoothIds(eventId, uid, client),
+    []
+  );
 
   const fetchBoothAndSlots = useCallback(async () => {
     if (!boothId) {

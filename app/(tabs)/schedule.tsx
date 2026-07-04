@@ -72,6 +72,7 @@ import { useRolePreviewContext } from '../../hooks/useRolePreviewContext';
 import { effectiveIsEventAdmin as computeEffectiveEventAdmin } from '../../lib/rolePreview';
 import { awardPoints } from '../../lib/points';
 import { supabase, supabaseStorage, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
+import { fetchVendorRepBoothIds } from '../../lib/vendorBoothReps';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { colors, sessionTypeColors } from '../../constants/colors';
 import type { EventSponsor, ScheduleSession, SessionRating } from '../../lib/types';
@@ -577,23 +578,7 @@ export default function ScheduleScreen() {
       });
 
       // 2) Meetings where current user is the vendor (their booth has a booking)
-      const repsRes = await db
-        .from('vendor_booth_reps')
-        .select('booth_id, vendor_booths!inner(event_id, is_active)')
-        .eq('user_id', user.id)
-        .eq('vendor_booths.event_id', currentEvent.id)
-        .eq('vendor_booths.is_active', true);
-      let myBoothIds = (repsRes.data ?? []).map((b: { booth_id: string }) => b.booth_id);
-      if (repsRes.error) {
-        // Backward-compat fallback for projects before migration
-        const { data: myBooths } = await db
-          .from('vendor_booths')
-          .select('id')
-          .eq('event_id', currentEvent.id)
-          .eq('is_active', true)
-          .eq('contact_user_id', user.id);
-        myBoothIds = (myBooths ?? []).map((b: { id: string }) => b.id);
-      }
+      const myBoothIds = user?.id ? await fetchVendorRepBoothIds(currentEvent.id, user.id, db) : [];
       let vendorList: B2BMeetingItem[] = [];
       if (myBoothIds.length > 0) {
         const { data: slotsData } = await db

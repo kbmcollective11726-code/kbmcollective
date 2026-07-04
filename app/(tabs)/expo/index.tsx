@@ -31,7 +31,7 @@ import { scheduleMeetingReminders, cancelAllMeetingReminders } from '../../../li
 import Avatar from '../../../components/Avatar';
 import MeetingRepresentatives from '../../../components/MeetingRepresentatives';
 import type { VendorBooth } from '../../../lib/types';
-import { fetchRepresentativesByBoothIds, type BoothRepresentative } from '../../../lib/vendorBoothReps';
+import { fetchRepresentativesByBoothIds, fetchVendorRepBoothIds, type BoothRepresentative } from '../../../lib/vendorBoothReps';
 import { formatB2BSlotRangeWallClock } from '../../../lib/b2bEventTime';
 import { fetchVendorPriorInteractionFlags, type VendorPriorInteractionFlag } from '../../../lib/vendorAttendeeBrief';
 import VendorAttendeeBriefModal from '../../../components/VendorAttendeeBriefModal';
@@ -89,23 +89,10 @@ export default function ExpoScreen() {
   const eventTz = currentEvent?.reminder_timezone;
   const vendorBriefEnabled = currentEvent?.vendor_brief_enabled !== false;
 
-  const fetchRepBoothIds = useCallback(async (eventId: string, uid: string, client: typeof supabase) => {
-    const repsRes = await client
-      .from('vendor_booth_reps')
-      .select('booth_id, vendor_booths!inner(event_id)')
-      .eq('user_id', uid)
-      .eq('vendor_booths.event_id', eventId);
-    if (!repsRes.error) {
-      return (repsRes.data ?? []).map((r: { booth_id: string }) => r.booth_id);
-    }
-    // Backward-compat fallback for projects before migration
-    const legacy = await client
-      .from('vendor_booths')
-      .select('id')
-      .eq('event_id', eventId)
-      .eq('contact_user_id', uid);
-    return (legacy.data ?? []).map((b: { id: string }) => b.id);
-  }, []);
+  const fetchRepBoothIds = useCallback(
+    (eventId: string, uid: string, client: typeof supabase) => fetchVendorRepBoothIds(eventId, uid, client),
+    []
+  );
 
   const loadVendorRepBadgeTokens = useCallback(
     async (eventId: string, attendeeIds: string[], client: typeof supabase) => {
@@ -188,7 +175,7 @@ export default function ExpoScreen() {
           computeEffectiveEventAdmin(realEventAdmin, isPlatformAdmin, previewRole);
         const isVendorRep = computeEffectiveVendorRep(repBoothIds.length > 0, isPlatformAdmin, previewRole);
 
-        if (isVendorRep && !isEventAdmin) {
+        if (isVendorRep) {
           setIsVendorRep(true);
           const { data: slotsData } = await client
             .from('meeting_slots')
@@ -287,8 +274,8 @@ export default function ExpoScreen() {
           setRepBadgeTokensByAttendee({});
           setRepNotesByAttendee({});
         }
-        if (!isVendorRep || isEventAdmin) {
-        if (!isEventAdmin) {
+        if (!isVendorRep) {
+          if (!isEventAdmin) {
           type BookingRow = {
             slot_id: string;
             meeting_slots:
@@ -384,7 +371,7 @@ export default function ExpoScreen() {
           if (e) throw e;
           list = (boothData ?? []) as BoothWithMeeting[];
           setRatedMeetingSlotIds(new Set());
-        }
+          }
         }
       } else {
         setIsVendorRep(false);
@@ -546,26 +533,50 @@ export default function ExpoScreen() {
     );
   }
 
-  // Vendor rep first screen: list of people who signed up to meet with them
+  // Vendor rep first screen: every assigned 1:1 meeting (all booths), sorted by time
   if (isVendorRep) {
     const nowMs = Date.now();
-    const isAttendeeUpcoming = (attendee: RepMeetingAttendee) =>
-      attendee.meetingTimes.some((t) => {
-        const endMs = toTimeMs(t.end, eventTz);
-        return Number.isFinite(endMs) && endMs >= nowMs;
-      });
+    type RepMeetingRow = {
+      attendee: RepMeetingAttendee;
+      start: string;
+      end: string;
+      bookingId: string;
+    };
+    const allMeetings: RepMeetingRow[] = repAttendees.flatMap((attendee) =>
+      attendee.meetingTimes.map((t) => ({
+        attendee,
+        start: t.start,
+        end: t.end,
+        bookingId: t.bookingId,
+      }))
+    );
+    allMeetings.sort((a, b) => a.start.localeCompare(b.start));
 
-    const upcomingAttendees = repAttendees.filter(isAttendeeUpcoming);
-    const pastAttendees = repAttendees.filter((a) => !isAttendeeUpcoming(a));
+    const isMeetingUpcoming = (m: RepMeetingRow) => {
+      const endMs = toTimeMs(m.end, eventTz);
+      return Number.isFinite(endMs) && endMs >= nowMs;
+    };
+
+    const upcomingMeetings = allMeetings.filter(isMeetingUpcoming);
+    const pastMeetings = allMeetings.filter((m) => !isMeetingUpcoming(m));
     type RepListRow =
       | { kind: 'section'; id: string; label: string }
-      | { kind: 'attendee'; id: string; attendee: RepMeetingAttendee };
+      | { kind: 'meeting'; id: string; meeting: RepMeetingRow };
     const repListRows: RepListRow[] = [
-      ...(upcomingAttendees.length > 0 ? [{ kind: 'section', id: 'section-upcoming', label: 'Upcoming' } as const] : []),
-      ...upcomingAttendees.map((attendee) => ({ kind: 'attendee', id: `attendee-${attendee.id}`, attendee }) as const),
-      ...(pastAttendees.length > 0 ? [{ kind: 'section', id: 'section-past', label: 'Past' } as const] : []),
-      ...pastAttendees.map((attendee) => ({ kind: 'attendee', id: `attendee-${attendee.id}`, attendee }) as const),
+      ...(upcomingMeetings.length > 0 ? [{ kind: 'section', id: 'section-upcoming', label: 'Upcoming' } as const] : []),
+      ...upcomingMeetings.map((meeting) => ({
+        kind: 'meeting',
+        id: `meeting-${meeting.bookingId}`,
+        meeting,
+      }) as const),
+      ...(pastMeetings.length > 0 ? [{ kind: 'section', id: 'section-past', label: 'Past' } as const] : []),
+      ...pastMeetings.map((meeting) => ({
+        kind: 'meeting',
+        id: `meeting-${meeting.bookingId}`,
+        meeting,
+      }) as const),
     ];
+    const totalMeetings = allMeetings.length;
 
     return (
       <SafeAreaView style={s.container} edges={[]}>
@@ -574,11 +585,11 @@ export default function ExpoScreen() {
             <Text style={s.errorText}>{error}</Text>
           </View>
         ) : null}
-        {repAttendees.length === 0 ? (
+        {totalMeetings === 0 ? (
           <View style={s.centered}>
             <Users size={48} color={colors.textMuted} />
             <Text style={s.emptyText}>No meetings assigned to you yet.</Text>
-            <Text style={s.emptySubtext}>Once meetings are assigned, they will appear here.</Text>
+            <Text style={s.emptySubtext}>Once meetings are assigned to your booth, they will appear here.</Text>
           </View>
         ) : (
           <FlatList
@@ -590,8 +601,10 @@ export default function ExpoScreen() {
             }
             ListHeaderComponent={
               <View style={s.repHeader}>
-                <Text style={s.repTitle}>People you're meeting with</Text>
-                <Text style={s.repSubtitle}>{repAttendees.length} {repAttendees.length === 1 ? 'person' : 'people'} signed up</Text>
+                <Text style={s.repTitle}>Your 1:1 meetings</Text>
+                <Text style={s.repSubtitle}>
+                  {totalMeetings} {totalMeetings === 1 ? 'meeting' : 'meetings'} assigned to you
+                </Text>
               </View>
             }
             renderItem={({ item }) => {
@@ -602,7 +615,7 @@ export default function ExpoScreen() {
                   </View>
                 );
               }
-              const attendee = item.attendee;
+              const { attendee, start, end } = item.meeting;
               const attendeeToken = repBadgeTokensByAttendee[attendee.id];
               const savedNote = repNotesByAttendee[attendee.id]?.trim() ?? '';
               const flag = priorFlags.get(attendee.id);
@@ -621,6 +634,7 @@ export default function ExpoScreen() {
                 >
                   <Avatar uri={attendee.avatar_url} name={attendee.full_name} size={48} />
                   <View style={s.attendeeBody}>
+                    <Text style={s.attendeeTime}>{formatB2BSlotRangeWallClock(start, end)}</Text>
                     <Text style={s.attendeeName} numberOfLines={1}>{attendee.full_name || 'Unknown'}</Text>
                     {metBefore ? (
                       <View style={s.metBeforeChip}>
@@ -632,14 +646,6 @@ export default function ExpoScreen() {
                     ) : null}
                     {attendee.company ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.company}</Text> : null}
                     {attendee.title ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.title}</Text> : null}
-                    {attendee.meetingTimes.length > 0 ? (
-                      <View style={s.attendeeTimes}>
-                        {attendee.meetingTimes.slice(0, 2).map((t, i) => (
-                          <Text key={i} style={s.attendeeTime}>{formatB2BSlotRangeWallClock(t.start, t.end)}</Text>
-                        ))}
-                        {attendee.meetingTimes.length > 2 ? <Text style={s.attendeeTime}>+{attendee.meetingTimes.length - 2} more</Text> : null}
-                      </View>
-                    ) : null}
                     {savedNote ? (
                       <Text style={s.savedNotePreview} numberOfLines={2}>
                         {savedNote}
