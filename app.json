@@ -25,7 +25,7 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kbmcollective.collectivelive",
-      "buildNumber": "40",
+      "buildNumber": "41",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSCameraUsageDescription": "When you use Post a photo, KBM Connect uses the camera so you can take a new picture to share on the event activity feed or add to your profile. For example, you can capture a moment at a session and publish it as a post for other attendees.",
@@ -34,7 +34,7 @@
       }
     },
     "android": {
-      "versionCode": 12,
+      "versionCode": 13,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-safe.png",
         "backgroundColor": "#000000"
