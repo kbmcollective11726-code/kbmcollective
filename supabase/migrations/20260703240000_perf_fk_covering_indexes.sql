@@ -1,0 +1,42 @@
+-- Performance: add covering indexes for foreign keys flagged by Supabase advisor
+-- (unindexed_foreign_keys). Indexes are additive and non-breaking: they only
+-- speed up joins and cascading deletes and never change query results.
+
+CREATE INDEX IF NOT EXISTS idx_announcements_sent_by ON announcements (sent_by);
+CREATE INDEX IF NOT EXISTS idx_badge_scan_meeting_attendance_meeting_booking_id ON badge_scan_meeting_attendance (meeting_booking_id);
+CREATE INDEX IF NOT EXISTS idx_badge_scan_meeting_attendance_scanner_user_id ON badge_scan_meeting_attendance (scanner_user_id);
+CREATE INDEX IF NOT EXISTS idx_badge_scans_subject_user_id ON badge_scans (subject_user_id);
+CREATE INDEX IF NOT EXISTS idx_chat_group_event_event_id ON chat_group_event (event_id);
+CREATE INDEX IF NOT EXISTS idx_chat_groups_created_by ON chat_groups (created_by);
+CREATE INDEX IF NOT EXISTS idx_comments_user_id ON comments (user_id);
+CREATE INDEX IF NOT EXISTS idx_connection_requests_requested_user_id ON connection_requests (requested_user_id);
+CREATE INDEX IF NOT EXISTS idx_connection_requests_requester_id ON connection_requests (requester_id);
+CREATE INDEX IF NOT EXISTS idx_connections_connected_user_id ON connections (connected_user_id);
+CREATE INDEX IF NOT EXISTS idx_connections_user_id ON connections (user_id);
+CREATE INDEX IF NOT EXISTS idx_event_badge_tokens_user_id ON event_badge_tokens (user_id);
+CREATE INDEX IF NOT EXISTS idx_event_match_reviews_from_submission_id ON event_match_reviews (from_submission_id);
+CREATE INDEX IF NOT EXISTS idx_event_match_reviews_reviewed_by ON event_match_reviews (reviewed_by);
+CREATE INDEX IF NOT EXISTS idx_event_match_reviews_to_submission_id ON event_match_reviews (to_submission_id);
+CREATE INDEX IF NOT EXISTS idx_event_match_scheduled_meetings_created_by ON event_match_scheduled_meetings (created_by);
+CREATE INDEX IF NOT EXISTS idx_event_match_scheduled_meetings_review_id ON event_match_scheduled_meetings (review_id);
+CREATE INDEX IF NOT EXISTS idx_event_match_scheduled_meetings_submission_a_id ON event_match_scheduled_meetings (submission_a_id);
+CREATE INDEX IF NOT EXISTS idx_event_match_scheduled_meetings_submission_b_id ON event_match_scheduled_meetings (submission_b_id);
+CREATE INDEX IF NOT EXISTS idx_event_registration_answers_question_id ON event_registration_answers (question_id);
+CREATE INDEX IF NOT EXISTS idx_event_sponsor_clicks_sponsor_id ON event_sponsor_clicks (sponsor_id);
+CREATE INDEX IF NOT EXISTS idx_event_sponsor_clicks_user_id ON event_sponsor_clicks (user_id);
+CREATE INDEX IF NOT EXISTS idx_events_created_by ON events (created_by);
+CREATE INDEX IF NOT EXISTS idx_group_messages_sender_id ON group_messages (sender_id);
+CREATE INDEX IF NOT EXISTS idx_likes_user_id ON likes (user_id);
+CREATE INDEX IF NOT EXISTS idx_meeting_slots_booth_id ON meeting_slots (booth_id);
+CREATE INDEX IF NOT EXISTS idx_messages_event_id ON messages (event_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_event_id ON notifications (event_id);
+CREATE INDEX IF NOT EXISTS idx_platform_audit_log_actor_user_id ON platform_audit_log (actor_user_id);
+CREATE INDEX IF NOT EXISTS idx_platform_audit_log_event_id ON platform_audit_log (event_id);
+CREATE INDEX IF NOT EXISTS idx_platform_test_guides_updated_by ON platform_test_guides (updated_by);
+CREATE INDEX IF NOT EXISTS idx_point_log_event_id ON point_log (event_id);
+CREATE INDEX IF NOT EXISTS idx_session_check_ins_checked_in_by_user_id ON session_check_ins (checked_in_by_user_id);
+CREATE INDEX IF NOT EXISTS idx_session_check_ins_subject_user_id ON session_check_ins (subject_user_id);
+CREATE INDEX IF NOT EXISTS idx_user_schedule_session_id ON user_schedule (session_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_booth_reps_user_id ON vendor_booth_reps (user_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_booths_contact_user_id ON vendor_booths (contact_user_id);
+CREATE INDEX IF NOT EXISTS idx_vendor_booths_event_id ON vendor_booths (event_id);
