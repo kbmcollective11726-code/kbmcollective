@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { postgrestErrorMessage } from '../../lib/postgrestErrorMessage';
+import { syncSubmissionSolutionCategories } from '../../lib/syncSolutionCategories';
 import type { EventRegistrationQuestion, EventRegistrationQuestionOption } from '../../lib/types';
 import type { VendorPortalContext } from './VendorPortalLayout';
 import styles from '../delegate-portal/DelegatePortal.module.css';
@@ -156,6 +157,7 @@ export default function VendorRegistrationDetails() {
         if (upsErr) throw upsErr;
       }
 
+      await syncSubmissionSolutionCategories(submission.id);
       await reloadSubmission();
       setSuccess(profileComplete ? 'Profile complete — you are in the matching pool.' : 'Registration details saved.');
     } catch (e) {

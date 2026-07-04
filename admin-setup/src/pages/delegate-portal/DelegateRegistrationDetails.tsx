@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { postgrestErrorMessage } from '../../lib/postgrestErrorMessage';
+import { syncSubmissionSolutionCategories } from '../../lib/syncSolutionCategories';
 import type { EventRegistrationQuestion, EventRegistrationQuestionOption } from '../../lib/types';
 import type { DelegatePortalContext } from './DelegatePortalLayout';
 import styles from './DelegatePortal.module.css';
@@ -156,6 +157,7 @@ export default function DelegateRegistrationDetails() {
         if (upsErr) throw upsErr;
       }
 
+      await syncSubmissionSolutionCategories(submission.id);
       await reloadSubmission();
       setSuccess(profileComplete ? 'Profile complete — you are in the matching pool.' : 'Registration details saved.');
     } catch (e) {
@@ -212,18 +214,35 @@ export default function DelegateRegistrationDetails() {
                   value={typeof value === 'string' ? value : ''}
                   onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
                 />
-              ) : q.question_type === 'single_select' ? (
-                <select
-                  value={typeof value === 'string' ? value : ''}
-                  onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                >
-                  <option value="">Select</option>
-                  {list.map((opt) => (
-                    <option key={opt.id} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+              ) : q.question_type === 'single_select' || q.question_type === 'multi_select' ? (
+                q.question_type === 'multi_select' ? (
+                  <select
+                    multiple
+                    value={Array.isArray(value) ? value : []}
+                    onChange={(e) => {
+                      const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+                      setAnswers((prev) => ({ ...prev, [q.id]: selected }));
+                    }}
+                  >
+                    {list.map((opt) => (
+                      <option key={opt.id} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={typeof value === 'string' ? value : ''}
+                    onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                  >
+                    <option value="">Select</option>
+                    {list.map((opt) => (
+                      <option key={opt.id} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                )
               ) : (
                 <input
                   type={q.question_type === 'email' ? 'email' : q.question_type === 'number' ? 'number' : 'text'}

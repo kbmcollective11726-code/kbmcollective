@@ -25,6 +25,33 @@ import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
 import MatchmakingSolutionCategories from '../components/MatchmakingSolutionCategories';
 import styles from './EventMatchmaking.module.css';
 
+interface MatchConfigWeights {
+  weight_category: number;
+  weight_goals: number;
+  weight_seniority: number;
+  weight_revenue: number;
+  weight_budget: number;
+  weight_scope: number;
+  weight_semantic: number;
+}
+
+const DEFAULT_MATCH_CONFIG: MatchConfigWeights = {
+  weight_category: 40,
+  weight_goals: 15,
+  weight_seniority: 10,
+  weight_revenue: 10,
+  weight_budget: 10,
+  weight_scope: 10,
+  weight_semantic: 5,
+};
+
+type RankedMatch = {
+  candidate: EventRegistrationSubmission;
+  score: number;
+  overlap: number;
+  review: EventMatchReview | null;
+};
+
 const QUESTION_TYPE_OPTIONS: MatchmakingQuestionType[] = [
   'text',
   'textarea',
@@ -378,6 +405,10 @@ export default function EventMatchmaking() {
   const [generatingSuggestions, setGeneratingSuggestions] = useState(false);
   const [submissionActionId, setSubmissionActionId] = useState('');
   const [publishingMeetingId, setPublishingMeetingId] = useState('');
+  const [matchConfig, setMatchConfig] = useState<MatchConfigWeights>(DEFAULT_MATCH_CONFIG);
+  const [savingMatchConfig, setSavingMatchConfig] = useState(false);
+  const [suggestedMatches, setSuggestedMatches] = useState<RankedMatch[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
 
   const [newFormName, setNewFormName] = useState('');
   const [newFormAudience, setNewFormAudience] = useState<MatchmakingAudience>('attendee');
@@ -533,58 +564,54 @@ export default function EventMatchmaking() {
     [meetingRequests, selectedSubmissionId]
   );
   const questionById = useMemo(() => new Map(questions.map((q) => [q.id, q])), [questions]);
-  const suggestedMatches = useMemo(() => {
-    if (!selectedSubmission) return [];
-    const targetAudience: MatchmakingAudience = selectedSubmission.attendee_type === 'vendor' ? 'attendee' : 'vendor';
-    const selectedAnswers = answers.filter((a) => a.submission_id === selectedSubmission.id);
-    const selectedSignals = new Set<string>();
-    selectedAnswers.forEach((ans) => {
-      const q = questionById.get(ans.question_id);
-      if (!q) return;
-      const isCategory = ['Coaching', 'Consulting & Services', 'Culture, Engagement & Wellness', 'Technologies', 'Training', 'Workforce & Leadership Development', 'Compensation & Benefits', 'Corporate Wellness Services', 'Employee Relations', 'Executive Training & Leadership Development', 'HR Software & Technologies', 'Learning & Development Training & Programs', 'Organizational Culture', 'Talent / Human Capital Management (HCM)', 'Talent Acquisition & Management'].includes(q.prompt);
-      if (!isCategory) return;
-      if (Array.isArray(ans.answer_json)) {
-        (ans.answer_json as string[]).forEach((x) => selectedSignals.add(String(x).toLowerCase()));
-      } else if (ans.answer_text) {
-        ans.answer_text
-          .split(',')
-          .map((x) => x.trim().toLowerCase())
-          .filter(Boolean)
-          .forEach((x) => selectedSignals.add(x));
-      }
-    });
-    const candidates = submissions.filter((s) => s.attendee_type === targetAudience && s.id !== selectedSubmission.id);
-    return candidates
-      .map((cand) => {
-        const candAnswers = answers.filter((a) => a.submission_id === cand.id);
-        const candSignals = new Set<string>();
-        candAnswers.forEach((ans) => {
-          if (Array.isArray(ans.answer_json)) {
-            (ans.answer_json as string[]).forEach((x) => candSignals.add(String(x).toLowerCase()));
-          } else if (ans.answer_text) {
-            ans.answer_text
-              .split(',')
-              .map((x) => x.trim().toLowerCase())
-              .filter(Boolean)
-              .forEach((x) => candSignals.add(x));
-          }
+
+  useEffect(() => {
+    if (!eventId || !selectedSubmission) {
+      setSuggestedMatches([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setLoadingSuggestions(true);
+      try {
+        const { data, error: rpcErr } = await supabase.rpc('rank_submission_matches', {
+          p_event_id: eventId,
+          p_submission_id: selectedSubmission.id,
+          p_limit: 12,
         });
-        let overlap = 0;
-        selectedSignals.forEach((sig) => {
-          if (candSignals.has(sig)) overlap += 1;
-        });
-        const textBoost =
-          selectedSubmissionRequests.some((r) => (r.target_company_name ?? '').toLowerCase() === (cand.company_name ?? '').toLowerCase()) ? 2 : 0;
-        const existingReview = reviews.find(
-          (r) =>
-            r.from_submission_id === selectedSubmission.id &&
-            r.to_submission_id === cand.id
+        if (rpcErr) throw rpcErr;
+        if (cancelled) return;
+        const rows = (data ?? []) as Array<{ candidate_id: string; score: number; category_overlap: number }>;
+        const submissionById = new Map(submissions.map((s) => [s.id, s]));
+        setSuggestedMatches(
+          rows
+            .filter((row) => row.score > 0)
+            .map((row) => {
+              const candidate = submissionById.get(row.candidate_id);
+              if (!candidate) return null;
+              const existingReview = reviews.find(
+                (rev) =>
+                  rev.from_submission_id === selectedSubmission.id && rev.to_submission_id === row.candidate_id
+              );
+              return {
+                candidate,
+                score: row.score,
+                overlap: row.category_overlap,
+                review: existingReview ?? null,
+              };
+            })
+            .filter((item): item is RankedMatch => item != null)
         );
-        return { candidate: cand, score: overlap + textBoost, overlap, review: existingReview ?? null };
-      })
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 12);
-  }, [selectedSubmission, submissions, answers, questionById, selectedSubmissionRequests, reviews]);
+      } catch {
+        if (!cancelled) setSuggestedMatches([]);
+      } finally {
+        if (!cancelled) setLoadingSuggestions(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId, selectedSubmission, submissions, reviews]);
 
   const load = useCallback(async () => {
     if (!eventId) return;
@@ -652,6 +679,26 @@ export default function EventMatchmaking() {
       setDelegateStage2Active(Boolean(settings?.delegate_stage2_active));
       setVendorStage2Active(Boolean(settings?.vendor_stage2_active));
       setStage2HoldingMessage(settings?.stage2_holding_message ?? '');
+
+      const { data: matchConfigRow, error: matchConfigErr } = await supabase
+        .from('event_match_config')
+        .select('weight_category, weight_goals, weight_seniority, weight_revenue, weight_budget, weight_scope, weight_semantic')
+        .eq('event_id', eventId)
+        .maybeSingle();
+      if (matchConfigErr) throw matchConfigErr;
+      if (matchConfigRow) {
+        setMatchConfig({
+          weight_category: matchConfigRow.weight_category ?? DEFAULT_MATCH_CONFIG.weight_category,
+          weight_goals: matchConfigRow.weight_goals ?? DEFAULT_MATCH_CONFIG.weight_goals,
+          weight_seniority: matchConfigRow.weight_seniority ?? DEFAULT_MATCH_CONFIG.weight_seniority,
+          weight_revenue: matchConfigRow.weight_revenue ?? DEFAULT_MATCH_CONFIG.weight_revenue,
+          weight_budget: matchConfigRow.weight_budget ?? DEFAULT_MATCH_CONFIG.weight_budget,
+          weight_scope: matchConfigRow.weight_scope ?? DEFAULT_MATCH_CONFIG.weight_scope,
+          weight_semantic: matchConfigRow.weight_semantic ?? DEFAULT_MATCH_CONFIG.weight_semantic,
+        });
+      } else {
+        setMatchConfig(DEFAULT_MATCH_CONFIG);
+      }
 
       const nextFormsRaw = (formRows as EventRegistrationForm[]) ?? [];
       const nextForms = await normalizeLegacyFormNames(nextFormsRaw);
@@ -1024,6 +1071,24 @@ export default function EventMatchmaking() {
     }
   };
 
+  const saveMatchConfig = async () => {
+    if (!eventId) return;
+    setSavingMatchConfig(true);
+    setError('');
+    try {
+      const { error: upsertErr } = await supabase.from('event_match_config').upsert({
+        event_id: eventId,
+        ...matchConfig,
+        updated_at: new Date().toISOString(),
+      });
+      if (upsertErr) throw upsertErr;
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not save match scoring weights');
+    } finally {
+      setSavingMatchConfig(false);
+    }
+  };
+
   const updateRegistrationStatus = async (submission: EventRegistrationSubmission, status: 'approved' | 'rejected') => {
     if (status === 'rejected' && !window.confirm('Reject this registrant? They will be blocked from the portal.')) return;
     setSubmissionActionId(submission.id);
@@ -1075,6 +1140,14 @@ export default function EventMatchmaking() {
     setGeneratingSuggestions(true);
     setError('');
     try {
+      const approved = submissions.filter((s) => s.registration_status === 'approved' && s.status === 'submitted');
+      for (const sub of approved) {
+        const { error: syncErr } = await supabase.rpc('sync_submission_solution_categories', {
+          p_submission_id: sub.id,
+        });
+        if (syncErr) throw syncErr;
+      }
+
       const { error: rpcErr } = await supabase.rpc('generate_event_match_suggestions', {
         p_event_id: eventId,
         p_limit: 200,
@@ -1743,12 +1816,55 @@ export default function EventMatchmaking() {
               style={{ width: '100%', marginTop: 6 }}
             />
           </label>
+          <button type="button" disabled={savingPortalSettings} onClick={() => void savePortalSettings()}>
+            {savingPortalSettings ? 'Saving…' : 'Save Stage 2 settings'}
+          </button>
         </div>
       </section>
 
       <section className={styles.section}>
         <h2>Solution categories</h2>
         {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
+      </section>
+
+      <section className={styles.section}>
+        <h2>Match scoring weights</h2>
+        <p className={styles.hint}>
+          Adjust how much each signal contributes to server-side match scores. Category overlap uses solution categories synced from
+          multi_select answers when profiles are saved.
+        </p>
+        <div className={styles.grid2}>
+          {(
+            [
+              ['weight_category', 'Solution category overlap'],
+              ['weight_goals', 'Goals / priorities overlap'],
+              ['weight_seniority', 'Seniority (C-suite signal)'],
+              ['weight_revenue', 'Revenue tier match'],
+              ['weight_budget', 'Budget tier match'],
+              ['weight_scope', 'Scope of responsibility match'],
+              ['weight_semantic', 'Semantic (reserved for v1.1)'],
+            ] as const
+          ).map(([key, label]) => (
+            <label key={key}>
+              {label}
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={matchConfig[key]}
+                onChange={(e) =>
+                  setMatchConfig((prev) => ({
+                    ...prev,
+                    [key]: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                  }))
+                }
+              />
+            </label>
+          ))}
+        </div>
+        <button type="button" disabled={savingMatchConfig} onClick={() => void saveMatchConfig()} style={{ marginTop: 12 }}>
+          {savingMatchConfig ? 'Saving…' : 'Save scoring weights'}
+        </button>
       </section>
 
       <section className={styles.section}>
@@ -2419,8 +2535,10 @@ export default function EventMatchmaking() {
             </div>
             <div>
               <h3>Top ranked suggestions</h3>
-              {suggestedMatches.length === 0 ? (
-                <p className={styles.hint}>No compatible matches yet.</p>
+              {loadingSuggestions ? (
+                <p className={styles.hint}>Computing server-side match scores…</p>
+              ) : suggestedMatches.length === 0 ? (
+                <p className={styles.hint}>No compatible matches yet. Ensure profiles are complete and categories are selected.</p>
               ) : (
                 <div className={styles.tableWrap}>
                   <table>
