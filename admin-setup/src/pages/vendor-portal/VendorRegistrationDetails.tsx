@@ -3,8 +3,8 @@ import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { postgrestErrorMessage } from '../../lib/postgrestErrorMessage';
 import type { EventRegistrationQuestion, EventRegistrationQuestionOption } from '../../lib/types';
-import type { DelegatePortalContext } from './DelegatePortalLayout';
-import styles from './DelegatePortal.module.css';
+import type { VendorPortalContext } from './VendorPortalLayout';
+import styles from '../delegate-portal/DelegatePortal.module.css';
 
 type AnswerMap = Record<string, string | string[]>;
 
@@ -30,8 +30,8 @@ function requiredQuestionsComplete(questions: EventRegistrationQuestion[], answe
     });
 }
 
-export default function DelegateRegistrationDetails() {
-  const { submission, reloadSubmission } = useOutletContext<DelegatePortalContext>();
+export default function VendorRegistrationDetails() {
+  const { submission, reloadSubmission } = useOutletContext<VendorPortalContext>();
   const [questions, setQuestions] = useState<EventRegistrationQuestion[]>([]);
   const [options, setOptions] = useState<EventRegistrationQuestionOption[]>([]);
   const [answers, setAnswers] = useState<AnswerMap>({});
@@ -98,7 +98,7 @@ export default function DelegateRegistrationDetails() {
   }, [submission.form_id, submission.id]);
 
   const duplicatePrompts = useMemo(
-    () => new Set(['company name', 'first name', 'last name', 'e-mail address', 'email', 'job title']),
+    () => new Set(['company name', 'first name', 'last name', 'e-mail address', 'email', 'job title', 'username']),
     []
   );
 
@@ -170,7 +170,7 @@ export default function DelegateRegistrationDetails() {
   return (
     <div className={styles.card}>
       <h1>Registration Details</h1>
-      <p className={styles.hint}>Find below your previously submitted registration details. You may make adjustments if needed.</p>
+      <p className={styles.hint}>Update your vendor profile and opt in to 1:1 delegate matching when your profile is complete.</p>
       {error ? <p className={styles.error}>{error}</p> : null}
       {success ? <p className={styles.success}>{success}</p> : null}
 
@@ -212,18 +212,35 @@ export default function DelegateRegistrationDetails() {
                   value={typeof value === 'string' ? value : ''}
                   onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
                 />
-              ) : q.question_type === 'single_select' ? (
-                <select
-                  value={typeof value === 'string' ? value : ''}
-                  onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
-                >
-                  <option value="">Select</option>
-                  {list.map((opt) => (
-                    <option key={opt.id} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
+              ) : q.question_type === 'single_select' || q.question_type === 'multi_select' ? (
+                q.question_type === 'multi_select' ? (
+                  <select
+                    multiple
+                    value={Array.isArray(value) ? value : []}
+                    onChange={(e) => {
+                      const selected = Array.from(e.target.selectedOptions).map((o) => o.value);
+                      setAnswers((prev) => ({ ...prev, [q.id]: selected }));
+                    }}
+                  >
+                    {list.map((opt) => (
+                      <option key={opt.id} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <select
+                    value={typeof value === 'string' ? value : ''}
+                    onChange={(e) => setAnswers((prev) => ({ ...prev, [q.id]: e.target.value }))}
+                  >
+                    <option value="">Select</option>
+                    {list.map((opt) => (
+                      <option key={opt.id} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                )
               ) : (
                 <input
                   type={q.question_type === 'email' ? 'email' : q.question_type === 'number' ? 'number' : 'text'}
@@ -238,7 +255,7 @@ export default function DelegateRegistrationDetails() {
 
       <label className={styles.checkboxInline} style={{ marginTop: 16, display: 'block' }}>
         <input type="checkbox" checked={matchingOptIn} onChange={(e) => setMatchingOptIn(e.target.checked)} />
-        {' '}Opt in to 1:1 vendor matching (requires a complete profile)
+        {' '}Opt in to 1:1 delegate matching (requires a complete profile)
       </label>
 
       <button type="button" className={styles.primaryBtn} disabled={saving} onClick={() => void save()}>

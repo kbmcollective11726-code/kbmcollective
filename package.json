@@ -23,6 +23,8 @@
     "supabase:fix-recursion": "node scripts/run-supabase-sql.mjs supabase/FIX-GROUP-RECURSION.sql",
     "supabase:check-tables": "node scripts/check-supabase-tables.mjs",
     "supabase:verify": "node scripts/verify-supabase-remote.mjs",
+    "supabase:connect-setup": "node scripts/supabase-connect-setup.mjs",
+    "kbm:auth": "node scripts/kbm-auth-status.mjs",
     "ios:build-number": "node scripts/ios-build-preflight.mjs",
     "build:ios:testflight": "node scripts/ios-build-preflight.mjs && eas build --platform ios --profile production --auto-submit --non-interactive",
     "submit:ios": "eas submit --platform ios --latest --profile production"

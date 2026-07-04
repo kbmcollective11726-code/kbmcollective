@@ -126,6 +126,7 @@ export interface EventRegistrationQuestion {
   prompt: string;
   is_base_question?: boolean;
   is_hidden?: boolean;
+  used_in_matching?: boolean;
   section_label: string | null;
   field_key: string | null;
   help_text: string | null;
@@ -159,6 +160,11 @@ export interface EventRegistrationSubmission {
   job_title: string | null;
   status: 'draft' | 'submitted';
   submitted_at: string | null;
+  profile_complete?: boolean;
+  registration_status?: 'pending_review' | 'approved' | 'rejected';
+  matching_opt_in?: boolean;
+  meeting_availability?: unknown;
+  rejected_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -210,6 +216,8 @@ export interface EventMatchScheduledMeeting {
   end_time: string;
   location: string | null;
   status: 'scheduled' | 'cancelled' | 'completed';
+  published_to_app_at?: string | null;
+  app_booking_id?: string | null;
   created_by: string | null;
   created_at: string;
   updated_at: string;

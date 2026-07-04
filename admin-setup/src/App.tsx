@@ -37,6 +37,29 @@ import EventSafety from './pages/EventSafety';
 import EventAdminTiles from './pages/EventAdminTiles';
 import BadgeOpen from './pages/BadgeOpen';
 import { portalRouteElements } from './PortalRoutes';
+import ConnectHome from './pages/ConnectHome';
+import { CADMIN_HOST, CONNECT_HOST, isConnectHost } from './lib/connectHost';
+
+function UnauthenticatedEntry() {
+  if (isConnectHost()) return <ConnectHome />;
+  return <Navigate to="/login" replace />;
+}
+
+function ConnectHostRedirect() {
+  const location = useLocation();
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (window.location.hostname !== CONNECT_HOST) return;
+    const isAdminPath =
+      location.pathname.startsWith('/events') ||
+      location.pathname.startsWith('/platform') ||
+      location.pathname === '/login';
+    if (isAdminPath) {
+      window.location.replace(`https://${CADMIN_HOST}${location.pathname}${location.search}${location.hash}`);
+    }
+  }, [location]);
+  return null;
+}
 
 export default function App() {
   const location = useLocation();
@@ -66,9 +89,12 @@ export default function App() {
 
   if (isBadgeOpenRoute) {
     return (
-      <Routes>
-        <Route path="/badge" element={<BadgeOpen />} />
-      </Routes>
+      <>
+        <ConnectHostRedirect />
+        <Routes>
+          <Route path="/badge" element={<BadgeOpen />} />
+        </Routes>
+      </>
     );
   }
 
@@ -83,23 +109,37 @@ export default function App() {
   if (isPortalRoute || isRegisterRoute || !session) {
     if (!session && !isPortalRoute && !isRegisterRoute) {
       return (
-        <Routes>
-          <Route path="/login" element={<Login />} />
-          {portalRouteElements()}
-          <Route path="*" element={<Navigate to="/login" replace />} />
-        </Routes>
+        <>
+          <ConnectHostRedirect />
+          <Routes>
+            <Route path="/login" element={<Login />} />
+            {portalRouteElements()}
+            <Route path="/" element={<UnauthenticatedEntry />} />
+            <Route path="*" element={<UnauthenticatedEntry />} />
+          </Routes>
+        </>
       );
     }
     return (
-      <Routes>
-        {portalRouteElements()}
-        {!session ? <Route path="*" element={<Navigate to="/login" replace />} /> : null}
-      </Routes>
+      <>
+        <ConnectHostRedirect />
+        <Routes>
+          {portalRouteElements()}
+          {!session ? (
+            <>
+              <Route path="/" element={<UnauthenticatedEntry />} />
+              <Route path="*" element={<UnauthenticatedEntry />} />
+            </>
+          ) : null}
+        </Routes>
+      </>
     );
   }
 
   return (
-    <Routes>
+    <>
+      <ConnectHostRedirect />
+      <Routes>
       {portalRouteElements()}
       <Route path="/" element={<Layout />}>
         <Route index element={<EventList />} />
@@ -133,5 +173,6 @@ export default function App() {
       <Route path="/login" element={<Navigate to="/" replace />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   );
 }

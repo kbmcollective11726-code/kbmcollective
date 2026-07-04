@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
+import PortalHoldingScreen from '../../components/PortalHoldingScreen';
 import {
   formatEventDateRange,
+  isStage2Active,
   linkAndLoadDelegateSubmission,
   loadDelegatePortalEvent,
   loadDelegatePortalSettings,
@@ -65,6 +67,9 @@ export default function DelegatePortalLayout() {
           navigate(`/portal/${eventId}/delegate/login`, { replace: true, state: { error: 'No submitted registration found for this account.' } });
           return;
         }
+        if (sub.registration_status === 'rejected') {
+          throw new Error('Your registration was not approved. Contact the event organizer.');
+        }
         const profileEmail = sessionData.session.user.email ?? '';
         const name = [sub.first_name, sub.last_name].filter(Boolean).join(' ') || profileEmail;
         if (!cancelled) {
@@ -111,11 +116,11 @@ export default function DelegatePortalLayout() {
     if (location.pathname.includes('/meetings/')) return null;
     const next = visibleSteps[currentStepIndex + 1];
     if (!next) {
-      if (settings?.meeting_requests_open) return delegateStepPath(eventId, 'meetings/request');
+      if (settings?.meeting_requests_open && submission?.profile_complete) return delegateStepPath(eventId, 'meetings/request');
       return null;
     }
     return delegateStepPath(eventId, next);
-  }, [currentStepIndex, eventId, location.pathname, settings?.meeting_requests_open, visibleSteps]);
+  }, [currentStepIndex, eventId, location.pathname, settings?.meeting_requests_open, submission?.profile_complete, visibleSteps]);
 
   const logout = async () => {
     await supabase.auth.signOut();
@@ -125,6 +130,10 @@ export default function DelegatePortalLayout() {
   if (loading) return <div className={styles.loading}>Loading your registration portal…</div>;
   if (error || !event || !settings || !submission) {
     return <div className={styles.loginWrap}><p className={styles.error}>{error || 'Portal unavailable.'}</p></div>;
+  }
+
+  if (!isStage2Active(settings, 'delegate')) {
+    return <PortalHoldingScreen eventName={event.name} message={settings.stage2_holding_message} />;
   }
 
   const dateRange = formatEventDateRange(event.start_date, event.end_date);
@@ -155,7 +164,7 @@ export default function DelegatePortalLayout() {
         <NavLink to={delegateStepPath(event.id, 'registration')} className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
           Registration Details
         </NavLink>
-        {settings.meeting_requests_open ? (
+        {settings.meeting_requests_open && submission.profile_complete ? (
           <div
             className={styles.navDropdown}
             onMouseEnter={() => setMeetingsOpen(true)}
@@ -183,6 +192,12 @@ export default function DelegatePortalLayout() {
           </button>
         </div>
       </nav>
+
+      {!submission.profile_complete ? (
+        <div className={styles.bannerHint} style={{ padding: '12px 20px', background: '#fef3c7', color: '#92400e' }}>
+          Complete your profile in Registration Details to join the 1:1 matching pool.
+        </div>
+      ) : null}
 
       <main className={styles.main}>
         <Outlet context={{ event, settings, submission, reloadSubmission } satisfies DelegatePortalContext} />

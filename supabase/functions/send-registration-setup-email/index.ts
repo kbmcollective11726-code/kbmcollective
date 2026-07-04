@@ -17,12 +17,18 @@ function json(body: object, status: number) {
   });
 }
 
-function registrationEmailContent(eventName: string, fullName: string, actionLink: string) {
+function registrationEmailContent(
+  eventName: string,
+  fullName: string,
+  actionLink: string,
+  roleLabel: 'delegate' | 'vendor',
+) {
   const subject = `Complete your registration — ${eventName}`;
   const greeting = fullName ? `Hi ${fullName},` : "Hi,";
+  const portalName = roleLabel === 'vendor' ? 'vendor portal' : 'delegate portal';
   const html = `<p>${greeting}</p>
 <p>Thank you for registering for <strong>${eventName}</strong>.</p>
-<p>Click the button below to choose your password and sign in to your delegate portal.</p>
+<p>Click the button below to choose your password and sign in to your ${portalName}.</p>
 <p style="margin:24px 0"><a href="${actionLink}" style="display:inline-block;background:#1e4f8a;color:#fff;padding:12px 20px;text-decoration:none;border-radius:4px;font-weight:600">Complete registration</a></p>
 <p style="color:#555;font-size:14px">If the button does not work, copy this link into your browser:<br/><a href="${actionLink}">${actionLink}</a></p>
 <p style="color:#555;font-size:14px">This link expires after a short time. If it stops working, submit the registration form again to receive a new link.</p>`;
@@ -120,7 +126,11 @@ Deno.serve(async (req: Request) => {
     Deno.env.get("REGISTRATION_FROM_EMAIL") ??
     Deno.env.get("SECURITY_ALERT_FROM_EMAIL") ??
     "KBM Connect <noreply@kbmcollective.org>";
-  const cadminBase = (Deno.env.get("CADMIN_BASE_URL") ?? "https://cadmin.kbmcollective.org").replace(/\/+$/, "");
+  const portalBase = (
+    Deno.env.get("PUBLIC_PORTAL_BASE_URL") ??
+    Deno.env.get("CONNECT_BASE_URL") ??
+    "https://connect.kbmcollective.org"
+  ).replace(/\/+$/, "");
 
   if (!supabaseUrl || !serviceRoleKey || !anonKey) {
     return json({ error: "Server configuration error" }, 500);
@@ -159,7 +169,9 @@ Deno.serve(async (req: Request) => {
   const { data: eventRow } = await admin.from("events").select("name").eq("id", eventId).maybeSingle();
   const eventName = (eventRow as { name?: string } | null)?.name ?? "your event";
 
-  const redirectTo = `${cadminBase}/portal/${eventId}/delegate/set-password`;
+  const rolePath = attendeeType === "vendor" ? "vendor" : "delegate";
+  const redirectTo = `${portalBase}/portal/${eventId}/${rolePath}/set-password`;
+  const roleLabel = attendeeType === "vendor" ? "vendor" : "delegate";
   const userMetadata = {
     full_name: fullName || null,
     event_id: eventId,
@@ -200,7 +212,7 @@ Deno.serve(async (req: Request) => {
         resendKey,
         fromEmail,
         email,
-        registrationEmailContent(eventName, fullName, linkData.properties.action_link),
+        registrationEmailContent(eventName, fullName, linkData.properties.action_link, roleLabel),
       );
       if (sent) {
         return json({ ok: true, emailed: true, via: "resend" }, 200);

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { linkAndLoadDelegateSubmission, loadDelegatePortalEvent } from '../lib/delegatePortal';
+import { linkAndLoadVendorSubmission, loadVendorPortalEvent } from '../lib/vendorPortal';
 import styles from './delegate-portal/DelegatePortal.module.css';
 
-export default function DelegateLogin() {
+export default function VendorLogin() {
   const { eventId } = useParams<{ eventId: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -18,7 +18,7 @@ export default function DelegateLogin() {
 
   useEffect(() => {
     if (!eventId) return;
-    void loadDelegatePortalEvent(eventId).then((e) => setEventName(e?.name ?? ''));
+    void loadVendorPortalEvent(eventId).then((e) => setEventName(e?.name ?? ''));
   }, [eventId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -33,17 +33,17 @@ export default function DelegateLogin() {
       });
       if (signInErr) throw signInErr;
 
-      const sub = await linkAndLoadDelegateSubmission(eventId);
+      const sub = await linkAndLoadVendorSubmission(eventId);
       if (!sub) {
         await supabase.auth.signOut();
-        throw new Error('No submitted delegate registration found for this email. Complete registration first.');
+        throw new Error('No submitted vendor registration found for this email. Complete registration first.');
       }
       if (sub.registration_status === 'rejected') {
         await supabase.auth.signOut();
         throw new Error('Your registration was not approved. Contact the event organizer.');
       }
 
-      navigate(`/portal/${eventId}/delegate/welcome`, { replace: true });
+      navigate(`/portal/${eventId}/vendor/welcome`, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -54,9 +54,9 @@ export default function DelegateLogin() {
   return (
     <div className={styles.loginWrap}>
       <div className={styles.loginCard}>
-        <h1>Delegate sign in</h1>
+        <h1>Vendor sign in</h1>
         {eventName ? <p className={styles.hint}>{eventName}</p> : null}
-        <p className={styles.hint}>Sign in to view your registration, hotel information, and meeting requests.</p>
+        <p className={styles.hint}>Sign in to view your vendor profile and meeting preferences.</p>
         {stateMessage ? <p className={styles.success}>{stateMessage}</p> : null}
         {error ? <p className={styles.error}>{error}</p> : null}
         <form onSubmit={(e) => void handleSubmit(e)} className={styles.grid2}>
@@ -74,7 +74,7 @@ export default function DelegateLogin() {
         </form>
         {eventId ? (
           <p className={styles.hint} style={{ marginTop: 16 }}>
-            Need to register? <Link to={`/register/${eventId}/delegate`}>Complete delegate registration</Link>
+            Need to register? <Link to={`/register/${eventId}/vendor`}>Complete vendor registration</Link>
           </p>
         ) : null}
       </div>

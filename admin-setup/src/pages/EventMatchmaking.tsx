@@ -20,6 +20,9 @@ import {
   normalizeRegistrationPrompt,
   VENDOR_ALWAYS_HIDDEN_PROMPTS,
 } from '../lib/registrationDefaultVisibility';
+import { publicPortalLoginUrl, publicRegisterUrl } from '../lib/publicPortalUrl';
+import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
+import MatchmakingSolutionCategories from '../components/MatchmakingSolutionCategories';
 import styles from './EventMatchmaking.module.css';
 
 const QUESTION_TYPE_OPTIONS: MatchmakingQuestionType[] = [
@@ -367,8 +370,14 @@ export default function EventMatchmaking() {
   const [delegateHotelVisible, setDelegateHotelVisible] = useState(true);
   const [delegateHotelContent, setDelegateHotelContent] = useState('');
   const [registrationNotifyTeamEmails, setRegistrationNotifyTeamEmails] = useState('');
+  const [delegateStage2Active, setDelegateStage2Active] = useState(false);
+  const [vendorStage2Active, setVendorStage2Active] = useState(false);
+  const [stage2HoldingMessage, setStage2HoldingMessage] = useState('');
   const [savingPortalSettings, setSavingPortalSettings] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [generatingSuggestions, setGeneratingSuggestions] = useState(false);
+  const [submissionActionId, setSubmissionActionId] = useState('');
+  const [publishingMeetingId, setPublishingMeetingId] = useState('');
 
   const [newFormName, setNewFormName] = useState('');
   const [newFormAudience, setNewFormAudience] = useState<MatchmakingAudience>('attendee');
@@ -396,6 +405,7 @@ export default function EventMatchmaking() {
   const [editingQuestionType, setEditingQuestionType] = useState<MatchmakingQuestionType>('text');
   const [editingQuestionRequired, setEditingQuestionRequired] = useState(false);
   const [editingQuestionSectionLabel, setEditingQuestionSectionLabel] = useState('');
+  const [editingQuestionUsedInMatching, setEditingQuestionUsedInMatching] = useState(false);
   const [savingQuestionEdit, setSavingQuestionEdit] = useState(false);
   /** Avoid resetting edit fields when `questions` refreshes (e.g. section repair) while the user is typing. */
   const editHydratedForQuestionIdRef = useRef<string | null>(null);
@@ -489,7 +499,8 @@ export default function EventMatchmaking() {
       editingQuestionPrompt.trim() !== selectedQuestion.prompt.trim() ||
       editingQuestionType !== selectedQuestion.question_type ||
       editingQuestionRequired !== Boolean(selectedQuestion.is_required) ||
-      editingQuestionSectionLabel.trim() !== (selectedQuestion.section_label ?? '').trim()
+      editingQuestionSectionLabel.trim() !== (selectedQuestion.section_label ?? '').trim() ||
+      editingQuestionUsedInMatching !== Boolean(selectedQuestion.used_in_matching)
     );
   }, [
     selectedQuestion,
@@ -497,6 +508,7 @@ export default function EventMatchmaking() {
     editingQuestionType,
     editingQuestionRequired,
     editingQuestionSectionLabel,
+    editingQuestionUsedInMatching,
   ]);
 
   const filteredSubmissions = useMemo(
@@ -597,7 +609,7 @@ export default function EventMatchmaking() {
           .limit(200),
         supabase
           .from('event_matchmaking_settings')
-          .select('registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, registration_notify_team_emails')
+          .select('registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, registration_notify_team_emails, delegate_stage2_active, vendor_stage2_active, stage2_holding_message')
           .eq('event_id', eventId)
           .maybeSingle(),
         supabase
@@ -629,11 +641,17 @@ export default function EventMatchmaking() {
         delegate_portal_hotel_visible?: boolean;
         delegate_hotel_content?: string | null;
         registration_notify_team_emails?: string | null;
+        delegate_stage2_active?: boolean;
+        vendor_stage2_active?: boolean;
+        stage2_holding_message?: string | null;
       } | null;
       setMeetingRequestsOpen(Boolean(settings?.meeting_requests_open));
       setDelegateHotelVisible(settings?.delegate_portal_hotel_visible !== false);
       setDelegateHotelContent(settings?.delegate_hotel_content ?? '');
       setRegistrationNotifyTeamEmails(settings?.registration_notify_team_emails ?? '');
+      setDelegateStage2Active(Boolean(settings?.delegate_stage2_active));
+      setVendorStage2Active(Boolean(settings?.vendor_stage2_active));
+      setStage2HoldingMessage(settings?.stage2_holding_message ?? '');
 
       const nextFormsRaw = (formRows as EventRegistrationForm[]) ?? [];
       const nextForms = await normalizeLegacyFormNames(nextFormsRaw);
@@ -993,6 +1011,9 @@ export default function EventMatchmaking() {
         delegate_portal_hotel_visible: delegateHotelVisible,
         delegate_hotel_content: delegateHotelContent.trim() || null,
         registration_notify_team_emails: registrationNotifyTeamEmails.trim() || null,
+        delegate_stage2_active: delegateStage2Active,
+        vendor_stage2_active: vendorStage2Active,
+        stage2_holding_message: stage2HoldingMessage.trim() || null,
         updated_at: new Date().toISOString(),
       });
       if (upsertErr) throw upsertErr;
@@ -1000,6 +1021,85 @@ export default function EventMatchmaking() {
       setError(postgrestErrorMessage(e) || 'Could not save delegate portal settings');
     } finally {
       setSavingPortalSettings(false);
+    }
+  };
+
+  const updateRegistrationStatus = async (submission: EventRegistrationSubmission, status: 'approved' | 'rejected') => {
+    if (status === 'rejected' && !window.confirm('Reject this registrant? They will be blocked from the portal.')) return;
+    setSubmissionActionId(submission.id);
+    setError('');
+    try {
+      const { error: updErr } = await supabase
+        .from('event_registration_submissions')
+        .update({
+          registration_status: status,
+          rejected_at: status === 'rejected' ? new Date().toISOString() : null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', submission.id);
+      if (updErr) throw updErr;
+      setSubmissions((prev) =>
+        prev.map((s) =>
+          s.id === submission.id
+            ? { ...s, registration_status: status, rejected_at: status === 'rejected' ? new Date().toISOString() : null }
+            : s
+        )
+      );
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not update registration status');
+    } finally {
+      setSubmissionActionId('');
+    }
+  };
+
+  const resendRegistrationEmail = async (submission: EventRegistrationSubmission) => {
+    if (!eventId || !submission.email) return;
+    setSubmissionActionId(submission.id);
+    setError('');
+    try {
+      await sendRegistrationSetupEmail({
+        event_id: eventId,
+        email: submission.email,
+        full_name: [submission.first_name, submission.last_name].filter(Boolean).join(' '),
+        attendee_type: submission.attendee_type === 'vendor' ? 'vendor' : 'attendee',
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not resend registration email');
+    } finally {
+      setSubmissionActionId('');
+    }
+  };
+
+  const generateMatchSuggestions = async () => {
+    if (!eventId) return;
+    setGeneratingSuggestions(true);
+    setError('');
+    try {
+      const { error: rpcErr } = await supabase.rpc('generate_event_match_suggestions', {
+        p_event_id: eventId,
+        p_limit: 200,
+      });
+      if (rpcErr) throw rpcErr;
+      await load();
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not generate match suggestions');
+    } finally {
+      setGeneratingSuggestions(false);
+    }
+  };
+
+  const publishMeetingToApp = async (meetingId: string) => {
+    if (!window.confirm('Publish this meeting to the mobile app? This creates a booking in the existing B2B system.')) return;
+    setPublishingMeetingId(meetingId);
+    setError('');
+    try {
+      const { error: rpcErr } = await supabase.rpc('publish_matchmaking_meeting_to_app', { p_meeting_id: meetingId });
+      if (rpcErr) throw rpcErr;
+      await load();
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || 'Could not publish meeting to app');
+    } finally {
+      setPublishingMeetingId('');
     }
   };
 
@@ -1129,11 +1229,13 @@ export default function EventMatchmaking() {
     setSavingQuestionEdit(true);
     setQuestionError('');
     try {
+      const canUseInMatching = !['text', 'textarea', 'email'].includes(editingQuestionType);
       const patch = {
         prompt,
         question_type: editingQuestionType,
         is_required: editingQuestionRequired,
         section_label: sectionLabelForDatabase(editingQuestionSectionLabel.trim()),
+        used_in_matching: canUseInMatching ? editingQuestionUsedInMatching : false,
       };
       const { data: updatedRow, error: updErr } = await supabase
         .from('event_registration_questions')
@@ -1480,6 +1582,7 @@ export default function EventMatchmaking() {
       setEditingQuestionType('text');
       setEditingQuestionRequired(false);
       setEditingQuestionSectionLabel('');
+      setEditingQuestionUsedInMatching(false);
       return;
     }
     const q = questions.find((item) => item.id === selectedQuestionId);
@@ -1493,6 +1596,7 @@ export default function EventMatchmaking() {
       setEditingQuestionType(q.question_type);
       setEditingQuestionRequired(Boolean(q.is_required));
       setEditingQuestionSectionLabel(q.section_label ?? '');
+      setEditingQuestionUsedInMatching(Boolean(q.used_in_matching));
       return;
     }
 
@@ -1501,6 +1605,7 @@ export default function EventMatchmaking() {
       setEditingQuestionType(q.question_type);
       setEditingQuestionRequired(Boolean(q.is_required));
       setEditingQuestionSectionLabel(q.section_label ?? '');
+      setEditingQuestionUsedInMatching(Boolean(q.used_in_matching));
     }
   }, [selectedQuestionId, questions]);
 
@@ -1605,11 +1710,45 @@ export default function EventMatchmaking() {
             />
             Registration open
           </label>
-          <code>{`${window.location.origin}/register/${eventId}/delegate`}</code>
-          <code>{`${window.location.origin}/register/${eventId}/vendor`}</code>
-          <code>{`${window.location.origin}/register/${eventId}/speaker`}</code>
-          <code>{`${window.location.origin}/portal/${eventId}/delegate/login`}</code>
+          <code>{publicRegisterUrl(eventId, 'delegate')}</code>
+          <code>{publicRegisterUrl(eventId, 'vendor')}</code>
+          <code>{publicRegisterUrl(eventId, 'speaker')}</code>
+          <code>{publicPortalLoginUrl(eventId, 'delegate')}</code>
+          <code>{publicPortalLoginUrl(eventId, 'vendor')}</code>
         </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2>Stage 2 portal activation</h2>
+        <p className={styles.hint}>
+          Stage 1 registration collects account info. When you activate Stage 2 per role, registrants can sign in and complete their
+          full profile on connect.kbmcollective.org. Until then they see the holding screen below.
+        </p>
+        <div className={styles.inlineForm} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12 }}>
+          <label className={styles.checkboxInline}>
+            <input type="checkbox" checked={delegateStage2Active} onChange={(e) => setDelegateStage2Active(e.target.checked)} />
+            Delegate Stage 2 active
+          </label>
+          <label className={styles.checkboxInline}>
+            <input type="checkbox" checked={vendorStage2Active} onChange={(e) => setVendorStage2Active(e.target.checked)} />
+            Vendor Stage 2 active
+          </label>
+          <label>
+            Holding screen message (shown when Stage 2 is not yet active)
+            <textarea
+              value={stage2HoldingMessage}
+              onChange={(e) => setStage2HoldingMessage(e.target.value)}
+              rows={4}
+              placeholder="Your registration is confirmed! Full profile setup opens soon — we will email you when it is ready."
+              style={{ width: '100%', marginTop: 6 }}
+            />
+          </label>
+        </div>
+      </section>
+
+      <section className={styles.section}>
+        <h2>Solution categories</h2>
+        {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
       </section>
 
       <section className={styles.section}>
@@ -1647,7 +1786,7 @@ export default function EventMatchmaking() {
             />
           </label>
           <button type="button" onClick={() => void savePortalSettings()} disabled={savingPortalSettings}>
-            {savingPortalSettings ? 'Saving…' : 'Save delegate portal settings'}
+            {savingPortalSettings ? 'Saving…' : 'Save portal settings'}
           </button>
         </div>
       </section>
@@ -1897,6 +2036,7 @@ export default function EventMatchmaking() {
                                     <span className={styles.typePill}>{q.question_type}</span>
                                     {q.is_required ? <span className={styles.requiredPill}>Required</span> : null}
                                     {q.is_base_question ? <span className={styles.baseTag}>base</span> : null}
+                                    {q.used_in_matching ? <span className={styles.requiredPill}>matching</span> : null}
                                     {q.is_hidden ? <span className={styles.hiddenPill}>Hidden</span> : null}
                                   </span>
                                 </button>
@@ -1998,6 +2138,26 @@ export default function EventMatchmaking() {
                             <label htmlFor="edit-q-required">Must answer to submit</label>
                           </span>
                         </div>
+                        {!['text', 'textarea', 'email'].includes(editingQuestionType) ? (
+                          <div className={`${styles.field} ${styles.fieldCheckbox}`}>
+                            <span>1:1 matching</span>
+                            <span className={styles.checkboxRow}>
+                              <input
+                                type="checkbox"
+                                checked={editingQuestionUsedInMatching}
+                                onChange={(e) => {
+                                  questionEditTouchedRef.current = true;
+                                  setEditingQuestionUsedInMatching(e.target.checked);
+                                }}
+                                id="edit-q-matching"
+                              />
+                              <label htmlFor="edit-q-matching">Use in structured match scoring</label>
+                            </span>
+                          </div>
+                        ) : null}
+                        {selectedQuestion.is_base_question ? (
+                          <p className={styles.hint}>Base questions are locked — you can hide/show and toggle matching, but not delete.</p>
+                        ) : null}
                         <label className={styles.field}>
                           <span>Quick section</span>
                           <select
@@ -2127,7 +2287,9 @@ export default function EventMatchmaking() {
                   <th>Company</th>
                   <th>Email</th>
                   <th>Role</th>
-                  <th>Status</th>
+                  <th>Form status</th>
+                  <th>Review</th>
+                  <th>Profile</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
@@ -2143,7 +2305,46 @@ export default function EventMatchmaking() {
                     <td>{row.email ?? '—'}</td>
                     <td>{titleizeAudience(row.attendee_type)}</td>
                     <td>{row.status}</td>
+                    <td>{row.registration_status ?? 'pending_review'}</td>
+                    <td>{row.profile_complete ? 'complete' : 'incomplete'}</td>
                     <td className={styles.rowActions}>
+                      {row.registration_status !== 'approved' ? (
+                        <button
+                          type="button"
+                          disabled={submissionActionId === row.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void updateRegistrationStatus(row, 'approved');
+                          }}
+                        >
+                          Approve
+                        </button>
+                      ) : null}
+                      {row.registration_status !== 'rejected' ? (
+                        <button
+                          type="button"
+                          className={styles.btnDangerOutline}
+                          disabled={submissionActionId === row.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void updateRegistrationStatus(row, 'rejected');
+                          }}
+                        >
+                          Reject
+                        </button>
+                      ) : null}
+                      {row.email ? (
+                        <button
+                          type="button"
+                          disabled={submissionActionId === row.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void resendRegistrationEmail(row);
+                          }}
+                        >
+                          Resend email
+                        </button>
+                      ) : null}
                       <button
                         type="button"
                         className={styles.btnDangerOutline}
@@ -2263,6 +2464,15 @@ export default function EventMatchmaking() {
 
       <section className={styles.section}>
         <h2>Admin review queue</h2>
+        <div className={styles.inlineForm}>
+          <button type="button" onClick={() => void generateMatchSuggestions()} disabled={generatingSuggestions}>
+            {generatingSuggestions ? 'Generating…' : 'Generate match suggestions (v1 scoring)'}
+          </button>
+        </div>
+        <p className={styles.hint}>
+          Suggestions use solution-category overlap and interest requests. Only approved, profile-complete registrants with matching
+          opt-in are included.
+        </p>
         {reviews.length === 0 ? (
           <p className={styles.hint}>No reviewed matches yet.</p>
         ) : (
@@ -2351,6 +2561,7 @@ export default function EventMatchmaking() {
                   <th>Start</th>
                   <th>End</th>
                   <th>Location</th>
+                  <th>App</th>
                 </tr>
               </thead>
               <tbody>
@@ -2364,6 +2575,21 @@ export default function EventMatchmaking() {
                       <td>{new Date(m.start_time).toLocaleString()}</td>
                       <td>{new Date(m.end_time).toLocaleString()}</td>
                       <td>{m.location ?? '—'}</td>
+                      <td>
+                        {m.published_to_app_at ? (
+                          <span>Published {new Date(m.published_to_app_at).toLocaleString()}</span>
+                        ) : m.status === 'scheduled' ? (
+                          <button
+                            type="button"
+                            disabled={publishingMeetingId === m.id}
+                            onClick={() => void publishMeetingToApp(m.id)}
+                          >
+                            {publishingMeetingId === m.id ? 'Publishing…' : 'Publish to app'}
+                          </button>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
                     </tr>
                   );
                 })}

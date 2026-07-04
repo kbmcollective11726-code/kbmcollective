@@ -44,6 +44,10 @@ const url = env.VITE_SUPABASE_URL || env.EXPO_PUBLIC_SUPABASE_URL || env.SUPABAS
 const key = env.VITE_SUPABASE_ANON_KEY || env.EXPO_PUBLIC_SUPABASE_ANON_KEY || env.SUPABASE_ANON_KEY || '';
 const liveWall =
   (env.EXPO_PUBLIC_LIVE_WALL_URL || env.VITE_LIVE_WALL_URL || '').trim().replace(/\/+$/, '') || liveWallFromEas();
+const portalUrl =
+  (env.VITE_PUBLIC_PORTAL_URL || env.PUBLIC_PORTAL_BASE_URL || 'https://connect.kbmcollective.org')
+    .trim()
+    .replace(/\/+$/, '');
 
 if (!url || !key) {
   console.error('Missing Supabase vars. Add to .env (project root or admin-setup):');
@@ -73,6 +77,8 @@ for (const envType of ['production', 'preview']) {
     console.log(`  VITE_LIVE_WALL_URL=${liveWall}`);
     addEnv('VITE_LIVE_WALL_URL', liveWall, envType);
   }
+  console.log(`  VITE_PUBLIC_PORTAL_URL=${portalUrl}`);
+  addEnv('VITE_PUBLIC_PORTAL_URL', portalUrl, envType);
 }
 if (!liveWall) {
   console.warn('Skip VITE_LIVE_WALL_URL (set EXPO_PUBLIC_LIVE_WALL_URL in .env or eas.json production).');

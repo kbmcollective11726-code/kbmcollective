@@ -8,6 +8,7 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "vercel:env": "node scripts/vercel-env-push.mjs",
+    "vercel:connect": "node scripts/vercel-connect-setup.mjs",
     "vercel:link": "vercel link --project admin-setup --scope kbmconnects-projects --yes",
     "deploy": "vercel --prod --scope kbmconnects-projects --yes",
     "deploy:preview": "vercel --scope kbmconnects-projects --yes"

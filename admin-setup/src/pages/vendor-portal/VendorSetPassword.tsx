@@ -1,15 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
-import { loadDelegatePortalEvent } from '../../lib/delegatePortal';
+import { loadVendorPortalEvent } from '../../lib/vendorPortal';
 import {
   establishPortalAuthSession,
   parseAuthParamsFromUrl,
   portalSetPasswordExpiredMessage,
 } from '../../lib/portalAuthSession';
-import styles from './DelegatePortal.module.css';
+import styles from '../delegate-portal/DelegatePortal.module.css';
 
-export default function DelegateSetPassword() {
+export default function VendorSetPassword() {
   const { eventId } = useParams<{ eventId: string }>();
   const navigate = useNavigate();
   const [eventName, setEventName] = useState('');
@@ -22,7 +22,7 @@ export default function DelegateSetPassword() {
 
   useEffect(() => {
     if (!eventId) return;
-    void loadDelegatePortalEvent(eventId).then((e) => setEventName(e?.name ?? ''));
+    void loadVendorPortalEvent(eventId).then((e) => setEventName(e?.name ?? ''));
 
     const params = parseAuthParamsFromUrl();
 
@@ -31,7 +31,7 @@ export default function DelegateSetPassword() {
         if (!result.ok) {
           setError(
             result.error === 'missing_tokens'
-              ? portalSetPasswordExpiredMessage('delegate')
+              ? portalSetPasswordExpiredMessage('vendor')
               : result.error,
           );
           return;
@@ -57,7 +57,7 @@ export default function DelegateSetPassword() {
     try {
       const { error: updErr } = await supabase.auth.updateUser({ password });
       if (updErr) throw updErr;
-      navigate(`/portal/${eventId}/delegate/login`, {
+      navigate(`/portal/${eventId}/vendor/login`, {
         replace: true,
         state: { message: 'Password saved. Sign in with your email and new password.' },
       });
@@ -82,13 +82,13 @@ export default function DelegateSetPassword() {
             {error ? <p className={styles.error}>{error}</p> : null}
             {eventId ? (
               <p className={styles.hint}>
-                <Link to={`/register/${eventId}/delegate`}>Return to registration</Link>
+                <Link to={`/register/${eventId}/vendor`}>Return to registration</Link>
               </p>
             ) : null}
           </>
         ) : (
           <>
-            <p className={styles.hint}>Choose a password for your delegate portal sign-in.</p>
+            <p className={styles.hint}>Choose a password for your vendor portal sign-in.</p>
             {error ? <p className={styles.error}>{error}</p> : null}
             <form onSubmit={(e) => void submit(e)} className={styles.grid2}>
               <label style={{ gridColumn: '1 / -1' }}>

@@ -10,6 +10,7 @@ import type {
   MatchmakingAudience,
 } from '../lib/types';
 import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
+import { publicPortalLoginUrl } from '../lib/publicPortalUrl';
 import { DELEGATE_ALWAYS_HIDDEN_PROMPTS, REGISTRATION_HEADER_FIELD_PROMPTS, TERMS_ACCEPTANCE_PROMPT } from '../lib/registrationDefaultVisibility';
 import styles from './RegistrationPortal.module.css';
 
@@ -363,8 +364,10 @@ export default function RegistrationPortal() {
         .insert({
           id: submissionId,
           ...submissionPayload,
-          // Link to auth when delegate registered an account; otherwise keep public flow (user_id null).
           user_id: authUserId,
+          profile_complete: false,
+          registration_status: status === 'submitted' ? 'pending_review' : 'pending_review',
+          matching_opt_in: false,
         })
       if (subErr) throw subErr;
 
@@ -459,9 +462,10 @@ export default function RegistrationPortal() {
         }
       }
 
+      const portalRole = dbAudience === 'vendor' ? 'vendor' : 'delegate';
       const portalNote =
-        dbAudience === 'attendee' && status === 'submitted' && eventId
-          ? ` Sign in anytime at ${window.location.origin}/portal/${eventId}/delegate/login to view Welcome, Hotel, and Registration Details. Meeting Requests appear when your organizer enables them.`
+        (dbAudience === 'attendee' || dbAudience === 'vendor') && status === 'submitted' && eventId
+          ? ` Sign in anytime at ${publicPortalLoginUrl(eventId, portalRole)} when your organizer opens the portal.`
           : '';
       setSuccess(status === 'submitted' ? `Thank you. Your registration is submitted.${loginMessage}${portalNote}` : 'Draft saved.');
       if (status === 'submitted') {
@@ -509,7 +513,7 @@ export default function RegistrationPortal() {
       <nav className={styles.topNav}>
         <span>Welcome</span>
         <span>Registration Details</span>
-        <a href={dbAudience === 'attendee' && eventId ? `/portal/${eventId}/delegate/login` : '/login'} className={styles.loginBtn}>
+        <a href={dbAudience === 'vendor' && eventId ? `/portal/${eventId}/vendor/login` : dbAudience === 'attendee' && eventId ? `/portal/${eventId}/delegate/login` : '/login'} className={styles.loginBtn}>
           Login
         </a>
       </nav>
