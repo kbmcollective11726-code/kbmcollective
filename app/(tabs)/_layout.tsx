@@ -19,6 +19,8 @@ import HeaderNotificationBell from '../../components/HeaderNotificationBell';
 import { isAppMenuItemVisible } from '../../lib/effectiveEventMenu';
 import DeepLinkHandler from '../../components/DeepLinkHandler';
 import { safeRouterReplace } from '../../lib/safeNavigate';
+import { isBadgeScanPath } from '../../lib/openBadgeDeepLink';
+import { peekPendingBadgeToken } from '../../lib/pendingBadgeUrl';
 
 function HeaderProfileButton() {
   const router = useRouter();
@@ -171,6 +173,7 @@ export default function TabsLayout() {
   }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
 
   const hideAgendaTab = !isAppMenuItemVisible(currentEvent, 'menu_show_agenda');
+  const bypassEventGate = isBadgeScanPath(pathname) || peekPendingBadgeToken() !== null;
 
   // If Agenda is disabled for this event, leave the tab screen (same flag as hamburger).
   useEffect(() => {
@@ -188,7 +191,7 @@ export default function TabsLayout() {
     !pathname?.includes('/groups/') &&
     !pathname?.includes('/feed/user/');
 
-  if (user && !eventCheckDone) {
+  if (user && !eventCheckDone && !bypassEventGate) {
     return (
       <>
         <DeepLinkHandler />
@@ -200,7 +203,7 @@ export default function TabsLayout() {
     );
   }
 
-  if (needsEventCode) {
+  if (needsEventCode && !bypassEventGate) {
     return (
       <>
         <DeepLinkHandler />

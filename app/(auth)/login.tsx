@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useAuthStore } from '../../stores/authStore';
 import { isSupabaseConfigured } from '../../lib/supabase';
+import { peekPendingBadgeToken } from '../../lib/pendingBadgeUrl';
 
 const LOGO = require('../../assets/logo-full-transparent.png');
 
@@ -63,6 +64,8 @@ export default function LoginScreen() {
       const mustChangePassword = !!session?.user?.user_metadata?.must_change_password;
       if (mustChangePassword) {
         router.replace('/(auth)/change-password');
+      } else if (peekPendingBadgeToken()) {
+        router.replace('/(tabs)/home');
       } else {
         const user = useAuthStore.getState().user;
         if (user?.is_platform_admin) {

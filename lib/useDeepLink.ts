@@ -5,10 +5,8 @@ import type { NotificationResponse } from 'expo-notifications';
 import { useRouter, useRootNavigationState } from 'expo-router';
 import { isPasswordRecoveryLaunchUrl } from './passwordRecoveryLaunchUrl';
 import { peekPendingPasswordRecoveryUrl, setPendingPasswordRecoveryUrl } from './pendingRecoveryUrl';
-import {
-  consumePendingBadgeToken,
-  setPendingBadgeToken,
-} from './pendingBadgeUrl';
+import { setPendingBadgeToken } from './pendingBadgeUrl';
+import { openBadgeDeepLink, tryOpenPendingBadgeDeepLink } from './openBadgeDeepLink';
 import { safeRouterReplace } from './safeNavigate';
 import { ensureCurrentEventForId, pickNotificationBoothId } from './ensureEventForNotification';
 import { useAuthStore } from '../stores/authStore';
@@ -26,20 +24,14 @@ function navigateToGroup(router: ReturnType<typeof useRouter>, groupId: string) 
   safeRouterReplace(router, `/profile/groups/${groupId}` as any);
 }
 
-function navigateToBadgeScan(router: ReturnType<typeof useRouter>, token: string) {
-  safeRouterReplace(router, `/(tabs)/profile/badge-scan?t=${encodeURIComponent(token)}` as any);
-}
-
 function canOpenDeepLinksNow(navigationReady: boolean): boolean {
   return navigationReady && !useAuthStore.getState().isLoading;
 }
 
 function queueOrOpenBadge(router: ReturnType<typeof useRouter>, token: string, navigationReady: boolean) {
-  if (!canOpenDeepLinksNow(navigationReady)) {
-    setPendingBadgeToken(token);
-    return;
-  }
-  navigateToBadgeScan(router, token);
+  setPendingBadgeToken(token);
+  if (!canOpenDeepLinksNow(navigationReady)) return;
+  void openBadgeDeepLink(router, token);
 }
 
 /** Cold start: iOS delivers launch URL once — capture before nested layouts unmount the listener. */
@@ -70,10 +62,7 @@ export function useDeepLink() {
       return;
     }
 
-    const badgeT = consumePendingBadgeToken();
-    if (badgeT) {
-      navigateToBadgeScan(router, badgeT);
-    }
+    void tryOpenPendingBadgeDeepLink(router);
   }, [navigationReady, authLoading, router]);
 
   useEffect(() => {

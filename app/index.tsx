@@ -31,8 +31,21 @@ export default function IndexScreen() {
     if (!navigationReady) return;
     if (isLoading) return;
     if (navigated.current) return;
-    // Badge QR cold start — DeepLinkHandler opens badge-scan once auth is ready.
-    if (peekPendingBadgeToken()) return;
+
+    // Badge QR cold start — enter tabs/login shell; DeepLinkHandler opens badge-scan once auth is ready.
+    if (peekPendingBadgeToken()) {
+      navigated.current = true;
+      if (isAuthenticated) {
+        if (mustChangePassword) {
+          safeRouterReplace(router, '/(auth)/change-password');
+        } else {
+          safeRouterReplace(router, '/(tabs)/home');
+        }
+      } else {
+        safeRouterReplace(router, '/(auth)/login');
+      }
+      return;
+    }
 
     navigated.current = true;
 
@@ -55,7 +68,6 @@ export default function IndexScreen() {
     if (!navigationReady) return;
     const t = setTimeout(() => {
       if (navigated.current) return;
-      if (peekPendingBadgeToken()) return;
       const { isLoading: loading, isAuthenticated: authed } = useAuthStore.getState();
       if (loading) return;
       navigated.current = true;
