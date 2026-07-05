@@ -81,7 +81,7 @@ export default function MatchmakingSolutionCategories({ eventId }: Props) {
     <div>
       <p className={styles.hint}>
         One shared list for delegate &quot;Solution Category of Interest&quot; and vendor &quot;Category You Offer&quot;. Used by
-        match scoring.
+        match scoring. Add industry/solution types (e.g. Technologies, Culture &amp; Engagement) — not Meeting Goals answers.
       </p>
       {error ? <p className={styles.error}>{error}</p> : null}
       <div className={styles.inlineForm}>
