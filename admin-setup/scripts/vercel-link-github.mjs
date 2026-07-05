@@ -31,7 +31,22 @@ function loadToken() {
       if (m) return m[1].replace(/^["']|["']$/g, '').trim();
     }
   }
-  console.error('Missing VERCEL_TOKEN. Create one at https://vercel.com/account/tokens');
+  const cliAuthPaths = [
+    process.env.VERCEL_AUTH_TOKEN_PATH,
+    process.platform === 'win32'
+      ? join(process.env.APPDATA ?? '', 'com.vercel.cli', 'Data', 'auth.json')
+      : join(process.env.HOME ?? '', '.local', 'share', 'com.vercel.cli', 'auth.json'),
+  ].filter(Boolean);
+  for (const authPath of cliAuthPaths) {
+    if (!existsSync(authPath)) continue;
+    try {
+      const auth = JSON.parse(readFileSync(authPath, 'utf8'));
+      if (auth.token?.trim()) return auth.token.trim();
+    } catch {
+      /* try next path */
+    }
+  }
+  console.error('Missing VERCEL_TOKEN. Run `vercel login` or set VERCEL_TOKEN.');
   process.exit(1);
 }
 

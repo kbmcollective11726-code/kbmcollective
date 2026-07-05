@@ -5,6 +5,8 @@ node_modules/
 .env
 .env.local
 .env.*.local
+.env.vercel.local
+.env.vercel.production
 .env.r2.secrets
 
 # Expo (expo-doctor expects .expo to be ignored)
