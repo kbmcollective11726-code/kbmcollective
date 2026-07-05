@@ -25,7 +25,6 @@ export default function DelegateRegistrationDetails() {
   const [options, setOptions] = useState<EventRegistrationQuestionOption[]>([]);
   const [sectionOrder, setSectionOrder] = useState<string[]>([]);
   const [answers, setAnswers] = useState<AnswerMap>({});
-  const [matchingOptIn, setMatchingOptIn] = useState(Boolean(submission.matching_opt_in));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
@@ -119,6 +118,7 @@ export default function DelegateRegistrationDetails() {
       );
       const profileComplete =
         contactFieldsComplete(identity) && requiredQuestionsComplete(questionsForDisplay, answers);
+      const profileJustCompleted = profileComplete && !submission.profile_complete;
 
       const { error: subErr } = await supabase
         .from('event_registration_submissions')
@@ -129,7 +129,7 @@ export default function DelegateRegistrationDetails() {
           company_name: identity.companyName.trim() || null,
           job_title: identity.jobTitle.trim() || null,
           profile_complete: profileComplete,
-          matching_opt_in: matchingOptIn && profileComplete,
+          ...(profileJustCompleted ? { matching_opt_in: true } : {}),
           updated_at: new Date().toISOString(),
         })
         .eq('id', submission.id);
@@ -152,7 +152,7 @@ export default function DelegateRegistrationDetails() {
 
       await syncSubmissionSolutionCategories(submission.id);
       await reloadSubmission();
-      setSuccess(profileComplete ? 'Profile complete — you are in the matching pool.' : 'Registration details saved.');
+      setSuccess(profileComplete ? 'Profile complete — your details are saved.' : 'Registration details saved.');
     } catch (e) {
       setError(postgrestErrorMessage(e) || 'Could not save changes');
     } finally {
@@ -180,11 +180,6 @@ export default function DelegateRegistrationDetails() {
         onChange={setAnswer}
         sectionOrder={sectionOrder}
       />
-
-      <label className={styles.checkboxInline} style={{ marginTop: 16, display: 'block' }}>
-        <input type="checkbox" checked={matchingOptIn} onChange={(e) => setMatchingOptIn(e.target.checked)} />
-        {' '}Opt in to 1:1 vendor matching (requires a complete profile)
-      </label>
 
       <button type="button" className={styles.primaryBtn} disabled={saving} onClick={() => void save()}>
         {saving ? 'Saving…' : 'Save changes'}

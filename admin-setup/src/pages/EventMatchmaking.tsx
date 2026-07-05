@@ -256,6 +256,10 @@ function titleizeAudience(audience: MatchmakingAudience) {
   return 'Delegate';
 }
 
+function isMatchPoolEligible(audience: MatchmakingAudience) {
+  return audience === 'attendee' || audience === 'vendor';
+}
+
 function toDisplayFormName(form: EventRegistrationForm) {
   if (form.audience === 'attendee') return 'Delegate Registration';
   if (form.audience === 'vendor') return 'Vendor Registration';
@@ -1442,6 +1446,31 @@ export default function EventMatchmaking() {
       );
     } catch (e) {
       setError(postgrestErrorMessage(e) || 'Could not update registration status');
+    } finally {
+      setSubmissionActionId('');
+    }
+  };
+
+  const updateMatchingOptIn = async (submission: EventRegistrationSubmission, optIn: boolean) => {
+    if (!isMatchPoolEligible(submission.attendee_type)) return;
+    const action = optIn ? 'opt this registrant into' : 'opt this registrant out of';
+    if (!window.confirm(`${optIn ? 'Opt in' : 'Opt out'} ${[submission.first_name, submission.last_name].filter(Boolean).join(' ') || 'this registrant'} for 1:1 matching?`)) return;
+    setSubmissionActionId(submission.id);
+    setError('');
+    try {
+      const { error: updErr } = await supabase
+        .from('event_registration_submissions')
+        .update({
+          matching_opt_in: optIn,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', submission.id);
+      if (updErr) throw updErr;
+      setSubmissions((prev) =>
+        prev.map((s) => (s.id === submission.id ? { ...s, matching_opt_in: optIn } : s)),
+      );
+    } catch (e) {
+      setError(postgrestErrorMessage(e) || `Could not ${action} matching`);
     } finally {
       setSubmissionActionId('');
     }
@@ -2931,6 +2960,7 @@ export default function EventMatchmaking() {
                   <th>Form status</th>
                   <th>Review</th>
                   <th>Profile</th>
+                  <th>Matching</th>
                   <th aria-label="Actions" />
                 </tr>
               </thead>
@@ -2958,6 +2988,16 @@ export default function EventMatchmaking() {
                         tone={row.profile_complete ? 'success' : 'muted'}
                       />
                     </td>
+                    <td>
+                      {isMatchPoolEligible(row.attendee_type) ? (
+                        <StatusBadge
+                          label={row.matching_opt_in ? 'Opted in' : 'Opted out'}
+                          tone={row.matching_opt_in ? 'success' : 'muted'}
+                        />
+                      ) : (
+                        '—'
+                      )}
+                    </td>
                     <td className={styles.rowActions}>
                       {row.registration_status !== 'approved' ? (
                         <button
@@ -2983,6 +3023,32 @@ export default function EventMatchmaking() {
                         >
                           Reject
                         </button>
+                      ) : null}
+                      {isMatchPoolEligible(row.attendee_type) ? (
+                        row.matching_opt_in ? (
+                          <button
+                            type="button"
+                            className={styles.btnDangerOutline}
+                            disabled={submissionActionId === row.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void updateMatchingOptIn(row, false);
+                            }}
+                          >
+                            Opt out
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={submissionActionId === row.id}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void updateMatchingOptIn(row, true);
+                            }}
+                          >
+                            Opt in
+                          </button>
+                        )
                       ) : null}
                       {row.email ? (
                         <button
@@ -3071,7 +3137,35 @@ export default function EventMatchmaking() {
               <p className={styles.hint}>
                 {selectedSubmission.company_name ?? '—'} · {titleizeAudience(selectedSubmission.attendee_type)} ·{' '}
                 {selectedSubmission.status}
+                {isMatchPoolEligible(selectedSubmission.attendee_type)
+                  ? ` · Matching: ${selectedSubmission.matching_opt_in ? 'opted in' : 'opted out'}`
+                  : ''}
               </p>
+              {isMatchPoolEligible(selectedSubmission.attendee_type) ? (
+                <div className={styles.actionRow} style={{ marginBottom: 16 }}>
+                  {selectedSubmission.matching_opt_in ? (
+                    <button
+                      type="button"
+                      className={styles.btnDangerOutline}
+                      disabled={submissionActionId === selectedSubmission.id}
+                      onClick={() => void updateMatchingOptIn(selectedSubmission, false)}
+                    >
+                      Opt out of matching
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={submissionActionId === selectedSubmission.id}
+                      onClick={() => void updateMatchingOptIn(selectedSubmission, true)}
+                    >
+                      Opt in to matching
+                    </button>
+                  )}
+                  <span className={styles.hint}>
+                    Delegates and vendors are automatically opted in when their profile is complete. Only admins can change this.
+                  </span>
+                </div>
+              ) : null}
               <h4>Requested meetings</h4>
               {selectedSubmissionRequests.length === 0 ? (
                 <p className={styles.hint}>No requested companies/people.</p>
