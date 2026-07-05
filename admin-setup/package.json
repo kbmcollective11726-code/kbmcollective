@@ -13,7 +13,7 @@
     "deploy:git": "node scripts/vercel-deploy-from-git.mjs",
     "deploy:setup-ci": "node scripts/setup-github-deploy-secrets.mjs",
     "deploy": "node scripts/vercel-deploy-prod.mjs",
-    "deploy:preview": "node scripts/vercel-deploy-preview.mjs",
+    "deploy:preview": "node scripts/vercel-deploy-preview.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
