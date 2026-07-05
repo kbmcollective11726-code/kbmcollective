@@ -49,7 +49,26 @@ export async function ensureRegistrationAccount(
   if (!signUpErr && signUpData.user?.id) {
     const userId = signUpData.user.id;
     const signedIn = !!signUpData.session?.user?.id;
-    return { userId, signedIn };
+    if (signedIn) {
+      return { userId, signedIn: true };
+    }
+    // Supabase may return a placeholder user (empty identities) when the email already exists.
+    const identities = signUpData.user.identities ?? [];
+    if (identities.length === 0) {
+      const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+        email: normalizedEmail,
+        password,
+      });
+      if (!signInErr && signInData.user?.id) {
+        return { userId: signInData.user.id, signedIn: true };
+      }
+      return {
+        error:
+          'An account with this email already exists. Use Login at the top of this page, or reset your password from the login screen.',
+      };
+    }
+    // Email confirmation required — account exists in auth; link submission after first login.
+    return { userId, signedIn: false };
   }
 
   if (signUpErr && isAlreadyRegisteredError(signUpErr.message)) {

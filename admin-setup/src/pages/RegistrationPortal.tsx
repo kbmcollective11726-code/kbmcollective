@@ -382,7 +382,21 @@ export default function RegistrationPortal() {
           setError(accountResult.error);
           return;
         }
-        authUserId = accountResult.userId;
+        authUserId = accountResult.signedIn ? accountResult.userId : null;
+
+        const { data: existingSubmission } = await supabase
+          .from('event_registration_submissions')
+          .select('id')
+          .eq('event_id', eventId)
+          .eq('status', 'submitted')
+          .ilike('email', emailValue)
+          .maybeSingle();
+        if (existingSubmission) {
+          setError(
+            `You already registered for this event. Please use Login${dbAudience === 'vendor' ? ' (vendor portal)' : dbAudience === 'attendee' ? ' (delegate portal)' : ''} to access your registration.`,
+          );
+          return;
+        }
       } else {
         const { data: authData } = await supabase.auth.getUser();
         authUserId = authData.user?.id ?? null;
