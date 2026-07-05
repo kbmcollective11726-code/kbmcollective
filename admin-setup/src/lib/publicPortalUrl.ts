@@ -18,6 +18,10 @@ export function publicPortalLoginUrl(eventId: string, role: 'delegate' | 'vendor
   return `${getPublicPortalBaseUrl()}/portal/${eventId}/${role}/login`;
 }
 
+export function publicPortalRegistrationUrl(eventId: string, role: 'delegate' | 'vendor'): string {
+  return `${getPublicPortalBaseUrl()}/portal/${eventId}/${role}/registration`;
+}
+
 export function publicPortalSetPasswordUrl(eventId: string, role: 'delegate' | 'vendor'): string {
   return `${getPublicPortalBaseUrl()}/portal/${eventId}/${role}/set-password`;
 }

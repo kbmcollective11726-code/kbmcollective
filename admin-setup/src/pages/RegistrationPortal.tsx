@@ -11,7 +11,16 @@ import type {
 } from '../lib/types';
 import { ensureRegistrationAccount } from '../lib/registrationAccount';
 import { publicPortalLoginUrl } from '../lib/publicPortalUrl';
-import { DELEGATE_ALWAYS_HIDDEN_PROMPTS, REGISTRATION_HEADER_FIELD_PROMPTS, TERMS_ACCEPTANCE_PROMPT } from '../lib/registrationDefaultVisibility';
+import { formatEventDateRange } from '../lib/registrantPortal';
+import {
+  isStage1RegistrationQuestion,
+  REGISTRATION_HEADER_FIELD_PROMPTS,
+  TERMS_ACCEPTANCE_PROMPT,
+} from '../lib/registrationDefaultVisibility';
+import PortalEventSummary from '../components/PortalEventSummary';
+import PortalGuestNav from '../components/PortalGuestNav';
+import PortalPublicShell from '../components/PortalPublicShell';
+import portalStyles from './delegate-portal/DelegatePortal.module.css';
 import styles from './RegistrationPortal.module.css';
 
 type AnswerMap = Record<string, string | string[] | boolean>;
@@ -45,7 +54,20 @@ const VENDOR_DEPRECATED_OPERATIONS_PROMPTS = new Set([
 ].map((x) => x.toLowerCase()));
 type PublicEventInfo = Pick<
   Event,
-  'id' | 'name' | 'description' | 'location' | 'venue' | 'start_date' | 'end_date' | 'banner_url' | 'welcome_title' | 'welcome_subtitle' | 'welcome_message'
+  | 'id'
+  | 'name'
+  | 'description'
+  | 'location'
+  | 'venue'
+  | 'start_date'
+  | 'end_date'
+  | 'banner_url'
+  | 'logo_url'
+  | 'badge_banner_url'
+  | 'portal_banner_url'
+  | 'welcome_title'
+  | 'welcome_subtitle'
+  | 'welcome_message'
 >;
 
 const validAudience = (value: string | undefined): value is MatchmakingAudience | 'speaker' =>
@@ -53,14 +75,6 @@ const validAudience = (value: string | undefined): value is MatchmakingAudience 
 
 const resolveAudience = (value: string | undefined): MatchmakingAudience =>
   value === 'speaker' ? 'user' : value === 'delegate' ? 'attendee' : value === 'attendee' || value === 'vendor' || value === 'user' ? value : 'attendee';
-
-const formatDateRange = (startIso?: string, endIso?: string) => {
-  if (!startIso || !endIso) return '';
-  const start = new Date(startIso);
-  const end = new Date(endIso);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return '';
-  return `${start.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })} - ${end.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}`;
-};
 
 const fileToDataUrl = async (file: File) =>
   await new Promise<string>((resolve, reject) => {
@@ -108,7 +122,9 @@ export default function RegistrationPortal() {
       try {
         const { data: eventRow } = await supabase
           .from('events')
-          .select('id, name, description, location, venue, start_date, end_date, banner_url, welcome_title, welcome_subtitle, welcome_message')
+          .select(
+            'id, name, description, location, venue, start_date, end_date, banner_url, logo_url, badge_banner_url, portal_banner_url, welcome_title, welcome_subtitle, welcome_message',
+          )
           .eq('id', eventId)
           .maybeSingle();
         if (!cancelled) setEventInfo((eventRow as PublicEventInfo | null) ?? null);
@@ -154,7 +170,6 @@ export default function RegistrationPortal() {
           .from('event_registration_questions')
           .select('*')
           .eq('form_id', selectedForm.id)
-          .eq('is_hidden', false)
           .order('sort_order', { ascending: true })
           .order('created_at', { ascending: true });
         if (questionErr) throw questionErr;
@@ -196,17 +211,15 @@ export default function RegistrationPortal() {
   }, [options]);
 
   const questionsForDisplay = useMemo(() => {
+    const dbAudience = resolveAudience(audience);
     const seenPrompts = new Set<string>();
     return questions.filter((q) => {
+      if (q.is_hidden) return false;
+      if (!isStage1RegistrationQuestion(dbAudience, q.prompt)) return false;
       const promptNorm = q.prompt.trim().toLowerCase();
       if (REGISTRATION_HEADER_FIELD_PROMPTS.has(promptNorm)) return false;
-      const isVendor = resolveAudience(audience) === 'vendor';
-      const isDelegate = resolveAudience(audience) === 'attendee';
-      if (isVendor && VENDOR_DEPRECATED_OPERATIONS_PROMPTS.has(promptNorm)) return false;
-      if (isDelegate && DELEGATE_ALWAYS_HIDDEN_PROMPTS.has(promptNorm)) return false;
-      // Prefer "Company Logo Image" and suppress legacy "Company Logo URL".
-      if (isVendor && promptNorm === 'company logo url') return false;
-      // Keep first occurrence only; removes accidental duplicates in event data.
+      if (dbAudience === 'vendor' && VENDOR_DEPRECATED_OPERATIONS_PROMPTS.has(promptNorm)) return false;
+      if (dbAudience === 'vendor' && promptNorm === 'company logo url') return false;
       if (seenPrompts.has(promptNorm)) return false;
       seenPrompts.add(promptNorm);
       return true;
@@ -478,7 +491,7 @@ export default function RegistrationPortal() {
         const loginUrl = publicPortalLoginUrl(eventId, portalRole);
         loginMessage =
           dbAudience === 'attendee' || dbAudience === 'vendor'
-            ? ` Your portal account is ready — sign in anytime at ${loginUrl} (use the email and password you just chose).`
+            ? ` We sent a confirmation email to ${emailValue} with a link to your portal. Sign in anytime at ${loginUrl} (use the email and password you just chose).`
             : '';
       }
 
@@ -512,68 +525,63 @@ export default function RegistrationPortal() {
     }
   };
 
-  if (loading) return <div className={styles.page}>Loading registration…</div>;
-  if (!form || !validAudience(audience)) return <div className={styles.page}>Form unavailable.</div>;
+  if (loading) return <div className={portalStyles.page}>Loading registration…</div>;
+  if (!form || !validAudience(audience)) return <div className={portalStyles.page}>Form unavailable.</div>;
 
-  const dateRange = formatDateRange(eventInfo?.start_date, eventInfo?.end_date);
+  const dateRange = formatEventDateRange(eventInfo?.start_date, eventInfo?.end_date);
+  const locationLine = [eventInfo?.venue, eventInfo?.location].filter(Boolean).join(' — ');
   const heroMessage = eventInfo?.welcome_message || eventInfo?.description || '';
   const dbAudience = resolveAudience(audience);
   const audienceTitle = dbAudience === 'vendor' ? 'Vendor registration' : dbAudience === 'attendee' ? 'Delegate registration' : 'Speaker registration';
   const pageHeading = `${eventInfo?.name ?? 'Event'} ${dbAudience === 'vendor' ? 'Vendor' : dbAudience === 'attendee' ? 'Delegate' : 'Speaker'} Registration`.replace(/\s+/g, ' ').trim();
   const isJobTitleRequired = dbAudience === 'attendee' || dbAudience === 'user';
+  const loginHref =
+    dbAudience === 'vendor' && eventId
+      ? publicPortalLoginUrl(eventId, 'vendor')
+      : dbAudience === 'attendee' && eventId
+        ? publicPortalLoginUrl(eventId, 'delegate')
+        : '/login';
+  const guestRole = dbAudience === 'vendor' ? 'vendor' : 'delegate';
   const minorityQuestion = questionsForDisplay.find((q) => q.prompt.trim().toLowerCase() === MINORITY_OWNED_PROMPT.toLowerCase());
   const minorityValue = minorityQuestion ? answers[minorityQuestion.id] : undefined;
   const virtualQuestion = questionsForDisplay.find((q) => q.prompt.trim().toLowerCase() === LOGISTICS_VIRTUAL_PROMPT.toLowerCase());
 
   return (
-    <div className={styles.page}>
-      <section className={styles.hero}>
-        {eventInfo?.banner_url ? <img src={eventInfo.banner_url} alt={eventInfo.name || 'Event banner'} className={styles.heroImage} /> : null}
-        {!eventInfo?.banner_url ? <div className={styles.heroPlaceholder}>Event banner</div> : null}
-      </section>
-
-      <nav className={styles.topNav}>
-        <span>Welcome</span>
-        <span>Registration Details</span>
-        <a href={dbAudience === 'vendor' && eventId ? `/portal/${eventId}/vendor/login` : dbAudience === 'attendee' && eventId ? `/portal/${eventId}/delegate/login` : '/login'} className={styles.loginBtn}>
-          Login
-        </a>
-      </nav>
-
-      <section className={styles.infoCard}>
-        <h2>Welcome</h2>
-        {heroMessage ? <p>{heroMessage}</p> : <p>Complete your registration details and submit your registration.</p>}
-      </section>
-
-      <section className={styles.infoCard}>
-        <h3>Event information</h3>
-        <div className={styles.infoGrid}>
-          <div>
-            <strong>Registration type</strong>
-            <p>{audienceTitle}</p>
+    <PortalPublicShell
+      event={eventInfo}
+      nav={eventId && (dbAudience === 'attendee' || dbAudience === 'vendor') ? (
+        <PortalGuestNav eventId={eventId} role={guestRole} activeTab="welcome" />
+      ) : (
+        <nav className={portalStyles.navBar}>
+          <span className={portalStyles.navLinkActive}>Welcome</span>
+          <span className={portalStyles.navLinkDisabled}>Registration Details</span>
+          <div className={portalStyles.userBar}>
+            <a href={loginHref} className={portalStyles.logoutBtn}>
+              Login
+            </a>
           </div>
-          {dateRange ? (
-            <div>
-              <strong>Event dates</strong>
-              <p>{dateRange}</p>
-            </div>
+        </nav>
+      )}
+    >
+        <div className={portalStyles.card}>
+          {eventInfo ? (
+            <PortalEventSummary
+              eventName={eventInfo.name}
+              dateRange={dateRange || null}
+              locationLine={locationLine || null}
+            />
           ) : null}
-          {eventInfo?.venue ? (
-            <div>
-              <strong>Venue</strong>
-              <p>{eventInfo.venue}</p>
-            </div>
+          <h2 className={portalStyles.welcomeHeading}>{eventInfo?.welcome_title || 'Welcome'}</h2>
+          {heroMessage ? <div className={portalStyles.contentBlock}>{heroMessage}</div> : null}
+          {!heroMessage ? (
+            <p className={portalStyles.hint}>Complete your registration details and submit your registration.</p>
           ) : null}
-          {eventInfo?.location ? (
-            <div>
-              <strong>Location</strong>
-              <p>{eventInfo.location}</p>
-            </div>
-          ) : null}
+          <p className={portalStyles.hint} style={{ marginTop: 20 }}>
+            Registration type: {audienceTitle}
+          </p>
         </div>
-      </section>
 
-      <div className={styles.card}>
+        <div className={`${portalStyles.card} ${styles.formCard}`}>
         <h2>{pageHeading}</h2>
         <p className={styles.hint}>Complete the registration below, then submit to finish your registration.</p>
         <p className={styles.requiredHint}>* Required fields</p>
@@ -667,9 +675,16 @@ export default function RegistrationPortal() {
             const charCount = isCompanyDescription ? textValue.length : 0;
             const sectionLabel = (q.section_label ?? '').trim();
             const prevSectionLabel = idx > 0 ? (questionsForDisplay[idx - 1]?.section_label ?? '').trim() : '';
+            const isOrphanedCategorySection =
+              q.question_type !== 'multi_select' &&
+              (sl === 'solution provider categories' ||
+                sl === 'solution providers categories' ||
+                sl === 'solution interests');
             const showSectionLabel =
               Boolean(sectionLabel && sectionLabel !== prevSectionLabel) &&
-              !(dbAudience === 'attendee' && sectionLabel.toLowerCase() === 'registration details');
+              !(dbAudience === 'attendee' && sectionLabel.toLowerCase() === 'registration details') &&
+              !isTermsPrompt &&
+              !isOrphanedCategorySection;
             const labelText = isAttendingField
               ? LOGISTICS_ATTENDING_PROMPT
               : isCompanyLogoField
@@ -909,7 +924,7 @@ export default function RegistrationPortal() {
             {saving ? 'Saving…' : 'Submit registration'}
           </button>
         </div>
-      </div>
-    </div>
+        </div>
+    </PortalPublicShell>
   );
 }

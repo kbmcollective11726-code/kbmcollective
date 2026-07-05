@@ -11,11 +11,24 @@ export type RegistrantPortalSettings = {
   delegate_stage2_active: boolean;
   vendor_stage2_active: boolean;
   stage2_holding_message: string | null;
+  stage2_expected_open_at: string | null;
 };
 
 export type RegistrantPortalEvent = Pick<
   Event,
-  'id' | 'name' | 'description' | 'location' | 'venue' | 'start_date' | 'end_date' | 'banner_url' | 'welcome_message' | 'welcome_title'
+  | 'id'
+  | 'name'
+  | 'description'
+  | 'location'
+  | 'venue'
+  | 'start_date'
+  | 'end_date'
+  | 'banner_url'
+  | 'logo_url'
+  | 'badge_banner_url'
+  | 'portal_banner_url'
+  | 'welcome_message'
+  | 'welcome_title'
 >;
 
 export const DEFAULT_HOLDING_MESSAGE =
@@ -33,7 +46,7 @@ export async function loadRegistrantPortalSettings(eventId: string): Promise<Reg
   const { data, error } = await supabase
     .from('event_matchmaking_settings')
     .select(
-      'registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, delegate_stage2_active, vendor_stage2_active, stage2_holding_message'
+      'registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, delegate_stage2_active, vendor_stage2_active, stage2_holding_message, stage2_expected_open_at'
     )
     .eq('event_id', eventId)
     .maybeSingle();
@@ -47,6 +60,7 @@ export async function loadRegistrantPortalSettings(eventId: string): Promise<Reg
       delegate_stage2_active: false,
       vendor_stage2_active: false,
       stage2_holding_message: null,
+      stage2_expected_open_at: null,
     };
   }
   const row = data as RegistrantPortalSettings;
@@ -58,13 +72,16 @@ export async function loadRegistrantPortalSettings(eventId: string): Promise<Reg
     delegate_stage2_active: Boolean(row.delegate_stage2_active),
     vendor_stage2_active: Boolean(row.vendor_stage2_active),
     stage2_holding_message: row.stage2_holding_message ?? null,
+    stage2_expected_open_at: row.stage2_expected_open_at ?? null,
   };
 }
 
 export async function loadRegistrantPortalEvent(eventId: string): Promise<RegistrantPortalEvent | null> {
   const { data, error } = await supabase
     .from('events')
-    .select('id, name, description, location, venue, start_date, end_date, banner_url, welcome_message, welcome_title')
+    .select(
+      'id, name, description, location, venue, start_date, end_date, banner_url, logo_url, badge_banner_url, portal_banner_url, welcome_message, welcome_title',
+    )
     .eq('id', eventId)
     .maybeSingle();
   if (error) throw error;

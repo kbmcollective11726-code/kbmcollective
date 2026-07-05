@@ -66,6 +66,8 @@ export interface Event {
   badge_show_event_name?: boolean;
   /** Optional wide header for printed badges; falls back to banner_url then logo_url. */
   badge_banner_url?: string | null;
+  /** Wide header for connect.kbmcollective.org delegate/vendor portal. */
+  portal_banner_url?: string | null;
   /** When true, event-scoped notifications are muted (in-app + push). */
   notifications_paused?: boolean;
   /** Optional auto-unmute time; when elapsed, notifications resume automatically. */

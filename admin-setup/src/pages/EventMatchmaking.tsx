@@ -22,7 +22,24 @@ import {
 } from '../lib/registrationDefaultVisibility';
 import { publicPortalLoginUrl, publicRegisterUrl } from '../lib/publicPortalUrl';
 import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
+import { uploadEventImage } from '../lib/uploadEventImage';
+import {
+  PORTAL_BANNER_FILE_ACCEPT,
+  PORTAL_BANNER_HINT,
+  PORTAL_BANNER_SIZE_LABEL,
+} from '../lib/portalBannerHints';
 import MatchmakingSolutionCategories from '../components/MatchmakingSolutionCategories';
+import {
+  LEGACY_DELEGATE_STAGE2_HIDDEN_PROMPTS,
+  MEETING_GOALS_DELEGATE_OPTIONS,
+  MEETING_GOALS_VENDOR_OPTIONS,
+  SOLUTION_CATEGORY_INTEREST_PROMPT,
+  SOLUTION_CATEGORY_VENDOR_PROMPT,
+  VENDOR_BUDGET_OPTIONS,
+  VENDOR_REVENUE_OPTIONS,
+  VENDOR_SCOPE_OPTIONS,
+  VENDOR_SENIORITY_OPTIONS,
+} from '../lib/specRegistrationQuestions';
 import styles from './EventMatchmaking.module.css';
 
 interface MatchConfigWeights {
@@ -73,9 +90,9 @@ type TemplateQuestion = {
 const COMMON_SELECT_OPTIONS = {
   employeeCount: ['Less than 1,000', '1,000+', '5,000+', '10,000+', '20,000+', '50,000+', '100,000+'],
   timeframe: ['0 - 6 months', '7 - 12 months', '13 - 18 months', '18+ months'],
-  annualRevenue: ['Under 500M', '500M - 1B', '1B - 5B', '5B - 10B', '10B - 20B', '20B+'],
-  budget2026: ['Under $100K', '$100K - $250K', '$250K - $500K', '$500K - $1M', '$1M - $5M', '$5M - $10M'],
-  scope: ['Regional', 'National', 'Global'],
+  annualRevenue: ['Under $10M', '$10M–$50M', '$50M–$250M', '$250M–$1B', 'Over $1B'],
+  budget2026: ['Under $50K', '$50K–$250K', '$250K–$1M', 'Over $1M', 'Not yet determined'],
+  scope: ['Global/Enterprise-wide', 'Regional', 'Departmental/Business unit', 'Team-level', 'Individual contributor only'],
   yesNo: ['Yes', 'No'],
   tuitionAmount: ['$1,000+', '$2,500+', '$5,000+', '$10,000+', '$15,000+'],
   surveySwitchWindow: ['Now', 'Within 6mo', 'Within 12mo', 'Not now. We are under contract for the next 1-2 years.', 'Not now. We are happy with our current provider.'],
@@ -103,18 +120,17 @@ const CATEGORY_OPTIONS = {
 };
 
 const ATTENDEE_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
-  { prompt: 'Company Name', question_type: 'text', is_required: true },
+  { prompt: 'Company Name', question_type: 'text', is_required: true, section_label: 'Identity & contact' },
   { prompt: 'First Name', question_type: 'text', is_required: true },
   { prompt: 'Last Name', question_type: 'text', is_required: true },
   { prompt: 'Job Title', question_type: 'text', is_required: true },
-  { prompt: 'Username (create one to login in future)', question_type: 'text', is_required: true },
-  { prompt: 'Work Phone', question_type: 'text', is_required: true },
-  { prompt: 'Cell Phone', question_type: 'text', is_required: true },
   { prompt: 'E-Mail Address', question_type: 'email', is_required: true },
+  { prompt: 'Work Phone', question_type: 'text' },
+  { prompt: 'Cell Phone', question_type: 'text' },
   { prompt: 'How did you hear about this event?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.hearAboutEvent },
   { prompt: 'Dietary Restrictions', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.dietaryRestrictions },
   { prompt: 'Preferred Pronouns', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.pronouns },
-  { prompt: 'Address', question_type: 'text' },
+  { prompt: 'Address', question_type: 'text', section_label: 'Company information' },
   { prompt: 'City', question_type: 'text', is_required: true },
   { prompt: 'State/Province', question_type: 'text', is_required: true },
   { prompt: 'Zip Code/Postal Code', question_type: 'text' },
@@ -127,74 +143,38 @@ const ATTENDEE_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
   { prompt: 'Select your budget for external solutions for 2026', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.budget2026 },
   { prompt: 'Scope of Responsibility', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.scope },
   { prompt: 'I sit in the C-suite or report directly to the C-suite', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'Name of person I report to', question_type: 'text', is_required: true },
-  { prompt: 'Please list your top 5 human resources, total rewards, and corporate wellness priorities for 2026', question_type: 'textarea', section_label: 'Organization context' },
-  { prompt: 'Please list your top 5 Culture, Engagement, and DE&I priorities for 2026', question_type: 'textarea' },
-  { prompt: 'What challenges are you facing, regarding achieving these objectives?', question_type: 'textarea', is_required: true },
-  { prompt: 'Please select the time frame below that best represents the plan to achieve these objectives?', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.timeframe },
-  { prompt: 'Total number of employees globally', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.employeeCount },
-  { prompt: 'Does your organization provide a tuition assistance benefit?', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'If yes, what amount?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.tuitionAmount },
-  { prompt: "How does formal education fit into your organization's culture of learning?", question_type: 'textarea', is_required: true },
-  { prompt: 'Which technologies/solutions are you presently utilizing for your human resources and total rewards initiatives?', question_type: 'textarea' },
-  { prompt: 'Which technologies or solutions are you currently utilizing for your DE&I and/or Culture & Engagement initiatives?', question_type: 'textarea', is_required: true },
-  { prompt: 'Which technologies/solutions are you presently looking to change/upgrade?', question_type: 'textarea', is_required: true },
-  { prompt: 'Are you looking to maximize your DE&I strategy with data and analytics?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'Are you (or someone who reports to you) responsible for managing your company-wide employee survey program?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'If Yes: When would you be willing to consider a new employee survey partner?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.surveySwitchWindow },
-  { prompt: 'Do you or anyone in your department manage compliance requirements for labor law posters, digital postings for remote workers, mandatory employee notifications, and related requirements?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: "Are you responsible for managing your company's rewards and benefits?", question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'Are you interested in a solution that makes it easy to create short-form, TikTok-style videos to improve employee experience — from onboarding and training to recognition and employee communication?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'Are you a minority owned organization?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
-  { prompt: 'Coaching', question_type: 'multi_select', section_label: 'Solution providers categories', options: CATEGORY_OPTIONS.coaching },
-  { prompt: 'Consulting & Services', question_type: 'multi_select', options: CATEGORY_OPTIONS.consulting },
-  { prompt: 'Culture, Engagement & Wellness', question_type: 'multi_select', options: CATEGORY_OPTIONS.cultureWellness },
-  { prompt: 'Technologies', question_type: 'multi_select', options: CATEGORY_OPTIONS.technologies },
-  { prompt: 'Training', question_type: 'multi_select', options: CATEGORY_OPTIONS.training },
-  { prompt: 'Workforce & Leadership Development', question_type: 'multi_select', options: CATEGORY_OPTIONS.workforceLeadership },
-  { prompt: 'Compensation & Benefits', question_type: 'multi_select', options: CATEGORY_OPTIONS.compensationBenefits },
-  { prompt: 'Corporate Wellness Services', question_type: 'multi_select', options: CATEGORY_OPTIONS.corporateWellnessServices },
-  { prompt: 'Employee Relations', question_type: 'multi_select', options: CATEGORY_OPTIONS.employeeRelations },
-  { prompt: 'Executive Training & Leadership Development', question_type: 'multi_select', options: CATEGORY_OPTIONS.executiveLeadership },
-  { prompt: 'HR Software & Technologies', question_type: 'multi_select', options: CATEGORY_OPTIONS.hrSoftware },
-  { prompt: 'Learning & Development Training & Programs', question_type: 'multi_select', options: CATEGORY_OPTIONS.learningAndDevelopment },
-  { prompt: 'Organizational Culture', question_type: 'multi_select', options: CATEGORY_OPTIONS.organizationalCulture },
-  { prompt: 'Talent / Human Capital Management (HCM)', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentHcm },
-  { prompt: 'Talent Acquisition & Management', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentAcquisition },
-  { prompt: 'Other Provider Offerings Not Listed', question_type: 'textarea' },
-  { prompt: 'I have read and accept the Terms and Conditions and Code of Conduct', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo },
+  { prompt: 'Name of person I report to', question_type: 'text' },
+  { prompt: SOLUTION_CATEGORY_INTEREST_PROMPT, question_type: 'multi_select', is_required: true, section_label: 'Solution interest' },
+  { prompt: 'Meeting Goals', question_type: 'multi_select', is_required: true, options: MEETING_GOALS_DELEGATE_OPTIONS, section_label: 'Meeting preferences' },
+  { prompt: 'What are you hoping to get from this event?', question_type: 'textarea', is_required: true },
+  { prompt: 'Headshot/Photo', question_type: 'text', is_required: true, section_label: 'Profile' },
+  { prompt: 'I have read and accept the Terms and Conditions and Code of Conduct', question_type: 'single_select', is_required: true, options: COMMON_SELECT_OPTIONS.yesNo, section_label: 'Stage 1 registration' },
 ];
 
 const VENDOR_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
-  { prompt: 'Company Name', question_type: 'text', is_required: true, section_label: 'Vendor profile' },
-  { prompt: 'Username', question_type: 'text', is_required: true },
-  { prompt: 'Address', question_type: 'text' },
+  { prompt: 'Company Name', question_type: 'text', is_required: true, section_label: 'Identity & contact' },
+  { prompt: 'First Name', question_type: 'text', is_required: true },
+  { prompt: 'Last Name', question_type: 'text', is_required: true },
+  { prompt: 'Job Title', question_type: 'text', is_required: true },
+  { prompt: 'E-Mail Address', question_type: 'email', is_required: true },
+  { prompt: 'Work Phone', question_type: 'text' },
+  { prompt: 'Cell Phone', question_type: 'text' },
+  { prompt: 'Address', question_type: 'text', section_label: 'Company information' },
   { prompt: 'City', question_type: 'text', is_required: true },
   { prompt: 'State/Province', question_type: 'text', is_required: true },
-  { prompt: 'Zip', question_type: 'text' },
+  { prompt: 'Zip Code/Postal Code', question_type: 'text' },
   { prompt: 'Country', question_type: 'text' },
   { prompt: 'Company Description', question_type: 'textarea', is_required: true, section_label: 'Marketing profile' },
   { prompt: 'Company Logo Image', question_type: 'text', is_required: true },
   { prompt: 'Company Website', question_type: 'text' },
-  { prompt: 'Additional Information PDF URL', question_type: 'text' },
-  { prompt: 'Are you a minority owned organization?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo, section_label: 'Diversity profile' },
-  { prompt: 'Specify your minority owned business', question_type: 'text' },
-  { prompt: 'Coaching', question_type: 'multi_select', section_label: 'Solution providers categories', options: CATEGORY_OPTIONS.coaching },
-  { prompt: 'Consulting & Services', question_type: 'multi_select', options: CATEGORY_OPTIONS.consulting },
-  { prompt: 'Culture, Engagement & Wellness', question_type: 'multi_select', options: CATEGORY_OPTIONS.cultureWellness },
-  { prompt: 'Technologies', question_type: 'multi_select', options: CATEGORY_OPTIONS.technologies },
-  { prompt: 'Training', question_type: 'multi_select', options: CATEGORY_OPTIONS.training },
-  { prompt: 'Workforce & Leadership Development', question_type: 'multi_select', options: CATEGORY_OPTIONS.workforceLeadership },
-  { prompt: 'Compensation & Benefits', question_type: 'multi_select', options: CATEGORY_OPTIONS.compensationBenefits },
-  { prompt: 'Corporate Wellness Services', question_type: 'multi_select', options: CATEGORY_OPTIONS.corporateWellnessServices },
-  { prompt: 'Employee Relations', question_type: 'multi_select', options: CATEGORY_OPTIONS.employeeRelations },
-  { prompt: 'Executive Training & Leadership Development', question_type: 'multi_select', options: CATEGORY_OPTIONS.executiveLeadership },
-  { prompt: 'HR Software & Technologies', question_type: 'multi_select', options: CATEGORY_OPTIONS.hrSoftware },
-  { prompt: 'Learning & Development Training & Programs', question_type: 'multi_select', options: CATEGORY_OPTIONS.learningAndDevelopment },
-  { prompt: 'Organizational Culture', question_type: 'multi_select', options: CATEGORY_OPTIONS.organizationalCulture },
-  { prompt: 'Talent / Human Capital Management (HCM)', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentHcm },
-  { prompt: 'Talent Acquisition & Management', question_type: 'multi_select', options: CATEGORY_OPTIONS.talentAcquisition },
-  { prompt: 'Other Provider Offerings Not Listed', question_type: 'textarea', section_label: 'Solution providers categories' },
+  { prompt: 'Which seniority levels are you hoping to meet with?', question_type: 'multi_select', is_required: true, options: VENDOR_SENIORITY_OPTIONS, section_label: 'Target audience & ideal customer profile' },
+  { prompt: "Ideal customer's revenue range", question_type: 'multi_select', is_required: true, options: VENDOR_REVENUE_OPTIONS },
+  { prompt: "Budget range you're hoping your buyer has for 2026", question_type: 'multi_select', is_required: true, options: VENDOR_BUDGET_OPTIONS },
+  { prompt: "Functions/scope you're targeting", question_type: 'multi_select', is_required: true, options: VENDOR_SCOPE_OPTIONS },
+  { prompt: SOLUTION_CATEGORY_VENDOR_PROMPT, question_type: 'multi_select', is_required: true, section_label: 'Solution interest (vendor)' },
+  { prompt: 'Meeting Goals', question_type: 'multi_select', is_required: true, options: MEETING_GOALS_VENDOR_OPTIONS, section_label: 'Meeting preferences & matching' },
+  { prompt: 'What are you hoping to accomplish at this event?', question_type: 'textarea', is_required: true },
+  { prompt: 'Headshot/Photo', question_type: 'text', is_required: true, section_label: 'Profile & event logistics' },
   { prompt: 'Are you sending representatives to the event onsite?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo, section_label: 'Logistics' },
   { prompt: 'Will your team take meetings virtually?', question_type: 'single_select', options: COMMON_SELECT_OPTIONS.yesNo },
 ];
@@ -252,6 +232,16 @@ const SPEAKER_TEMPLATE_QUESTIONS: TemplateQuestion[] = [
 const KBM_ATTENDEE_FORM_NAME = 'KBM Attendee Registration';
 const KBM_VENDOR_FORM_NAME = 'KBM Vendor Registration';
 const SPEAKER_FORM_NAME = 'Speaker Registration';
+
+function formatDatetimeLocalValue(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const off = d.getTimezoneOffset();
+  const local = new Date(d.getTime() - off * 60_000);
+  return local.toISOString().slice(0, 16);
+}
+
 function titleizeAudience(audience: MatchmakingAudience) {
   if (audience === 'user') return 'Speaker';
   if (audience === 'vendor') return 'Vendor';
@@ -400,7 +390,10 @@ export default function EventMatchmaking() {
   const [delegateStage2Active, setDelegateStage2Active] = useState(false);
   const [vendorStage2Active, setVendorStage2Active] = useState(false);
   const [stage2HoldingMessage, setStage2HoldingMessage] = useState('');
+  const [stage2ExpectedOpenAt, setStage2ExpectedOpenAt] = useState('');
   const [savingPortalSettings, setSavingPortalSettings] = useState(false);
+  const [uploadingPortalBanner, setUploadingPortalBanner] = useState(false);
+  const portalBannerInputRef = useRef<HTMLInputElement>(null);
   const [savingSettings, setSavingSettings] = useState(false);
   const [generatingSuggestions, setGeneratingSuggestions] = useState(false);
   const [submissionActionId, setSubmissionActionId] = useState('');
@@ -427,6 +420,7 @@ export default function EventMatchmaking() {
   const [sectionRenameLabel, setSectionRenameLabel] = useState('');
   const [sectionFilterLabel, setSectionFilterLabel] = useState<'all' | string>('all');
   const [questionSearchQuery, setQuestionSearchQuery] = useState('');
+  const [showHiddenLegacyQuestions, setShowHiddenLegacyQuestions] = useState(false);
   const [duplicatingQuestionId, setDuplicatingQuestionId] = useState('');
   const [sectionBusy, setSectionBusy] = useState(false);
   const [repairingSections, setRepairingSections] = useState(false);
@@ -464,8 +458,16 @@ export default function EventMatchmaking() {
   );
 
   const activeQuestions = useMemo(
-    () => questions.filter((q) => q.form_id === activeForm?.id).sort((a, b) => a.sort_order - b.sort_order),
-    [questions, activeForm]
+    () =>
+      questions
+        .filter((q) => q.form_id === activeForm?.id)
+        .filter((q) => showHiddenLegacyQuestions || !q.is_hidden)
+        .sort((a, b) => a.sort_order - b.sort_order),
+    [questions, activeForm, showHiddenLegacyQuestions],
+  );
+  const hiddenLegacyQuestionCount = useMemo(
+    () => questions.filter((q) => q.form_id === activeForm?.id && q.is_hidden).length,
+    [questions, activeForm],
   );
   const selectedQuestion = useMemo(() => questions.find((q) => q.id === selectedQuestionId) ?? null, [questions, selectedQuestionId]);
   const selectedQuestionOptions = useMemo(
@@ -617,7 +619,11 @@ export default function EventMatchmaking() {
     if (!eventId) return;
     setError('');
     try {
-      const { data: ev, error: evErr } = await supabase.from('events').select('id, name').eq('id', eventId).single();
+      const { data: ev, error: evErr } = await supabase
+        .from('events')
+        .select('id, name, portal_banner_url, badge_banner_url, banner_url, logo_url')
+        .eq('id', eventId)
+        .single();
       if (evErr) throw evErr;
       setEvent((ev as Event) ?? null);
 
@@ -636,7 +642,7 @@ export default function EventMatchmaking() {
           .limit(200),
         supabase
           .from('event_matchmaking_settings')
-          .select('registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, registration_notify_team_emails, delegate_stage2_active, vendor_stage2_active, stage2_holding_message')
+          .select('registration_open, meeting_requests_open, delegate_portal_hotel_visible, delegate_hotel_content, registration_notify_team_emails, delegate_stage2_active, vendor_stage2_active, stage2_holding_message, stage2_expected_open_at')
           .eq('event_id', eventId)
           .maybeSingle(),
         supabase
@@ -671,6 +677,7 @@ export default function EventMatchmaking() {
         delegate_stage2_active?: boolean;
         vendor_stage2_active?: boolean;
         stage2_holding_message?: string | null;
+        stage2_expected_open_at?: string | null;
       } | null;
       setMeetingRequestsOpen(Boolean(settings?.meeting_requests_open));
       setDelegateHotelVisible(settings?.delegate_portal_hotel_visible !== false);
@@ -679,6 +686,7 @@ export default function EventMatchmaking() {
       setDelegateStage2Active(Boolean(settings?.delegate_stage2_active));
       setVendorStage2Active(Boolean(settings?.vendor_stage2_active));
       setStage2HoldingMessage(settings?.stage2_holding_message ?? '');
+      setStage2ExpectedOpenAt(formatDatetimeLocalValue(settings?.stage2_expected_open_at));
 
       const { data: matchConfigRow, error: matchConfigErr } = await supabase
         .from('event_match_config')
@@ -1061,6 +1069,9 @@ export default function EventMatchmaking() {
         delegate_stage2_active: delegateStage2Active,
         vendor_stage2_active: vendorStage2Active,
         stage2_holding_message: stage2HoldingMessage.trim() || null,
+        stage2_expected_open_at: stage2ExpectedOpenAt.trim()
+          ? new Date(stage2ExpectedOpenAt).toISOString()
+          : null,
         updated_at: new Date().toISOString(),
       });
       if (upsertErr) throw upsertErr;
@@ -1070,6 +1081,51 @@ export default function EventMatchmaking() {
       setSavingPortalSettings(false);
     }
   };
+
+  const persistPortalBanner = async (portal_banner_url: string | null) => {
+    if (!eventId) return;
+    const { error: err } = await supabase
+      .from('events')
+      .update({ portal_banner_url, updated_at: new Date().toISOString() })
+      .eq('id', eventId);
+    if (err) throw err;
+  };
+
+  const onPortalBannerFile = async (ev: React.ChangeEvent<HTMLInputElement>) => {
+    const file = ev.target.files?.[0];
+    ev.target.value = '';
+    if (!file || !eventId) return;
+    setError('');
+    setUploadingPortalBanner(true);
+    try {
+      const url = await uploadEventImage(file, eventId, 'portal-banner');
+      await persistPortalBanner(url);
+      setEvent((prev) => (prev ? { ...prev, portal_banner_url: url } : prev));
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setUploadingPortalBanner(false);
+    }
+  };
+
+  const onClearPortalBanner = async () => {
+    if (!eventId) return;
+    setError('');
+    setUploadingPortalBanner(true);
+    try {
+      await persistPortalBanner(null);
+      setEvent((prev) => (prev ? { ...prev, portal_banner_url: null } : prev));
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setUploadingPortalBanner(false);
+    }
+  };
+
+  const portalBannerPreviewSrc =
+    (event?.portal_banner_url ?? '').trim() ||
+    (event?.badge_banner_url ?? '').trim() ||
+    null;
 
   const saveMatchConfig = async () => {
     if (!eventId) return;
@@ -1531,6 +1587,10 @@ export default function EventMatchmaking() {
 
         const existingQuestions = questions.filter((q) => q.form_id === form.id);
         const existingByPrompt = new Map(existingQuestions.map((q) => [q.prompt.trim().toLowerCase(), q]));
+        const templatePromptNorms = new Set(templateQuestions.map((q) => normalizeRegistrationPrompt(q.prompt)));
+        const legacyHiddenNorms = new Set(
+          LEGACY_DELEGATE_STAGE2_HIDDEN_PROMPTS.map((p) => normalizeRegistrationPrompt(p)),
+        );
 
         let rollingSectionHeading: string | null = null;
         for (const [idx, q] of templateQuestions.entries()) {
@@ -1549,6 +1609,7 @@ export default function EventMatchmaking() {
                 is_required: q.is_required ?? false,
                 section_label: sectionForDb,
                 is_base_question: true,
+                is_hidden: isRegistrationQuestionHiddenByDefault(audience, q.prompt),
                 sort_order: idx,
               })
               .eq('id', existing.id);
@@ -1616,12 +1677,13 @@ export default function EventMatchmaking() {
           }
         }
 
-        const toHideDeprecated = existingQuestions.filter(
-          (q) =>
-            q.is_base_question &&
-            VENDOR_ALWAYS_HIDDEN_PROMPTS.has(normalizeRegistrationPrompt(q.prompt)) &&
-            !q.is_hidden
-        );
+        const toHideDeprecated = existingQuestions.filter((q) => {
+          if (!q.is_base_question || q.is_hidden) return false;
+          const norm = normalizeRegistrationPrompt(q.prompt);
+          if (audience === 'vendor' && VENDOR_ALWAYS_HIDDEN_PROMPTS.has(norm)) return true;
+          if (audience === 'attendee' && legacyHiddenNorms.has(norm)) return true;
+          return !templatePromptNorms.has(norm);
+        });
         for (const q of toHideDeprecated) {
           const { error: hideErr } = await supabase.from('event_registration_questions').update({ is_hidden: true }).eq('id', q.id);
           if (hideErr) throw hideErr;
@@ -1792,6 +1854,47 @@ export default function EventMatchmaking() {
       </section>
 
       <section className={styles.section}>
+        <h2>Connect portal banner</h2>
+        <p className={styles.hint}>
+          {PORTAL_BANNER_HINT} Recommended size: <strong>{PORTAL_BANNER_SIZE_LABEL}</strong>. Shown at the top of
+          connect.kbmcollective.org when delegates/vendors sign in. If empty, the badge header or app banner is used;
+          otherwise the event logo appears on a navy header.
+        </p>
+        <input
+          ref={portalBannerInputRef}
+          type="file"
+          accept={PORTAL_BANNER_FILE_ACCEPT}
+          className={styles.hiddenFileInput}
+          onChange={onPortalBannerFile}
+        />
+        {portalBannerPreviewSrc ? (
+          <div className={styles.portalBannerPreviewWrap}>
+            <img src={portalBannerPreviewSrc} alt="" className={styles.portalBannerPreview} />
+          </div>
+        ) : (
+          <div className={styles.portalBannerPreviewPlaceholder}>No wide portal banner yet — logo-only header for now</div>
+        )}
+        <div className={styles.portalBannerActions}>
+          <button
+            type="button"
+            disabled={uploadingPortalBanner}
+            onClick={() => portalBannerInputRef.current?.click()}
+          >
+            {uploadingPortalBanner
+              ? 'Uploading…'
+              : event?.portal_banner_url
+                ? 'Replace portal banner'
+                : 'Upload portal banner'}
+          </button>
+          {event?.portal_banner_url ? (
+            <button type="button" disabled={uploadingPortalBanner} onClick={() => void onClearPortalBanner()}>
+              Remove portal banner
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <section className={styles.section}>
         <h2>Stage 2 portal activation</h2>
         <p className={styles.hint}>
           Stage 1 registration collects account info. When you activate Stage 2 per role, registrants can sign in and complete their
@@ -1805,6 +1908,15 @@ export default function EventMatchmaking() {
           <label className={styles.checkboxInline}>
             <input type="checkbox" checked={vendorStage2Active} onChange={(e) => setVendorStage2Active(e.target.checked)} />
             Vendor Stage 2 active
+          </label>
+          <label>
+            Expected open date (optional — shown on holding screen and in confirmation email)
+            <input
+              type="datetime-local"
+              value={stage2ExpectedOpenAt}
+              onChange={(e) => setStage2ExpectedOpenAt(e.target.value)}
+              style={{ width: '100%', marginTop: 6 }}
+            />
           </label>
           <label>
             Holding screen message (shown when Stage 2 is not yet active)
@@ -1910,9 +2022,9 @@ export default function EventMatchmaking() {
       <section className={styles.section}>
         <h2>Registration forms</h2>
         <p className={styles.hint}>
-          Delegate, vendor, and speaker templates install automatically with a lean default (contact info, terms, and role-specific
-          essentials). Eligibility surveys, solution categories, logistics extras, and legacy fields start hidden — use Show or
-          Show section to enable them for a specific event.
+          Master Build Spec defaults: delegate Registration Details uses six sections (identity, company, eligibility, solution
+          interest, meeting preferences, profile). Legacy KBM fields stay in the database but are hidden — they do not appear on the
+          connect portal unless you Show them here.
         </p>
         {templateError ? <p className={styles.error}>{templateError}</p> : null}
         <div className={styles.inlineForm}>
@@ -2060,6 +2172,16 @@ export default function EventMatchmaking() {
                     ))}
                   </select>
                 </label>
+                {hiddenLegacyQuestionCount > 0 ? (
+                  <label className={styles.checkboxInline}>
+                    <input
+                      type="checkbox"
+                      checked={showHiddenLegacyQuestions}
+                      onChange={(e) => setShowHiddenLegacyQuestions(e.target.checked)}
+                    />
+                    {' '}Show {hiddenLegacyQuestionCount} hidden legacy question{hiddenLegacyQuestionCount === 1 ? '' : 's'}
+                  </label>
+                ) : null}
               </div>
             </div>
 

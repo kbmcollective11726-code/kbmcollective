@@ -1,75 +1,81 @@
-import type { MatchmakingAudience } from './types';
+import type { MatchmakingAudience, EventRegistrationQuestion } from './types';
+import {
+  isHeadshotPrompt,
+  isSolutionCategoryInterestPrompt,
+  SPEC_DELEGATE_STAGE2_PROMPTS,
+  SPEC_VENDOR_STAGE2_PROMPTS,
+} from './specRegistrationQuestions';
 
-/** Prompts collected in the registration portal header grid — hide in the question list. */
+/** Prompts collected in the Stage 1 registration header grid — not repeated in the question list. */
 export const REGISTRATION_TOP_GRID_PROMPTS = new Set(
-  ['company name', 'first name', 'last name', 'e-mail address', 'email', 'job title'].map((p) => p.toLowerCase())
+  ['company name', 'first name', 'last name', 'e-mail address', 'email', 'job title'].map((p) => p.toLowerCase()),
 );
 
-/** Prompts rendered in the registration portal header grid instead of the question list. */
 export const REGISTRATION_HEADER_FIELD_PROMPTS = new Set(
-  [...REGISTRATION_TOP_GRID_PROMPTS, 'cell phone']
-);
-
-/** Solution-provider category multi-selects — enable per event when running B2B matchmaking. */
-const SOLUTION_CATEGORY_PROMPTS = new Set(
-  [
-    'Coaching',
-    'Consulting & Services',
-    'Culture, Engagement & Wellness',
-    'Technologies',
-    'Training',
-    'Workforce & Leadership Development',
-    'Compensation & Benefits',
-    'Corporate Wellness Services',
-    'Employee Relations',
-    'Executive Training & Leadership Development',
-    'HR Software & Technologies',
-    'Learning & Development Training & Programs',
-    'Organizational Culture',
-    'Talent / Human Capital Management (HCM)',
-    'Talent Acquisition & Management',
-    'Other Provider Offerings Not Listed',
-  ].map((p) => p.toLowerCase())
-);
-
-/** Delegate — never collect on public registration (sign-in uses email). */
-export const DELEGATE_ALWAYS_HIDDEN_PROMPTS = new Set(
-  ['Username (create one to login in future)', 'Work Phone'].map((p) => p.toLowerCase())
+  [...REGISTRATION_TOP_GRID_PROMPTS, 'cell phone'],
 );
 
 export const TERMS_ACCEPTANCE_PROMPT =
   'I have read and accept the Terms and Conditions and Code of Conduct';
 
-/** Delegate (attendee) — shown on a lean default form for any event. */
-const DELEGATE_VISIBLE_BY_DEFAULT = new Set(
-  ['Cell Phone', TERMS_ACCEPTANCE_PROMPT].map((p) => p.toLowerCase())
+const STAGE1_DELEGATE_PROMPTS = new Set(
+  [
+    'First Name',
+    'Last Name',
+    'E-Mail Address',
+    'Email',
+    'Company Name',
+    'Job Title',
+    'Cell Phone',
+    TERMS_ACCEPTANCE_PROMPT,
+  ].map((p) => p.toLowerCase()),
 );
 
-/** Vendor — core profile + onsite/virtual logistics. */
-const VENDOR_VISIBLE_BY_DEFAULT = new Set(
+const STAGE1_VENDOR_PROMPTS = new Set(
   [
-    'Username',
+    'First Name',
+    'Last Name',
+    'E-Mail Address',
+    'Email',
+    'Company Name',
+    'Job Title',
+    'Cell Phone',
+    TERMS_ACCEPTANCE_PROMPT,
     'Company Description',
     'Company Logo Image',
-    'Company Website',
     'Are you sending representatives to the event onsite?',
     'Will your team take meetings virtually?',
-  ].map((p) => p.toLowerCase())
+  ].map((p) => p.toLowerCase()),
 );
 
-/** Speaker — core profile + session materials. */
-const SPEAKER_VISIBLE_BY_DEFAULT = new Set(
+const STAGE1_SPEAKER_PROMPTS = new Set(
   [
-    'Username (create one to login in future)',
-    'Work Phone',
+    'First Name',
+    'Last Name',
+    'E-Mail Address',
+    'Email',
+    'Company Name',
+    'Job Title',
     'Cell Phone',
+    'Work Phone',
+    TERMS_ACCEPTANCE_PROMPT,
     'Speaker Bio',
     'Speaker Headshot',
-    'I have read and accept the Terms and Conditions and Code of Conduct',
-  ].map((p) => p.toLowerCase())
+  ].map((p) => p.toLowerCase()),
 );
 
-/** Legacy vendor ops fields — always suppressed (not optional per event). */
+export const STAGE2_DELEGATE_PROMPTS = new Set(
+  SPEC_DELEGATE_STAGE2_PROMPTS.map((p) => p.toLowerCase()),
+);
+
+export const STAGE2_VENDOR_PROMPTS = new Set(
+  SPEC_VENDOR_STAGE2_PROMPTS.map((p) => p.toLowerCase()),
+);
+
+export const DELEGATE_STAGE1_HIDDEN_PROMPTS = new Set(
+  ['Username (create one to login in future)', 'Work Phone'].map((p) => p.toLowerCase()),
+);
+
 export const VENDOR_ALWAYS_HIDDEN_PROMPTS = new Set(
   [
     'Are you attending the event?',
@@ -81,25 +87,54 @@ export const VENDOR_ALWAYS_HIDDEN_PROMPTS = new Set(
     "Available for 1-on-1's",
     'Approved status (Y/N/P)',
     'Company Logo URL',
-  ].map((p) => p.toLowerCase())
+    'Username',
+    'Additional Information PDF URL',
+    'Are you a minority owned organization?',
+    'Specify your minority owned business',
+    'Zip',
+  ].map((p) => p.toLowerCase()),
 );
 
 export function normalizeRegistrationPrompt(prompt: string): string {
   return prompt.trim().toLowerCase();
 }
 
-function visibleSetForAudience(audience: MatchmakingAudience): Set<string> {
-  if (audience === 'vendor') return VENDOR_VISIBLE_BY_DEFAULT;
-  if (audience === 'user') return SPEAKER_VISIBLE_BY_DEFAULT;
-  return DELEGATE_VISIBLE_BY_DEFAULT;
+function stage1SetForAudience(audience: MatchmakingAudience): Set<string> {
+  if (audience === 'vendor') return STAGE1_VENDOR_PROMPTS;
+  if (audience === 'user') return STAGE1_SPEAKER_PROMPTS;
+  return STAGE1_DELEGATE_PROMPTS;
 }
 
-/** Whether a base template question should start hidden (admins can show per event). */
+function stage2SetForAudience(audience: MatchmakingAudience): Set<string> {
+  if (audience === 'vendor') return STAGE2_VENDOR_PROMPTS;
+  return STAGE2_DELEGATE_PROMPTS;
+}
+
+export function isStage1RegistrationQuestion(audience: MatchmakingAudience, prompt: string): boolean {
+  const norm = normalizeRegistrationPrompt(prompt);
+  if (audience === 'attendee' && DELEGATE_STAGE1_HIDDEN_PROMPTS.has(norm)) return false;
+  if (audience === 'vendor' && VENDOR_ALWAYS_HIDDEN_PROMPTS.has(norm)) return false;
+  return stage1SetForAudience(audience).has(norm);
+}
+
 export function isRegistrationQuestionHiddenByDefault(audience: MatchmakingAudience, prompt: string): boolean {
   const norm = normalizeRegistrationPrompt(prompt);
-  if (REGISTRATION_TOP_GRID_PROMPTS.has(norm)) return true;
   if (audience === 'vendor' && VENDOR_ALWAYS_HIDDEN_PROMPTS.has(norm)) return true;
-  if (audience === 'attendee' && DELEGATE_ALWAYS_HIDDEN_PROMPTS.has(norm)) return true;
-  if (SOLUTION_CATEGORY_PROMPTS.has(norm)) return true;
-  return !visibleSetForAudience(audience).has(norm);
+  return !stage2SetForAudience(audience).has(norm);
 }
+
+export function isStage2RegistrationQuestion(
+  audience: MatchmakingAudience,
+  question: Pick<EventRegistrationQuestion, 'prompt' | 'is_hidden' | 'is_base_question'>,
+): boolean {
+  if (question.is_hidden) return false;
+  const norm = normalizeRegistrationPrompt(question.prompt);
+  if (norm === normalizeRegistrationPrompt(TERMS_ACCEPTANCE_PROMPT)) return false;
+  if (audience === 'vendor' && VENDOR_ALWAYS_HIDDEN_PROMPTS.has(norm)) return false;
+  if (audience === 'vendor' && norm === 'company logo url') return false;
+  if (question.is_base_question === false) return true;
+  if (isSolutionCategoryInterestPrompt(question.prompt) || isHeadshotPrompt(question.prompt)) return true;
+  return stage2SetForAudience(audience).has(norm);
+}
+
+export const DELEGATE_ALWAYS_HIDDEN_PROMPTS = DELEGATE_STAGE1_HIDDEN_PROMPTS;

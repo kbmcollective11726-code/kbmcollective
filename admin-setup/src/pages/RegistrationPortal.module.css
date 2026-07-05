@@ -1,44 +1,10 @@
-.page {
-  min-height: 100vh;
-  padding: 16px 12px 28px;
-  background: #e5e7eb;
-}
-
-.hero {
-  max-width: 1120px;
-  width: 100%;
-  margin: 0 auto;
-  border-radius: 10px 10px 0 0;
-  overflow: hidden;
-  background: #fff;
-  border: 1px solid #b9c6df;
-  border-bottom: 0;
-}
-
-.heroImage {
-  display: block;
-  width: 100%;
-  aspect-ratio: 8 / 5;
-  max-height: min(420px, 50vh);
-  object-fit: cover;
-  object-position: center;
-}
-
-.heroPlaceholder {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #dbeafe;
-  font-size: 15px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+.formCard {
+  display: grid;
+  gap: 12px;
+  margin-top: 16px;
 }
 
 .card {
-  max-width: 1120px;
-  margin: 0 auto;
   background: #fff;
   border: 1px solid #c8d0dd;
   border-radius: 14px;

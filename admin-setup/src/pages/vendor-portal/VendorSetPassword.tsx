@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { loadVendorPortalEvent } from '../../lib/vendorPortal';
+import PortalGuestNav from '../../components/PortalGuestNav';
+import PortalPublicShell from '../../components/PortalPublicShell';
 import {
   establishPortalAuthSession,
   parseAuthParamsFromUrl,
@@ -12,7 +14,7 @@ import styles from '../delegate-portal/DelegatePortal.module.css';
 export default function VendorSetPassword() {
   const { eventId } = useParams<{ eventId: string }>();
   const navigate = useNavigate();
-  const [eventName, setEventName] = useState('');
+  const [event, setEvent] = useState<Awaited<ReturnType<typeof loadVendorPortalEvent>>>(null);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [ready, setReady] = useState(false);
@@ -22,7 +24,7 @@ export default function VendorSetPassword() {
 
   useEffect(() => {
     if (!eventId) return;
-    void loadVendorPortalEvent(eventId).then((e) => setEventName(e?.name ?? ''));
+    void loadVendorPortalEvent(eventId).then(setEvent);
 
     const params = parseAuthParamsFromUrl();
 
@@ -68,23 +70,29 @@ export default function VendorSetPassword() {
     }
   };
 
+  if (!eventId) {
+    return <div className={styles.page}>Missing event.</div>;
+  }
+
   if (loading) {
-    return <div className={styles.loading}>Loading password setup…</div>;
+    return (
+      <PortalPublicShell event={event} nav={<PortalGuestNav eventId={eventId} role="vendor" activeTab="login" />}>
+        <div className={styles.loading}>Loading password setup…</div>
+      </PortalPublicShell>
+    );
   }
 
   return (
-    <div className={styles.loginWrap}>
-      <div className={styles.loginCard}>
+    <PortalPublicShell event={event} nav={<PortalGuestNav eventId={eventId} role="vendor" activeTab="login" />}>
+      <div className={styles.authCard}>
         <h1>Set your password</h1>
-        {eventName ? <p className={styles.hint}>{eventName}</p> : null}
+        {event?.name ? <p className={styles.hint} style={{ textAlign: 'center' }}>{event.name}</p> : null}
         {!ready ? (
           <>
             {error ? <p className={styles.error}>{error}</p> : null}
-            {eventId ? (
-              <p className={styles.hint}>
-                <Link to={`/register/${eventId}/vendor`}>Return to registration</Link>
-              </p>
-            ) : null}
+            <p className={styles.hint} style={{ textAlign: 'center' }}>
+              <Link to={`/register/${eventId}/vendor`}>Return to registration</Link>
+            </p>
           </>
         ) : (
           <>
@@ -106,6 +114,6 @@ export default function VendorSetPassword() {
           </>
         )}
       </div>
-    </div>
+    </PortalPublicShell>
   );
 }

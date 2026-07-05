@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { linkAndLoadVendorSubmission, loadVendorPortalEvent } from '../lib/vendorPortal';
+import PortalGuestNav from '../components/PortalGuestNav';
+import PortalPublicShell from '../components/PortalPublicShell';
 import styles from './delegate-portal/DelegatePortal.module.css';
 
 export default function VendorLogin() {
@@ -14,11 +16,11 @@ export default function VendorLogin() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState(stateError);
   const [loading, setLoading] = useState(false);
-  const [eventName, setEventName] = useState('');
+  const [event, setEvent] = useState<Awaited<ReturnType<typeof loadVendorPortalEvent>>>(null);
 
   useEffect(() => {
     if (!eventId) return;
-    void loadVendorPortalEvent(eventId).then((e) => setEventName(e?.name ?? ''));
+    void loadVendorPortalEvent(eventId).then(setEvent);
   }, [eventId]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -51,11 +53,18 @@ export default function VendorLogin() {
     }
   };
 
+  if (!eventId) {
+    return <div className={styles.page}>Missing event.</div>;
+  }
+
   return (
-    <div className={styles.loginWrap}>
-      <div className={styles.loginCard}>
+    <PortalPublicShell
+      event={event}
+      nav={<PortalGuestNav eventId={eventId} role="vendor" activeTab="login" />}
+    >
+      <div className={styles.authCard}>
         <h1>Vendor sign in</h1>
-        {eventName ? <p className={styles.hint}>{eventName}</p> : null}
+        {event?.name ? <p className={styles.hint} style={{ textAlign: 'center' }}>{event.name}</p> : null}
         <p className={styles.hint}>Sign in to view your vendor profile and meeting preferences.</p>
         {stateMessage ? <p className={styles.success}>{stateMessage}</p> : null}
         {error ? <p className={styles.error}>{error}</p> : null}
@@ -72,12 +81,10 @@ export default function VendorLogin() {
             {loading ? 'Signing in…' : 'Sign in'}
           </button>
         </form>
-        {eventId ? (
-          <p className={styles.hint} style={{ marginTop: 16 }}>
-            Need to register? <Link to={`/register/${eventId}/vendor`}>Complete vendor registration</Link>
-          </p>
-        ) : null}
+        <p className={styles.hint} style={{ marginTop: 16, textAlign: 'center' }}>
+          Need to register? <Link to={`/register/${eventId}/vendor`}>Complete vendor registration</Link>
+        </p>
       </div>
-    </div>
+    </PortalPublicShell>
   );
 }

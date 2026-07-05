@@ -301,11 +301,17 @@ async function tryR2Base64Proxy(
   return null;
 }
 
-export type EventScopedImageFolder = 'vendor-logos' | 'event-banner' | 'badge-banner' | 'sponsor-logos';
+export type EventScopedImageFolder =
+  | 'vendor-logos'
+  | 'event-banner'
+  | 'badge-banner'
+  | 'portal-banner'
+  | 'sponsor-logos';
 
 function buildStoragePath(eventId: string, userId: string, folder: EventScopedImageFolder): string {
   if (folder === 'event-banner') return `${eventId}/banner_${Date.now()}.jpg`;
   if (folder === 'badge-banner') return `${eventId}/badge_banner_${Date.now()}.jpg`;
+  if (folder === 'portal-banner') return `${eventId}/portal_banner_${Date.now()}.jpg`;
   return `${eventId}/${folder}/${userId}_${Date.now()}.png`;
 }
 
@@ -332,7 +338,7 @@ export async function uploadEventImage(file: File, eventId: string, folder: Even
 
   const logoFolder = isLogoFolder(folder);
   const imageBlob =
-    folder === 'badge-banner'
+    folder === 'badge-banner' || folder === 'portal-banner'
       ? await compressBadgeBannerToJpegBlob(file, BANNER_JPEG_QUALITY)
       : folder === 'event-banner'
       ? await compressImageToJpegBlob(file, {

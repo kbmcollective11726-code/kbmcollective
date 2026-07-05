@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import PortalHoldingScreen from '../../components/PortalHoldingScreen';
+import PortalHeroBanner from '../../components/PortalHeroBanner';
 import {
   formatEventDateRange,
   isStage2Active,
@@ -123,32 +124,29 @@ export default function VendorPortalLayout() {
     );
   }
 
-  if (!isStage2Active(settings, 'vendor')) {
-    return (
-      <PortalHoldingScreen eventName={event.name} message={settings.stage2_holding_message} />
-    );
-  }
-
+  const stage2Active = isStage2Active(settings, 'vendor');
   const dateRange = formatEventDateRange(event.start_date, event.end_date);
   const locationLine = [event.venue, event.location].filter(Boolean).join(' — ');
+  const registrationPath = vendorStepPath(event.id, 'registration');
+  const showHoldingMain = !stage2Active && location.pathname.endsWith('/registration');
 
   return (
     <div className={styles.page}>
-      <header className={styles.hero}>
-        {event.banner_url ? <img src={event.banner_url} alt="" className={styles.heroImage} /> : null}
-        {(dateRange || locationLine) ? (
-          <div className={styles.heroMeta}>
-            {dateRange ? <div>{dateRange}</div> : null}
-            {locationLine ? <div>{locationLine}</div> : null}
-          </div>
-        ) : null}
-      </header>
+      <div className={styles.portalFrame}>
+      <PortalHeroBanner event={event} />
 
       <nav className={styles.navBar}>
-        <NavLink to={vendorStepPath(event.id, 'welcome')} className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)} end>
+        <NavLink
+          to={vendorStepPath(event.id, 'welcome')}
+          className={({ isActive }) => (isActive && !showHoldingMain ? styles.navLinkActive : styles.navLink)}
+          end
+        >
           Welcome
         </NavLink>
-        <NavLink to={vendorStepPath(event.id, 'registration')} className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
+        <NavLink
+          to={registrationPath}
+          className={({ isActive }) => (isActive || showHoldingMain ? styles.navLinkActive : styles.navLink)}
+        >
           Registration Details
         </NavLink>
         <div className={styles.userBar}>
@@ -159,28 +157,59 @@ export default function VendorPortalLayout() {
         </div>
       </nav>
 
-      {!submission.profile_complete ? (
+      {!stage2Active ? (
+        <div className={styles.stage2Banner}>
+          Registration details are not open yet — your organizer will email you when you can complete your profile.
+        </div>
+      ) : !submission.profile_complete ? (
         <div className={styles.bannerHint} style={{ padding: '12px 20px', background: '#fef3c7', color: '#92400e' }}>
           Complete your profile below to join the 1:1 matching pool.
         </div>
       ) : null}
 
       <main className={styles.main}>
-        <Outlet context={{ event, settings, submission, reloadSubmission } satisfies VendorPortalContext} />
+        {showHoldingMain ? (
+          <PortalHoldingScreen
+            eventName={event.name}
+            dateRange={dateRange}
+            locationLine={locationLine || null}
+            userName={userLabel}
+            message={settings.stage2_holding_message}
+            expectedOpenAt={settings.stage2_expected_open_at}
+            roleLabel="vendor"
+          />
+        ) : (
+          <Outlet context={{ event, settings, submission, reloadSubmission } satisfies VendorPortalContext} />
+        )}
       </main>
 
       <footer className={styles.footerNav}>
-        {prevPath ? (
-          <Link to={prevPath} className={styles.footerBtn}>← Previous</Link>
+        {stage2Active ? (
+          <>
+            {prevPath ? (
+              <Link to={prevPath} className={styles.footerBtn}>← Previous</Link>
+            ) : (
+              <span className={styles.footerBtnDisabled}>← Previous</span>
+            )}
+            {nextPath ? (
+              <Link to={nextPath} className={styles.footerBtn}>Next →</Link>
+            ) : (
+              <span className={styles.footerBtnDisabled}>Next →</span>
+            )}
+          </>
+        ) : showHoldingMain ? (
+          <>
+            <Link to={vendorStepPath(event.id, 'welcome')} className={styles.footerBtn}>← Welcome</Link>
+            <span className={styles.footerBtnDisabled}>Next →</span>
+          </>
         ) : (
-          <span className={styles.footerBtnDisabled}>← Previous</span>
-        )}
-        {nextPath ? (
-          <Link to={nextPath} className={styles.footerBtn}>Next →</Link>
-        ) : (
-          <span className={styles.footerBtnDisabled}>Next →</span>
+          <>
+            <span className={styles.footerBtnDisabled}>← Previous</span>
+            <Link to={registrationPath} className={styles.footerBtn}>Registration Details →</Link>
+          </>
         )}
       </footer>
+      </div>
     </div>
   );
 }

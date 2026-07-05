@@ -66,6 +66,21 @@ async function sendViaResend(
   return true;
 }
 
+async function linkSubmissionUserId(
+  admin: ReturnType<typeof createClient>,
+  eventId: string,
+  email: string,
+  userId: string,
+) {
+  const { error } = await admin
+    .from("event_registration_submissions")
+    .update({ user_id: userId })
+    .eq("event_id", eventId)
+    .ilike("email", email)
+    .is("user_id", null);
+  if (error) console.error("linkSubmissionUserId", error);
+}
+
 async function findUserByEmail(
   admin: ReturnType<typeof createClient>,
   email: string,
@@ -131,6 +146,11 @@ Deno.serve(async (req: Request) => {
     Deno.env.get("CONNECT_BASE_URL") ??
     "https://connect.kbmcollective.org"
   ).replace(/\/+$/, "");
+  /** Static bridge page (portal-set-password.html) — must be in Supabase Auth redirect allow list. */
+  const bridgeBase = (
+    Deno.env.get("PORTAL_SET_PASSWORD_BRIDGE_BASE") ??
+    portalBase
+  ).replace(/\/+$/, "");
 
   if (!supabaseUrl || !serviceRoleKey || !anonKey) {
     return json({ error: "Server configuration error" }, 500);
@@ -170,7 +190,8 @@ Deno.serve(async (req: Request) => {
   const eventName = (eventRow as { name?: string } | null)?.name ?? "your event";
 
   const rolePath = attendeeType === "vendor" ? "vendor" : "delegate";
-  const redirectTo = `${portalBase}/portal/${eventId}/${rolePath}/set-password`;
+  const redirectTo =
+    `${bridgeBase}/portal-set-password.html?event_id=${encodeURIComponent(eventId)}&role=${encodeURIComponent(rolePath)}`;
   const roleLabel = attendeeType === "vendor" ? "vendor" : "delegate";
   const userMetadata = {
     full_name: fullName || null,
@@ -184,6 +205,7 @@ Deno.serve(async (req: Request) => {
     await admin.auth.admin.updateUserById(existingUser.id, {
       user_metadata: { ...(existingUser.user_metadata ?? {}), ...userMetadata },
     });
+    await linkSubmissionUserId(admin, eventId, email, existingUser.id);
   }
 
   if (resendKey) {

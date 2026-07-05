@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import PortalHoldingScreen from '../../components/PortalHoldingScreen';
+import PortalHeroBanner from '../../components/PortalHeroBanner';
 import {
   formatEventDateRange,
   isStage2Active,
@@ -132,39 +133,50 @@ export default function DelegatePortalLayout() {
     return <div className={styles.loginWrap}><p className={styles.error}>{error || 'Portal unavailable.'}</p></div>;
   }
 
-  if (!isStage2Active(settings, 'delegate')) {
-    return <PortalHoldingScreen eventName={event.name} message={settings.stage2_holding_message} />;
-  }
-
+  const stage2Active = isStage2Active(settings, 'delegate');
   const dateRange = formatEventDateRange(event.start_date, event.end_date);
   const locationLine = [event.venue, event.location].filter(Boolean).join(' — ');
   const meetingsActive = location.pathname.includes('/meetings/');
+  const registrationPath = delegateStepPath(event.id, 'registration');
+  const onRegistrationRoute =
+    location.pathname.endsWith('/registration') ||
+    location.pathname.endsWith('/hotel') ||
+    location.pathname.includes('/meetings/');
+  const showHoldingMain = !stage2Active && onRegistrationRoute;
 
   return (
     <div className={styles.page}>
-      <header className={styles.hero}>
-        {event.banner_url ? <img src={event.banner_url} alt="" className={styles.heroImage} /> : null}
-        {(dateRange || locationLine) ? (
-          <div className={styles.heroMeta}>
-            {dateRange ? <div>{dateRange}</div> : null}
-            {locationLine ? <div>{locationLine}</div> : null}
-          </div>
-        ) : null}
-      </header>
+      <div className={styles.portalFrame}>
+      <PortalHeroBanner event={event} />
 
       <nav className={styles.navBar}>
-        <NavLink to={delegateStepPath(event.id, 'welcome')} className={({ isActive }) => (isActive && !meetingsActive ? styles.navLinkActive : styles.navLink)} end>
+        <NavLink
+          to={delegateStepPath(event.id, 'welcome')}
+          className={({ isActive }) =>
+            isActive && !meetingsActive && !showHoldingMain ? styles.navLinkActive : styles.navLink
+          }
+          end
+        >
           Welcome
         </NavLink>
-        {settings.delegate_portal_hotel_visible !== false ? (
+        {stage2Active && settings.delegate_portal_hotel_visible !== false ? (
           <NavLink to={delegateStepPath(event.id, 'hotel')} className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
             Hotel
           </NavLink>
         ) : null}
-        <NavLink to={delegateStepPath(event.id, 'registration')} className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
-          Registration Details
-        </NavLink>
-        {settings.meeting_requests_open && submission.profile_complete ? (
+        {stage2Active ? (
+          <NavLink to={registrationPath} className={({ isActive }) => (isActive ? styles.navLinkActive : styles.navLink)}>
+            Registration Details
+          </NavLink>
+        ) : (
+          <NavLink
+            to={registrationPath}
+            className={({ isActive }) => (isActive || showHoldingMain ? styles.navLinkActive : styles.navLink)}
+          >
+            Registration Details
+          </NavLink>
+        )}
+        {stage2Active && settings.meeting_requests_open && submission.profile_complete ? (
           <div
             className={styles.navDropdown}
             onMouseEnter={() => setMeetingsOpen(true)}
@@ -193,30 +205,61 @@ export default function DelegatePortalLayout() {
         </div>
       </nav>
 
-      {!submission.profile_complete ? (
+      {!stage2Active ? (
+        <div className={styles.stage2Banner}>
+          Registration details are not open yet — your organizer will email you when you can complete your profile.
+        </div>
+      ) : !submission.profile_complete ? (
         <div className={styles.bannerHint} style={{ padding: '12px 20px', background: '#fef3c7', color: '#92400e' }}>
           Complete your profile in Registration Details to join the 1:1 matching pool.
         </div>
       ) : null}
 
       <main className={styles.main}>
-        <Outlet context={{ event, settings, submission, reloadSubmission } satisfies DelegatePortalContext} />
+        {showHoldingMain ? (
+          <PortalHoldingScreen
+            eventName={event.name}
+            dateRange={dateRange}
+            locationLine={locationLine || null}
+            userName={userLabel}
+            message={settings.stage2_holding_message}
+            expectedOpenAt={settings.stage2_expected_open_at}
+            roleLabel="delegate"
+          />
+        ) : (
+          <Outlet context={{ event, settings, submission, reloadSubmission } satisfies DelegatePortalContext} />
+        )}
       </main>
 
       {!location.pathname.includes('/meetings/') ? (
         <footer className={styles.footerNav}>
-          {prevPath ? (
-            <Link to={prevPath} className={styles.footerBtn}>← Previous</Link>
+          {stage2Active ? (
+            <>
+              {prevPath ? (
+                <Link to={prevPath} className={styles.footerBtn}>← Previous</Link>
+              ) : (
+                <span className={styles.footerBtnDisabled}>← Previous</span>
+              )}
+              {nextPath ? (
+                <Link to={nextPath} className={styles.footerBtn}>Next →</Link>
+              ) : (
+                <span className={styles.footerBtnDisabled}>Next →</span>
+              )}
+            </>
+          ) : showHoldingMain ? (
+            <>
+              <Link to={delegateStepPath(event.id, 'welcome')} className={styles.footerBtn}>← Welcome</Link>
+              <span className={styles.footerBtnDisabled}>Next →</span>
+            </>
           ) : (
-            <span className={styles.footerBtnDisabled}>← Previous</span>
-          )}
-          {nextPath ? (
-            <Link to={nextPath} className={styles.footerBtn}>Next →</Link>
-          ) : (
-            <span className={styles.footerBtnDisabled}>Next →</span>
+            <>
+              <span className={styles.footerBtnDisabled}>← Previous</span>
+              <Link to={registrationPath} className={styles.footerBtn}>Registration Details →</Link>
+            </>
           )}
         </footer>
       ) : null}
+      </div>
     </div>
   );
 }
