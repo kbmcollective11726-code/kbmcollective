@@ -16,6 +16,10 @@ function isAlreadyRegisteredError(message: string): boolean {
   );
 }
 
+function passwordMismatchMessage(): string {
+  return 'The password you entered is incorrect for this email. If you registered before, use your existing password—or reset it from the login screen.';
+}
+
 /** Create or sign in an auth account during public registration (inline password). */
 export async function ensureRegistrationAccount(
   email: string,
@@ -32,6 +36,16 @@ export async function ensureRegistrationAccount(
   }
   if (sessionUser && sessionUser.email?.toLowerCase() !== normalizedEmail) {
     await supabase.auth.signOut();
+  }
+
+  // Sign in first so returning users (e.g. after admin deleted their event registration) can re-register
+  // with the same email without hitting "email already exists" from signUp.
+  const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
+    email: normalizedEmail,
+    password,
+  });
+  if (!signInErr && signInData.user?.id) {
+    return { userId: signInData.user.id, signedIn: true };
   }
 
   const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
@@ -52,37 +66,15 @@ export async function ensureRegistrationAccount(
     if (signedIn) {
       return { userId, signedIn: true };
     }
-    // Supabase may return a placeholder user (empty identities) when the email already exists.
     const identities = signUpData.user.identities ?? [];
     if (identities.length === 0) {
-      const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
-        email: normalizedEmail,
-        password,
-      });
-      if (!signInErr && signInData.user?.id) {
-        return { userId: signInData.user.id, signedIn: true };
-      }
-      return {
-        error:
-          'An account with this email already exists. Use Login at the top of this page, or reset your password from the login screen.',
-      };
+      return { error: passwordMismatchMessage() };
     }
-    // Email confirmation required — account exists in auth; link submission after first login.
     return { userId, signedIn: false };
   }
 
   if (signUpErr && isAlreadyRegisteredError(signUpErr.message)) {
-    const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
-      email: normalizedEmail,
-      password,
-    });
-    if (!signInErr && signInData.user?.id) {
-      return { userId: signInData.user.id, signedIn: true };
-    }
-    return {
-      error:
-        'An account with this email already exists. Use Login at the top of this page, or reset your password from the login screen.',
-    };
+    return { error: passwordMismatchMessage() };
   }
 
   return { error: signUpErr?.message ?? 'Could not create your account. Please try again.' };

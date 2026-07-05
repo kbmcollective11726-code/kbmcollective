@@ -372,18 +372,6 @@ export default function RegistrationPortal() {
       let authUserId: string | null = null;
 
       if (status === 'submitted' && emailValue) {
-        const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
-        const accountResult = await ensureRegistrationAccount(emailValue, password, {
-          full_name: fullName,
-          event_id: eventId,
-          attendee_type: dbAudience,
-        });
-        if ('error' in accountResult) {
-          setError(accountResult.error);
-          return;
-        }
-        authUserId = accountResult.signedIn ? accountResult.userId : null;
-
         const { data: existingSubmission } = await supabase
           .from('event_registration_submissions')
           .select('id')
@@ -397,6 +385,18 @@ export default function RegistrationPortal() {
           );
           return;
         }
+
+        const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
+        const accountResult = await ensureRegistrationAccount(emailValue, password, {
+          full_name: fullName,
+          event_id: eventId,
+          attendee_type: dbAudience,
+        });
+        if ('error' in accountResult) {
+          setError(accountResult.error);
+          return;
+        }
+        authUserId = accountResult.signedIn ? accountResult.userId : null;
       } else {
         const { data: authData } = await supabase.auth.getUser();
         authUserId = authData.user?.id ?? null;
