@@ -24,6 +24,7 @@ import {
 import { publicPortalLoginUrl, publicRegisterUrl } from '../lib/publicPortalUrl';
 import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
 import { uploadEventImage } from '../lib/uploadEventImage';
+import { interestLevelLabel } from '../lib/meetingRequests';
 import {
   PORTAL_BANNER_FILE_ACCEPT,
   PORTAL_BANNER_HINT,
@@ -76,6 +77,8 @@ type RankedMatch = {
   score: number;
   overlap: number;
   review: EventMatchReview | null;
+  meetingRequest: EventMeetingInterestRequest | null;
+  requestRank: number | null;
 };
 
 const QUESTION_TYPE_OPTIONS: MatchmakingQuestionType[] = [
@@ -405,7 +408,7 @@ const MATCHMAKING_TABS: { id: MatchmakingTab; label: string; introTitle: string;
     id: 'matching',
     label: 'Matching & schedule',
     introTitle: 'Matchmaking operations',
-    intro: 'Inspect participant profiles, generate suggestions, manage the review queue, and schedule approved meetings.',
+    intro: 'Inspect participant profiles, portal meeting requests, automated match scores, the review queue, and scheduled meetings.',
   },
 ];
 
@@ -746,9 +749,19 @@ export default function EventMatchmaking() {
     [answers, selectedSubmissionId]
   );
   const selectedSubmissionRequests = useMemo(
-    () => meetingRequests.filter((r) => r.submission_id === selectedSubmissionId),
+    () =>
+      meetingRequests
+        .filter((r) => r.submission_id === selectedSubmissionId)
+        .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at)),
     [meetingRequests, selectedSubmissionId]
   );
+  const meetingRequestByTargetId = useMemo(() => {
+    const map = new Map<string, EventMeetingInterestRequest>();
+    for (const req of selectedSubmissionRequests) {
+      if (req.target_submission_id) map.set(req.target_submission_id, req);
+    }
+    return map;
+  }, [selectedSubmissionRequests]);
   const selectedSubmissionReviewSections = useMemo(() => {
     if (!selectedSubmission) return [];
     const formQuestions = questions
@@ -798,6 +811,14 @@ export default function EventMatchmaking() {
     [scrollToSubmissionReview],
   );
 
+  const requestedNotInTopScores = useMemo(() => {
+    if (!selectedSubmission) return [];
+    const topIds = new Set(suggestedMatches.map((m) => m.candidate.id));
+    return selectedSubmissionRequests.filter(
+      (req) => req.target_submission_id && !topIds.has(req.target_submission_id),
+    );
+  }, [selectedSubmission, selectedSubmissionRequests, suggestedMatches]);
+
   useEffect(() => {
     if (!eventId || !selectedSubmission) {
       setSuggestedMatches([]);
@@ -816,6 +837,11 @@ export default function EventMatchmaking() {
         if (cancelled) return;
         const rows = (data ?? []) as Array<{ candidate_id: string; score: number; category_overlap: number }>;
         const submissionById = new Map(submissions.map((s) => [s.id, s]));
+        const requestRankByTargetId = new Map(
+          selectedSubmissionRequests
+            .filter((r) => r.target_submission_id)
+            .map((r, index) => [r.target_submission_id as string, index + 1]),
+        );
         setSuggestedMatches(
           rows
             .filter((row) => row.score > 0)
@@ -826,11 +852,16 @@ export default function EventMatchmaking() {
                 (rev) =>
                   rev.from_submission_id === selectedSubmission.id && rev.to_submission_id === row.candidate_id
               );
+              const meetingRequest = meetingRequestByTargetId.get(row.candidate_id) ?? null;
               return {
                 candidate,
                 score: row.score,
                 overlap: row.category_overlap,
                 review: existingReview ?? null,
+                meetingRequest,
+                requestRank: meetingRequest?.target_submission_id
+                  ? (requestRankByTargetId.get(meetingRequest.target_submission_id) ?? null)
+                  : null,
               };
             })
             .filter((item): item is RankedMatch => item != null)
@@ -844,7 +875,7 @@ export default function EventMatchmaking() {
     return () => {
       cancelled = true;
     };
-  }, [eventId, selectedSubmission, submissions, reviews]);
+  }, [eventId, selectedSubmission, submissions, reviews, selectedSubmissionRequests, meetingRequestByTargetId]);
 
   const load = useCallback(async () => {
     if (!eventId) return;
@@ -2426,7 +2457,7 @@ export default function EventMatchmaking() {
             <input type="checkbox" checked={meetingRequestsOpen} onChange={(e) => setMeetingRequestsOpen(e.target.checked)} />
             <span>
               <strong>Meeting requests open</strong>
-              <span className={styles.toggleCardHint}>Shows Meeting Requests in the delegate menu.</span>
+              <span className={styles.toggleCardHint}>Shows Meeting Requests in the delegate and vendor menus.</span>
             </span>
           </label>
           <label className={styles.toggleCard}>
@@ -3302,6 +3333,43 @@ export default function EventMatchmaking() {
               {selectedSubmissionReviewSections.length === 0 ? (
                 <p className={styles.hint}>No additional form answers were saved with this submission.</p>
               ) : null}
+              <section className={styles.submissionReviewSection}>
+                <h4>Portal meeting requests</h4>
+                {selectedSubmissionRequests.length === 0 ? (
+                  <p className={styles.hint}>No meeting requests submitted yet.</p>
+                ) : (
+                  <div className={styles.tableWrap}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Rank</th>
+                          <th>Target</th>
+                          <th>Interest</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedSubmissionRequests.map((req, index) => (
+                          <tr key={req.id}>
+                            <td>{index + 1}</td>
+                            <td>
+                              {req.target_company_name || '—'}
+                              {req.target_person_name ? ` · ${req.target_person_name}` : ''}
+                            </td>
+                            <td>{interestLevelLabel(req.interest_level)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                <p className={styles.hint}>
+                  Open{' '}
+                  <button type="button" className={styles.tabLink} onClick={() => goToTab('matching')}>
+                    Matching &amp; schedule
+                  </button>{' '}
+                  to compare these with automated match scores.
+                </p>
+              </section>
             </div>
           </div>
         ) : null}
@@ -3312,7 +3380,7 @@ export default function EventMatchmaking() {
       <>
       <section className={styles.section}>
         <div className={styles.sectionHeader}>
-          <h2>Participant detail &amp; suggested matches</h2>
+          <h2>Participant detail — portal requests &amp; automated scores</h2>
           {selectedSubmission ? (
             <StatusBadge
               label={[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Selected'}
@@ -3332,6 +3400,11 @@ export default function EventMatchmaking() {
             </p>
           </div>
         ) : (
+          <>
+          <p className={styles.sectionLead}>
+            Admins see <strong>both</strong> matching signals: portal meeting requests (explicit rank + interest) and
+            automated scores (category overlap, profile answers, and request boost combined).
+          </p>
           <div className={styles.detailGrid}>
             <div>
               <div className={styles.detailHead}>
@@ -3379,20 +3452,48 @@ export default function EventMatchmaking() {
                   </span>
                 </div>
               ) : null}
-              <h4>Requested meetings</h4>
+              <div className={styles.matchSignalPanel}>
+                <h4>Portal meeting requests</h4>
+                <p className={styles.matchSignalHint}>
+                  Explicit requests submitted by this participant — ranked priority and interest level (Low / Medium / High).
+                </p>
               {selectedSubmissionRequests.length === 0 ? (
-                <p className={styles.hint}>No requested companies/people.</p>
+                <p className={styles.hint}>No portal meeting requests yet.</p>
               ) : (
-                <ul className={styles.optionList}>
-                  {selectedSubmissionRequests.map((req) => (
-                    <li key={req.id}>
-                      {req.target_company_name || '—'} {req.target_person_name ? `· ${req.target_person_name}` : ''}{' '}
-                      {req.reason ? `— ${req.reason}` : ''}
-                    </li>
-                  ))}
-                </ul>
+                <div className={styles.tableWrap}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Rank</th>
+                        <th>Target</th>
+                        <th>Interest</th>
+                        <th>Notes</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {selectedSubmissionRequests.map((req, index) => (
+                        <tr key={req.id}>
+                          <td>{index + 1}</td>
+                          <td>
+                            {req.target_company_name || '—'}
+                            {req.target_person_name ? ` · ${req.target_person_name}` : ''}
+                          </td>
+                          <td>{interestLevelLabel(req.interest_level)}</td>
+                          <td>{req.reason ?? '—'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               )}
-              <h4>Answers</h4>
+              {requestedNotInTopScores.length > 0 ? (
+                <p className={styles.hint}>
+                  {requestedNotInTopScores.length} requested target{requestedNotInTopScores.length === 1 ? '' : 's'} did not
+                  appear in the top automated scores — review them manually below.
+                </p>
+              ) : null}
+              </div>
+              <h4>Profile answers</h4>
               <ul className={styles.optionList}>
                 {selectedSubmissionAnswers.map((ans) => {
                   const q = questionById.get(ans.question_id);
@@ -3408,7 +3509,12 @@ export default function EventMatchmaking() {
               </ul>
             </div>
             <div>
-              <h3>Top ranked suggestions</h3>
+              <div className={styles.matchSignalPanel}>
+                <h3>Automated match scores</h3>
+                <p className={styles.matchSignalHint}>
+                  Server-side scoring from solution-category overlap, profile answers, and portal request boost
+                  (interest level + rank). Use alongside explicit portal requests on the left.
+                </p>
               {loadingSuggestions ? (
                 <p className={styles.hint}>Computing server-side match scores…</p>
               ) : suggestedMatches.length === 0 ? (
@@ -3420,8 +3526,9 @@ export default function EventMatchmaking() {
                       <tr>
                         <th>Name</th>
                         <th>Company</th>
-                        <th>Score</th>
-                        <th>Overlap</th>
+                        <th>Auto score</th>
+                        <th>Category overlap</th>
+                        <th>Portal request</th>
                         <th>Review</th>
                       </tr>
                     </thead>
@@ -3432,6 +3539,15 @@ export default function EventMatchmaking() {
                           <td>{item.candidate.company_name ?? '—'}</td>
                           <td>{item.score}</td>
                           <td>{item.overlap}</td>
+                          <td>
+                            {item.meetingRequest ? (
+                              <span>
+                                Rank {item.requestRank ?? '—'} · {interestLevelLabel(item.meetingRequest.interest_level)}
+                              </span>
+                            ) : (
+                              <span className={styles.hint}>Not requested</span>
+                            )}
+                          </td>
                           <td>
                             <div className={styles.actionRow}>
                               <button type="button" onClick={() => void setReviewStatus(item.candidate.id, item.score, 'approved')}>
@@ -3449,8 +3565,10 @@ export default function EventMatchmaking() {
                   </table>
                 </div>
               )}
+              </div>
             </div>
           </div>
+          </>
         )}
       </section>
 
@@ -3467,7 +3585,8 @@ export default function EventMatchmaking() {
           </div>
         </div>
         <p className={styles.sectionLead}>
-          Uses solution-category overlap and interest requests. Only approved, profile-complete registrants with matching opt-in are included.
+          Combines automated scoring (categories, profile signals, request boost) with explicit portal meeting requests.
+          Only approved, profile-complete registrants with matching opt-in are included.
         </p>
         {reviews.length === 0 ? (
           <div className={styles.emptyState}>

@@ -1,17 +1,17 @@
 import { useOutletContext } from 'react-router-dom';
 import MeetingRequestBrowse from '../../components/meeting-requests/MeetingRequestBrowse';
-import { delegateStepPath, type DelegatePortalContext } from './DelegatePortalLayout';
+import { vendorStepPath, type VendorPortalContext } from './VendorPortalLayout';
 
-export default function DelegateMeetingRequest() {
-  const { event, submission, settings } = useOutletContext<DelegatePortalContext>();
+export default function VendorMeetingRequest() {
+  const { event, submission, settings } = useOutletContext<VendorPortalContext>();
 
   return (
     <MeetingRequestBrowse
       eventId={event.id}
       submissionId={submission.id}
-      viewerRole="delegate"
+      viewerRole="vendor"
       meetingRequestsOpen={settings.meeting_requests_open}
-      sentPath={delegateStepPath(event.id, 'meetings/sent')}
+      sentPath={vendorStepPath(event.id, 'meetings/sent')}
     />
   );
 }

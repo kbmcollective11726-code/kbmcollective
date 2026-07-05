@@ -935,6 +935,25 @@
   word-break: break-all;
 }
 
+.matchSignalPanel {
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.matchSignalPanel:last-child {
+  border-bottom: 0;
+  margin-bottom: 0;
+  padding-bottom: 0;
+}
+
+.matchSignalHint {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
 .advancedToggle {
   display: block;
   width: 100%;

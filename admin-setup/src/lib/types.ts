@@ -173,13 +173,17 @@ export interface EventRegistrationSubmission {
   updated_at: string;
 }
 
+export type MeetingInterestLevel = 'low' | 'medium' | 'high';
+
 export interface EventMeetingInterestRequest {
   id: string;
   event_id: string;
   submission_id: string;
+  target_submission_id: string | null;
   target_company_name: string | null;
   target_person_name: string | null;
   reason: string | null;
+  interest_level: MeetingInterestLevel | null;
   priority: number;
   created_at: string;
   updated_at: string;

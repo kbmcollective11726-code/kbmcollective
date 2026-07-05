@@ -25,6 +25,8 @@ export type VendorPortalContext = {
 export const VENDOR_PORTAL_STEPS = ['welcome', 'registration'] as const;
 
 export function vendorStepPath(eventId: string, step: string) {
+  if (step === 'meetings/request') return `/portal/${eventId}/vendor/meetings/request`;
+  if (step === 'meetings/sent') return `/portal/${eventId}/vendor/meetings/sent`;
   return `/portal/${eventId}/vendor/${step}`;
 }
 
@@ -38,6 +40,7 @@ export default function VendorPortalLayout() {
   const [settings, setSettings] = useState<VendorPortalSettings | null>(null);
   const [submission, setSubmission] = useState<EventRegistrationSubmission | null>(null);
   const [userLabel, setUserLabel] = useState('');
+  const [meetingsOpen, setMeetingsOpen] = useState(false);
 
   const reloadSubmission = useCallback(async () => {
     if (!eventId) return;
@@ -95,20 +98,29 @@ export default function VendorPortalLayout() {
   const visibleSteps = useMemo(() => [...VENDOR_PORTAL_STEPS], []);
 
   const currentStepIndex = useMemo(() => {
+    if (location.pathname.includes('/meetings/')) return visibleSteps.length;
     if (location.pathname.endsWith('/registration')) return 1;
     return 0;
-  }, [location.pathname]);
+  }, [location.pathname, visibleSteps]);
 
   const prevPath = useMemo(() => {
     if (currentStepIndex <= 0 || !eventId) return null;
+    if (location.pathname.includes('/meetings/')) return vendorStepPath(eventId, 'registration');
     return vendorStepPath(eventId, visibleSteps[currentStepIndex - 1] ?? 'welcome');
-  }, [currentStepIndex, eventId, visibleSteps]);
+  }, [currentStepIndex, eventId, location.pathname, visibleSteps]);
 
   const nextPath = useMemo(() => {
     if (!eventId) return null;
+    if (location.pathname.includes('/meetings/')) return null;
     const next = visibleSteps[currentStepIndex + 1];
-    return next ? vendorStepPath(eventId, next) : null;
-  }, [currentStepIndex, eventId, visibleSteps]);
+    if (!next) {
+      if (settings?.meeting_requests_open && submission?.profile_complete) {
+        return vendorStepPath(eventId, 'meetings/request');
+      }
+      return null;
+    }
+    return vendorStepPath(eventId, next);
+  }, [currentStepIndex, eventId, location.pathname, settings?.meeting_requests_open, submission?.profile_complete, visibleSteps]);
 
   const logout = async () => {
     await supabase.auth.signOut();
@@ -128,7 +140,10 @@ export default function VendorPortalLayout() {
   const dateRange = formatEventDateRange(event.start_date, event.end_date);
   const locationLine = [event.venue, event.location].filter(Boolean).join(' — ');
   const registrationPath = vendorStepPath(event.id, 'registration');
-  const showHoldingMain = !stage2Active && location.pathname.endsWith('/registration');
+  const meetingsActive = location.pathname.includes('/meetings/');
+  const onRegistrationRoute =
+    location.pathname.endsWith('/registration') || location.pathname.includes('/meetings/');
+  const showHoldingMain = !stage2Active && onRegistrationRoute;
 
   return (
     <div className={styles.page}>
@@ -138,17 +153,48 @@ export default function VendorPortalLayout() {
       <nav className={styles.navBar}>
         <NavLink
           to={vendorStepPath(event.id, 'welcome')}
-          className={({ isActive }) => (isActive && !showHoldingMain ? styles.navLinkActive : styles.navLink)}
+          className={({ isActive }) =>
+            isActive && !meetingsActive && !showHoldingMain ? styles.navLinkActive : styles.navLink
+          }
           end
         >
           Welcome
         </NavLink>
         <NavLink
           to={registrationPath}
-          className={({ isActive }) => (isActive || showHoldingMain ? styles.navLinkActive : styles.navLink)}
+          className={({ isActive }) => (isActive && !meetingsActive ? styles.navLinkActive : styles.navLink)}
         >
           Registration Details
         </NavLink>
+        {stage2Active && settings.meeting_requests_open && submission.profile_complete ? (
+          <div
+            className={styles.navDropdown}
+            onMouseEnter={() => setMeetingsOpen(true)}
+            onMouseLeave={() => setMeetingsOpen(false)}
+          >
+            <button type="button" className={meetingsActive ? styles.navDropdownBtnActive : styles.navDropdownBtn}>
+              Meeting Requests ▾
+            </button>
+            {meetingsOpen ? (
+              <div className={styles.navDropdownMenu}>
+                <Link
+                  to={vendorStepPath(event.id, 'meetings/request')}
+                  className={styles.navDropdownItem}
+                  onClick={() => setMeetingsOpen(false)}
+                >
+                  Request Meeting
+                </Link>
+                <Link
+                  to={vendorStepPath(event.id, 'meetings/sent')}
+                  className={styles.navDropdownItem}
+                  onClick={() => setMeetingsOpen(false)}
+                >
+                  Sent
+                </Link>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className={styles.userBar}>
           <span>{userLabel}</span>
           <button type="button" className={styles.logoutBtn} onClick={() => void logout()}>
@@ -184,30 +230,32 @@ export default function VendorPortalLayout() {
       </main>
 
       <footer className={styles.footerNav}>
-        {stage2Active ? (
-          <>
-            {prevPath ? (
-              <Link to={prevPath} className={styles.footerBtn}>← Previous</Link>
-            ) : (
-              <span className={styles.footerBtnDisabled}>← Previous</span>
-            )}
-            {nextPath ? (
-              <Link to={nextPath} className={styles.footerBtn}>Next →</Link>
-            ) : (
+        {!location.pathname.includes('/meetings/') ? (
+          stage2Active ? (
+            <>
+              {prevPath ? (
+                <Link to={prevPath} className={styles.footerBtn}>← Previous</Link>
+              ) : (
+                <span className={styles.footerBtnDisabled}>← Previous</span>
+              )}
+              {nextPath ? (
+                <Link to={nextPath} className={styles.footerBtn}>Next →</Link>
+              ) : (
+                <span className={styles.footerBtnDisabled}>Next →</span>
+              )}
+            </>
+          ) : showHoldingMain ? (
+            <>
+              <Link to={vendorStepPath(event.id, 'welcome')} className={styles.footerBtn}>← Welcome</Link>
               <span className={styles.footerBtnDisabled}>Next →</span>
-            )}
-          </>
-        ) : showHoldingMain ? (
-          <>
-            <Link to={vendorStepPath(event.id, 'welcome')} className={styles.footerBtn}>← Welcome</Link>
-            <span className={styles.footerBtnDisabled}>Next →</span>
-          </>
-        ) : (
-          <>
-            <span className={styles.footerBtnDisabled}>← Previous</span>
-            <Link to={registrationPath} className={styles.footerBtn}>Registration Details →</Link>
-          </>
-        )}
+            </>
+          ) : (
+            <>
+              <span className={styles.footerBtnDisabled}>← Previous</span>
+              <Link to={registrationPath} className={styles.footerBtn}>Registration Details →</Link>
+            </>
+          )
+        ) : null}
       </footer>
       </div>
     </div>

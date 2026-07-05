@@ -1,0 +1,311 @@
+.card {
+  background: #fff;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+}
+
+.lead {
+  margin: 0 0 16px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.leadList {
+  margin: 0 0 16px;
+  padding-left: 20px;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.statusBanner {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 14px;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.searchInput {
+  min-width: 240px;
+  flex: 1;
+  max-width: 420px;
+}
+
+.tableWrap {
+  overflow-x: auto;
+}
+
+.listTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.listTable th,
+.listTable td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 10px 12px;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.listTable th {
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.nameBtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #2563eb;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.nameBtn:hover {
+  text-decoration: underline;
+}
+
+.logoThumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  object-fit: contain;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.linkBtn {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #2563eb;
+  font: inherit;
+  cursor: pointer;
+}
+
+.linkBtn:hover {
+  text-decoration: underline;
+}
+
+.linkBtnDanger {
+  color: #dc2626;
+}
+
+.rankInput {
+  width: 56px;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 1000;
+}
+
+.modal {
+  width: min(720px, 100%);
+  max-height: min(85vh, 900px);
+  overflow: auto;
+  background: #fff;
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(15, 23, 42, 0.25);
+}
+
+.modalHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.modalHead h2 {
+  margin: 0;
+  color: #1e4f8a;
+  font-size: 1.15rem;
+}
+
+.modalClose {
+  border: 0;
+  background: none;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  color: #64748b;
+}
+
+.modalBody {
+  padding: 20px;
+  display: grid;
+  gap: 16px;
+}
+
+.modalSectionTitle {
+  margin: 0 0 8px;
+  color: #1e4f8a;
+  font-size: 0.95rem;
+  border-bottom: 1px solid #e2e8f0;
+  padding-bottom: 6px;
+}
+
+.profileHero {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.profileLogo {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.profileMeta {
+  margin: 0;
+  color: #64748b;
+  font-size: 14px;
+}
+
+.profileGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.profileFieldLabel {
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+.profileFieldValue {
+  color: #0f172a;
+  white-space: pre-wrap;
+}
+
+.categoryList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.categoryChip {
+  background: #eff6ff;
+  color: #1d4ed8;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 13px;
+}
+
+.radioGroup {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.radioItem {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+.primaryBtn {
+  background: #2563eb;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.primaryBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.secondaryBtn {
+  background: #475569;
+  color: #fff;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error {
+  color: #b91c1c;
+  font-size: 14px;
+}
+
+.success {
+  color: #15803d;
+  font-size: 14px;
+}
+
+.hint {
+  color: #64748b;
+  font-size: 14px;
+}
+
+.interestBadgeHigh {
+  color: #15803d;
+  font-weight: 700;
+}
+
+.interestBadgeMedium {
+  color: #2563eb;
+  font-weight: 700;
+}
+
+.interestBadgeLow {
+  color: #64748b;
+  font-weight: 700;
+}
