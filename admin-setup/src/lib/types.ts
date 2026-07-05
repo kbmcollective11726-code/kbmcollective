@@ -118,6 +118,8 @@ export interface EventRegistrationForm {
   description: string | null;
   is_active: boolean;
   sort_order: number;
+  /** Ordered section labels for Registration Details display. */
+  section_order?: string[] | null;
   created_at: string;
   updated_at: string;
 }

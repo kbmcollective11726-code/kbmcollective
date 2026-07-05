@@ -4,6 +4,7 @@ import { supabase } from '../../lib/supabase';
 import { postgrestErrorMessage } from '../../lib/postgrestErrorMessage';
 import { syncSubmissionSolutionCategories } from '../../lib/syncSolutionCategories';
 import { filterRegistrationDetailsQuestions } from '../../lib/portalRegistrationDetailsQuestions';
+import { mergeSectionOrder } from '../../lib/registrationSectionOrder';
 import {
   contactFieldsComplete,
   identityFromAnswers,
@@ -22,6 +23,7 @@ export default function VendorRegistrationDetails() {
   const { event, submission, reloadSubmission } = useOutletContext<VendorPortalContext>();
   const [questions, setQuestions] = useState<EventRegistrationQuestion[]>([]);
   const [options, setOptions] = useState<EventRegistrationQuestionOption[]>([]);
+  const [sectionOrder, setSectionOrder] = useState<string[]>([]);
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [matchingOptIn, setMatchingOptIn] = useState(Boolean(submission.matching_opt_in));
   const [loading, setLoading] = useState(true);
@@ -42,6 +44,21 @@ export default function VendorRegistrationDetails() {
         const qList = (qRows as EventRegistrationQuestion[]) ?? [];
         if (cancelled) return;
         setQuestions(qList);
+
+        const { data: formRow, error: formErr } = await supabase
+          .from('event_registration_forms')
+          .select('audience, section_order')
+          .eq('id', submission.form_id)
+          .single();
+        if (formErr) throw formErr;
+        if (!cancelled && formRow) {
+          setSectionOrder(
+            mergeSectionOrder(
+              { audience: 'vendor', section_order: (formRow as { section_order?: string[] }).section_order },
+              qList,
+            ),
+          );
+        }
 
         if (qList.length > 0) {
           const { data: optRows, error: optErr } = await supabase
@@ -161,6 +178,7 @@ export default function VendorRegistrationDetails() {
         options={options}
         answers={answers}
         onChange={setAnswer}
+        sectionOrder={sectionOrder}
       />
 
       <label className={styles.checkboxInline} style={{ marginTop: 16, display: 'block' }}>

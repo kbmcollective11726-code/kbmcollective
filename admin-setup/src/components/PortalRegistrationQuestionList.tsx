@@ -22,6 +22,8 @@ interface Props {
   options: EventRegistrationQuestionOption[];
   answers: AnswerMap;
   onChange: (questionId: string, value: string | string[] | boolean) => void;
+  /** When set, section cards follow this order on connect. */
+  sectionOrder?: string[];
 }
 
 async function fileToDataUrl(file: File): Promise<string> {
@@ -40,11 +42,18 @@ export default function PortalRegistrationQuestionList({
   options,
   answers,
   onChange,
+  sectionOrder,
 }: Props) {
   const [uploadingQuestionId, setUploadingQuestionId] = useState('');
   const [solutionCategories, setSolutionCategories] = useState<string[]>([]);
 
-  const sectionGroups = useMemo(() => groupQuestionsBySection(audience, questions), [audience, questions]);
+  const sectionGroups = useMemo(
+    () =>
+      groupQuestionsBySection(audience, questions, {
+        sectionOrder: sectionOrder && sectionOrder.length > 0 ? sectionOrder : undefined,
+      }),
+    [audience, questions, sectionOrder],
+  );
 
   const needsSolutionCategories = useMemo(
     () => questions.some((q) => isSolutionCategoryInterestPrompt(q.prompt)),

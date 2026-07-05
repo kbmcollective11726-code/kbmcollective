@@ -40,6 +40,14 @@ import {
   VENDOR_SCOPE_OPTIONS,
   VENDOR_SENIORITY_OPTIONS,
 } from '../lib/specRegistrationQuestions';
+import {
+  addSectionToOrder,
+  defaultSectionOrderForAudience,
+  mergeSectionOrder,
+  moveSectionInOrder,
+  removeSectionFromOrder,
+  renameSectionInOrder,
+} from '../lib/registrationSectionOrder';
 import styles from './EventMatchmaking.module.css';
 
 interface MatchConfigWeights {
@@ -514,6 +522,7 @@ export default function EventMatchmaking() {
   const [questionError, setQuestionError] = useState('');
   const [sectionFromLabel, setSectionFromLabel] = useState('');
   const [sectionRenameLabel, setSectionRenameLabel] = useState('');
+  const [newSectionName, setNewSectionName] = useState('');
   const [sectionFilterLabel, setSectionFilterLabel] = useState<'all' | string>('all');
   const [questionSearchQuery, setQuestionSearchQuery] = useState('');
   const [showHiddenLegacyQuestions, setShowHiddenLegacyQuestions] = useState(false);
@@ -581,6 +590,11 @@ export default function EventMatchmaking() {
     return ATTENDEE_TEMPLATE_SECTION_PICKLIST;
   }, [activeForm]);
 
+  const activeFormSectionOrder = useMemo(
+    () => (activeForm ? mergeSectionOrder(activeForm, activeQuestions) : []),
+    [activeForm, activeQuestions],
+  );
+
   const activeSectionGroups = useMemo(() => {
     const groups = new Map<string, EventRegistrationQuestion[]>();
     activeQuestions.forEach((q) => {
@@ -589,8 +603,28 @@ export default function EventMatchmaking() {
       list.push(q);
       groups.set(key, list);
     });
-    return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
-  }, [activeQuestions]);
+
+    if (!activeForm) {
+      return Array.from(groups.entries()).map(([label, items]) => ({ label, items }));
+    }
+
+    const order = activeFormSectionOrder;
+    const result: Array<{ label: string; items: EventRegistrationQuestion[] }> = [];
+    const seen = new Set<string>();
+
+    for (const label of order) {
+      result.push({ label, items: groups.get(label) ?? [] });
+      seen.add(label);
+    }
+    if (groups.has('General') && !seen.has('General')) {
+      result.unshift({ label: 'General', items: groups.get('General') ?? [] });
+      seen.add('General');
+    }
+    for (const [label, items] of groups) {
+      if (!seen.has(label)) result.push({ label, items });
+    }
+    return result;
+  }, [activeQuestions, activeForm, activeFormSectionOrder]);
   const sectionChoices = useMemo(
     () => Array.from(new Set(activeQuestions.map((q) => canonicalSectionLabel(q.section_label)))),
     [activeQuestions]
@@ -598,11 +632,21 @@ export default function EventMatchmaking() {
 
   const addQuestionSectionPickOptions = useMemo(() => {
     const merged = new Set<string>(templateSectionPicklist);
+    activeFormSectionOrder.forEach((s) => {
+      if (s !== 'General') merged.add(s);
+    });
     sectionChoices.forEach((s) => {
       if (s !== 'General') merged.add(s);
     });
-    return Array.from(merged).sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
-  }, [templateSectionPicklist, sectionChoices]);
+    return Array.from(merged).sort((a, b) => {
+      const ai = activeFormSectionOrder.indexOf(a);
+      const bi = activeFormSectionOrder.indexOf(b);
+      const aRank = ai >= 0 ? ai : 999;
+      const bRank = bi >= 0 ? bi : 999;
+      if (aRank !== bRank) return aRank - bRank;
+      return a.localeCompare(b, undefined, { sensitivity: 'base' });
+    });
+  }, [templateSectionPicklist, sectionChoices, activeFormSectionOrder]);
   const visibleSectionGroups = useMemo(
     () => (sectionFilterLabel === 'all' ? activeSectionGroups : activeSectionGroups.filter((group) => group.label === sectionFilterLabel)),
     [activeSectionGroups, sectionFilterLabel]
@@ -958,6 +1002,14 @@ export default function EventMatchmaking() {
       if (insErr) throw insErr;
       setQuestions((prev) => [...prev, data as EventRegistrationQuestion]);
       setSelectedQuestionId((data as EventRegistrationQuestion).id);
+      const added = data as EventRegistrationQuestion;
+      const addedSection = canonicalSectionLabel(added.section_label);
+      if (activeForm && addedSection !== 'General') {
+        const nextOrder = addSectionToOrder(activeFormSectionOrder, addedSection);
+        if (nextOrder.length !== activeFormSectionOrder.length) {
+          await saveFormSectionOrder(nextOrder, { silent: true });
+        }
+      }
       setQuestionPrompt('');
       setQuestionType('text');
       setQuestionRequired(false);
@@ -968,6 +1020,57 @@ export default function EventMatchmaking() {
     } finally {
       setSavingQuestion(false);
     }
+  };
+
+  const saveFormSectionOrder = async (order: string[], options?: { silent?: boolean }) => {
+    if (!activeForm) return;
+    setSectionBusy(true);
+    if (!options?.silent) setQuestionError('');
+    try {
+      const { data, error: updErr } = await supabase
+        .from('event_registration_forms')
+        .update({ section_order: order })
+        .eq('id', activeForm.id)
+        .select('*')
+        .single();
+      if (updErr) throw updErr;
+      const updated = data as EventRegistrationForm;
+      setForms((prev) => prev.map((f) => (f.id === updated.id ? updated : f)));
+    } catch (e) {
+      if (!options?.silent) setQuestionError(postgrestErrorMessage(e) || 'Could not save section order');
+    } finally {
+      setSectionBusy(false);
+    }
+  };
+
+  const addEmptySection = async () => {
+    if (!activeForm) return;
+    const name = newSectionName.trim();
+    if (!name) {
+      setQuestionError('Enter a section name.');
+      return;
+    }
+    if (name === 'General') {
+      setQuestionError('Choose a name other than General.');
+      return;
+    }
+    const nextOrder = addSectionToOrder(activeFormSectionOrder, name);
+    if (nextOrder.length === activeFormSectionOrder.length) {
+      setQuestionError('That section already exists.');
+      return;
+    }
+    setQuestionError('');
+    await saveFormSectionOrder(nextOrder);
+    setNewSectionName('');
+    setSectionFromLabel(name);
+    setQuestionSectionPick(name);
+  };
+
+  const moveSection = async (sectionLabel: string, dir: -1 | 1) => {
+    if (!activeForm || sectionLabel === 'General') return;
+    const nextOrder = moveSectionInOrder(activeFormSectionOrder, sectionLabel, dir);
+    if (nextOrder === activeFormSectionOrder) return;
+    await saveFormSectionOrder(nextOrder);
   };
 
   const setSectionHidden = async (sectionLabel: string, nextHidden: boolean) => {
@@ -1007,6 +1110,8 @@ export default function EventMatchmaking() {
       const { error: updErr } = await supabase.from('event_registration_questions').update({ section_label: toLabel }).in('id', ids);
       if (updErr) throw updErr;
       setQuestions((prev) => prev.map((q) => (ids.includes(q.id) ? { ...q, section_label: toLabel } : q)));
+      const nextOrder = renameSectionInOrder(activeFormSectionOrder, fromLabel, toLabel);
+      await saveFormSectionOrder(nextOrder, { silent: true });
       setSectionFromLabel(toLabel);
       setSectionRenameLabel('');
     } catch (e) {
@@ -1023,7 +1128,19 @@ export default function EventMatchmaking() {
       return;
     }
     const inSection = activeQuestions.filter((q) => questionMatchesSectionHeading(q, sectionLabel));
-    if (inSection.length === 0) return;
+    if (inSection.length === 0) {
+      if (!window.confirm(`Remove empty section "${sectionLabel}"?`)) return;
+      setSectionBusy(true);
+      setQuestionError('');
+      try {
+        await saveFormSectionOrder(removeSectionFromOrder(activeFormSectionOrder, sectionLabel), { silent: true });
+      } catch (e) {
+        setQuestionError(postgrestErrorMessage(e) || 'Could not delete section');
+      } finally {
+        setSectionBusy(false);
+      }
+      return;
+    }
     if (!window.confirm(`Delete section "${sectionLabel}"? Custom questions will be deleted and base questions hidden.`)) return;
     setSectionBusy(true);
     setQuestionError('');
@@ -1047,6 +1164,8 @@ export default function EventMatchmaking() {
       if (sectionFilterLabel !== 'all' && canonicalSectionLabel(sectionFilterLabel) === canonicalSectionLabel(sectionLabel)) {
         setSectionFilterLabel('all');
       }
+      const nextOrder = removeSectionFromOrder(activeFormSectionOrder, sectionLabel);
+      await saveFormSectionOrder(nextOrder, { silent: true });
     } catch (e) {
       setQuestionError(postgrestErrorMessage(e) || 'Could not delete section');
     } finally {
@@ -1674,6 +1793,7 @@ export default function EventMatchmaking() {
               audience,
               is_active: true,
               sort_order: nextSort,
+              section_order: defaultSectionOrderForAudience(audience),
             })
             .select('*')
             .single();
@@ -2356,6 +2476,26 @@ export default function EventMatchmaking() {
 
             {repairingSections ? <p className={styles.hint}>Auto-organizing legacy questions into the right sections…</p> : null}
 
+            <div className={`${styles.panel} ${styles.panelAccent}`}>
+              <div className={styles.panelHead}>
+                <span className={styles.panelTitle}>Sections</span>
+                <span className={styles.panelHint}>Add empty sections, reorder how they appear on connect, then add questions to each.</span>
+              </div>
+              <div className={styles.panelBody}>
+                <div className={styles.addSectionBar}>
+                  <input
+                    value={newSectionName}
+                    onChange={(e) => setNewSectionName(e.target.value)}
+                    placeholder="New section name, e.g. Travel & logistics"
+                    aria-label="New section name"
+                  />
+                  <button type="button" className={styles.btnPrimary} onClick={() => void addEmptySection()} disabled={sectionBusy || !newSectionName.trim()}>
+                    Add section
+                  </button>
+                </div>
+              </div>
+            </div>
+
             <div className={`${styles.panel} ${styles.panelMuted}`}>
               <div className={styles.panelHead}>
                 <span className={styles.panelTitle}>Section tools</span>
@@ -2411,17 +2551,28 @@ export default function EventMatchmaking() {
 
             <div className={styles.questionsEditorSplit}>
               <div className={styles.questionsListColumn}>
-                {activeQuestions.length === 0 ? (
-                  <p className={styles.hint}>No questions yet for this form.</p>
+                {activeSectionGroups.length === 0 ? (
+                  <p className={styles.hint}>No sections yet. Add a section above, or add your first question.</p>
                 ) : filteredQuestionSectionGroups.length === 0 ? (
                   <p className={styles.hint}>No questions match your search or filters. Clear search or choose “All sections”.</p>
                 ) : (
                   <div className={styles.sectionStack}>
-                    {filteredQuestionSectionGroups.map((group) => (
+                    {filteredQuestionSectionGroups.map((group) => {
+                      const sectionIdx = activeFormSectionOrder.indexOf(group.label);
+                      const canMoveSectionUp = sectionIdx > 0 && group.label !== 'General';
+                      const canMoveSectionDown =
+                        sectionIdx >= 0 && sectionIdx < activeFormSectionOrder.length - 1 && group.label !== 'General';
+                      return (
                       <div key={group.label} className={styles.sectionBlock}>
                         <div className={styles.sectionHead}>
                           <h3>{group.label}</h3>
                           <div className={styles.sectionHeadActions}>
+                            {group.label !== 'General' ? (
+                              <>
+                                <button type="button" className={styles.btnIcon} disabled={sectionBusy || !canMoveSectionUp} onClick={() => void moveSection(group.label, -1)} aria-label="Move section up">↑</button>
+                                <button type="button" className={styles.btnIcon} disabled={sectionBusy || !canMoveSectionDown} onClick={() => void moveSection(group.label, 1)} aria-label="Move section down">↓</button>
+                              </>
+                            ) : null}
                             <button type="button" className={styles.btnSecondary} onClick={() => { setSectionFromLabel(group.label); void setSectionHidden(group.label, true); }} disabled={sectionBusy}>
                               Hide section
                             </button>
@@ -2433,6 +2584,11 @@ export default function EventMatchmaking() {
                             </button>
                           </div>
                         </div>
+                        {group.items.length === 0 ? (
+                          <p className={styles.sectionEmptyHint}>
+                            No questions in this section yet. Add a question above and assign it to &quot;{group.label}&quot;.
+                          </p>
+                        ) : (
                         <ul className={styles.list}>
                           {group.items.map((q) => (
                             <li key={q.id} className={`${styles.questionRow} ${selectedQuestionId === q.id ? styles.questionRowSelected : ''}`}>
@@ -2472,8 +2628,10 @@ export default function EventMatchmaking() {
                             </li>
                           ))}
                         </ul>
+                        )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>

@@ -80,10 +80,8 @@ export function resolveRegistrationSectionLabel(
 export function groupQuestionsBySection(
   audience: MatchmakingAudience,
   questions: EventRegistrationQuestion[],
+  options?: { sectionOrder?: string[]; includeEmptySections?: boolean },
 ): Array<{ sectionLabel: string; questions: EventRegistrationQuestion[] }> {
-  const orderIndex = new Map<string, number>(
-    DELEGATE_REGISTRATION_SECTION_ORDER.map((label, idx) => [label, idx]),
-  );
   const grouped = new Map<string, EventRegistrationQuestion[]>();
 
   for (const q of questions) {
@@ -93,12 +91,29 @@ export function groupQuestionsBySection(
     grouped.set(label, list);
   }
 
-  return [...grouped.entries()]
-    .sort(([a], [b]) => {
+  const orderList =
+    options?.sectionOrder && options.sectionOrder.length > 0
+      ? options.sectionOrder
+      : [...DELEGATE_REGISTRATION_SECTION_ORDER];
+
+  const orderIndex = new Map<string, number>(orderList.map((label, idx) => [label, idx]));
+
+  const labels = new Set<string>([...grouped.keys()]);
+  if (options?.includeEmptySections) {
+    orderList.forEach((label) => labels.add(label));
+  }
+
+  return [...labels]
+    .filter((label) => label !== 'General' || grouped.has('General'))
+    .sort((a, b) => {
       const ai = orderIndex.get(a) ?? 999;
       const bi = orderIndex.get(b) ?? 999;
       if (ai !== bi) return ai - bi;
       return a.localeCompare(b);
     })
-    .map(([sectionLabel, sectionQuestions]) => ({ sectionLabel, questions: sectionQuestions }));
+    .map((sectionLabel) => ({
+      sectionLabel,
+      questions: grouped.get(sectionLabel) ?? [],
+    }))
+    .filter((group) => options?.includeEmptySections || group.questions.length > 0);
 }
