@@ -5,7 +5,7 @@
   "framework": "vite",
   "rewrites": [
     {
-      "source": "/((?!auth-recovery\\.html$).*)",
+      "source": "/((?!auth-recovery\\.html$|portal-set-password\\.html$).*)",
       "destination": "/index.html"
     }
   ]

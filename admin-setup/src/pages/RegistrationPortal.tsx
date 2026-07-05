@@ -9,7 +9,7 @@ import type {
   EventRegistrationQuestionOption,
   MatchmakingAudience,
 } from '../lib/types';
-import { sendRegistrationSetupEmail } from '../lib/registrationSetupEmail';
+import { ensureRegistrationAccount } from '../lib/registrationAccount';
 import { publicPortalLoginUrl } from '../lib/publicPortalUrl';
 import { DELEGATE_ALWAYS_HIDDEN_PROMPTS, REGISTRATION_HEADER_FIELD_PROMPTS, TERMS_ACCEPTANCE_PROMPT } from '../lib/registrationDefaultVisibility';
 import styles from './RegistrationPortal.module.css';
@@ -88,6 +88,8 @@ export default function RegistrationPortal() {
   const [email, setEmail] = useState('');
   const [companyName, setCompanyName] = useState('');
   const [jobTitle, setJobTitle] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [answers, setAnswers] = useState<AnswerMap>({});
   const [representatives, setRepresentatives] = useState<VendorRepresentative[]>([
     { firstName: '', lastName: '', title: '', workPhone: '', cell: '', email: '' },
@@ -339,13 +341,40 @@ export default function RegistrationPortal() {
         return;
       }
     }
+    if (status === 'submitted') {
+      if (password.length < 8) {
+        setError('Choose a password with at least 8 characters.');
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError('Passwords do not match.');
+        return;
+      }
+    }
     setSaving(true);
     setError('');
     setSuccess('');
     try {
       let loginMessage = '';
-      const { data: authData } = await supabase.auth.getUser();
-      const authUserId = authData.user?.id ?? null;
+      let authUserId: string | null = null;
+
+      if (status === 'submitted' && emailValue) {
+        const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
+        const accountResult = await ensureRegistrationAccount(emailValue, password, {
+          full_name: fullName,
+          event_id: eventId,
+          attendee_type: dbAudience,
+        });
+        if ('error' in accountResult) {
+          setError(accountResult.error);
+          return;
+        }
+        authUserId = accountResult.userId;
+      } else {
+        const { data: authData } = await supabase.auth.getUser();
+        authUserId = authData.user?.id ?? null;
+      }
+
       const submissionPayload = {
         event_id: eventId,
         form_id: form.id,
@@ -444,28 +473,19 @@ export default function RegistrationPortal() {
         }
       }
 
-      if (status === 'submitted' && email.trim()) {
-        const normalizedEmail = email.trim().toLowerCase();
-        const fullName = [firstName.trim(), lastName.trim()].filter(Boolean).join(' ');
-        try {
-          await sendRegistrationSetupEmail({
-            event_id: eventId,
-            email: normalizedEmail,
-            full_name: fullName,
-            attendee_type: dbAudience,
-          });
-          loginMessage = ` We emailed ${normalizedEmail} a link to set your password and sign in.`;
-        } catch (setupErr) {
-          loginMessage =
-            ` Registration saved, but the sign-in email could not be sent (${setupErr instanceof Error ? setupErr.message : 'email failed'}). ` +
-            'Contact the event organizer or try Register again later.';
-        }
+      if (status === 'submitted' && emailValue && eventId) {
+        const portalRole = dbAudience === 'vendor' ? 'vendor' : 'delegate';
+        const loginUrl = publicPortalLoginUrl(eventId, portalRole);
+        loginMessage =
+          dbAudience === 'attendee' || dbAudience === 'vendor'
+            ? ` Your portal account is ready — sign in anytime at ${loginUrl} (use the email and password you just chose).`
+            : '';
       }
 
       const portalRole = dbAudience === 'vendor' ? 'vendor' : 'delegate';
       const portalNote =
         (dbAudience === 'attendee' || dbAudience === 'vendor') && status === 'submitted' && eventId
-          ? ` Sign in anytime at ${publicPortalLoginUrl(eventId, portalRole)} when your organizer opens the portal.`
+          ? ` When your organizer opens the next registration stage, sign in at ${publicPortalLoginUrl(eventId, portalRole)}.`
           : '';
       setSuccess(status === 'submitted' ? `Thank you. Your registration is submitted.${loginMessage}${portalNote}` : 'Draft saved.');
       if (status === 'submitted') {
@@ -478,6 +498,8 @@ export default function RegistrationPortal() {
         setEmail('');
         setCompanyName('');
         setJobTitle('');
+        setPassword('');
+        setConfirmPassword('');
       }
     } catch (e) {
       const message =
@@ -592,9 +614,33 @@ export default function RegistrationPortal() {
           ) : null}
         </div>
 
-        {dbAudience === 'attendee' ? (
+        <div className={styles.grid2}>
+          <label>
+            Password <span className={styles.requiredStar}>*</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              minLength={8}
+              placeholder="At least 8 characters"
+            />
+          </label>
+          <label>
+            Confirm password <span className={styles.requiredStar}>*</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              minLength={8}
+            />
+          </label>
+        </div>
+        {dbAudience === 'attendee' || dbAudience === 'vendor' ? (
           <p className={styles.hint}>
-            After you submit, we will email you a link to set your password and sign in to your delegate portal.
+            Choose a password now — you will use it to sign in to your {dbAudience === 'vendor' ? 'vendor' : 'delegate'}{' '}
+            portal after registration (Login link at the top of this page).
           </p>
         ) : null}
 
