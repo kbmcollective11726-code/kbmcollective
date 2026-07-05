@@ -718,6 +718,7 @@
   border: 1px solid #dbe4f0;
   border-radius: 12px;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+  width: 100%;
 }
 
 .tab {
@@ -839,4 +840,310 @@
 
 .advancedToggle:hover {
   background: #f1f5f9;
+}
+
+.tabContent {
+  display: grid;
+  gap: 16px;
+}
+
+.tabIntro {
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  padding: 16px 18px;
+  background: linear-gradient(135deg, #eff6ff 0%, #fff 55%);
+}
+
+.tabIntro h2 {
+  margin: 0 0 6px;
+  font-size: 20px;
+  color: #0f172a;
+}
+
+.tabIntro p {
+  margin: 0;
+  color: #475569;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.sectionHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  margin-bottom: 8px;
+}
+
+.sectionHeader h2 {
+  margin: 0;
+}
+
+.sectionLead {
+  margin: 0 0 14px;
+  color: #64748b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.subsectionTitle {
+  margin: 16px 0 10px;
+  font-size: 15px;
+  color: #334155;
+}
+
+.linkCardGrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+}
+
+.linkCard {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px;
+  background: #f8fafc;
+}
+
+.linkCardHead {
+  display: grid;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+
+.linkCardHead strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.linkCardHint {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.linkCardRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.linkCardUrl {
+  flex: 1 1 180px;
+  min-width: 0;
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #cbd5e1;
+  font-size: 12px;
+  color: #334155;
+  word-break: break-all;
+}
+
+.toggleCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fff;
+  cursor: pointer;
+}
+
+.toggleCard input {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+}
+
+.toggleCard > span {
+  display: grid;
+  gap: 2px;
+}
+
+.toggleCard strong {
+  font-size: 14px;
+  color: #0f172a;
+}
+
+.toggleCardHint {
+  font-size: 13px;
+  color: #64748b;
+}
+
+.formStack {
+  display: grid;
+  gap: 12px;
+}
+
+.formStack .field textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  min-height: 96px;
+  resize: vertical;
+  font-family: inherit;
+}
+
+.fieldHelp {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-start;
+  gap: 8px;
+  padding-top: 4px;
+}
+
+.grid2 {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.statsRow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.statCard {
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #f8fafc;
+  display: grid;
+  gap: 2px;
+}
+
+.statValue {
+  font-size: 22px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.1;
+}
+
+.statLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: flex-end;
+  margin-bottom: 14px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.toolbarActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.statusBadge_success {
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+}
+
+.statusBadge_warn {
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+}
+
+.statusBadge_muted {
+  color: #475569;
+  background: #f1f5f9;
+  border: 1px solid #cbd5e1;
+}
+
+.statusBadge_danger {
+  color: #991b1b;
+  background: #fee2e2;
+  border: 1px solid #fca5a5;
+}
+
+.statusBadge_info {
+  color: #1d4ed8;
+  background: #dbeafe;
+  border: 1px solid #93c5fd;
+}
+
+.emptyState {
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  padding: 24px 20px;
+  text-align: center;
+  background: #f8fafc;
+  color: #64748b;
+}
+
+.emptyState strong {
+  display: block;
+  margin-bottom: 6px;
+  color: #334155;
+  font-size: 15px;
+}
+
+.emptyState p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.sectionAdvanced {
+  background: #fafafa;
+  border-style: dashed;
+}
+
+@media (max-width: 720px) {
+  .tabs {
+    width: 100%;
+  }
+
+  .tab {
+    flex: 1 1 calc(50% - 4px);
+    text-align: center;
+    padding: 10px 8px;
+    font-size: 13px;
+  }
+
+  .toolbarActions {
+    margin-left: 0;
+    width: 100%;
+  }
 }

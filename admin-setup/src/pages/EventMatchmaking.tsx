@@ -369,16 +369,96 @@ function toPrimaryForms(inputForms: EventRegistrationForm[]) {
 
 type MatchmakingTab = 'portal' | 'forms' | 'registrations' | 'matching';
 
-const MATCHMAKING_TABS: { id: MatchmakingTab; label: string }[] = [
-  { id: 'portal', label: 'Portal setup' },
-  { id: 'forms', label: 'Forms & questions' },
-  { id: 'registrations', label: 'Registrations' },
-  { id: 'matching', label: 'Matching & schedule' },
+const MATCHMAKING_TABS: { id: MatchmakingTab; label: string; introTitle: string; intro: string }[] = [
+  {
+    id: 'portal',
+    label: 'Portal setup',
+    introTitle: 'Connect portal',
+    intro: 'Share registration links, customize the banner, control Stage 2 access, and configure what delegates see after they sign in.',
+  },
+  {
+    id: 'forms',
+    label: 'Forms & questions',
+    introTitle: 'Registration forms',
+    intro: 'Choose delegate, vendor, or speaker forms and edit the questions that appear on connect.kbmcollective.org.',
+  },
+  {
+    id: 'registrations',
+    label: 'Registrations',
+    introTitle: 'Registration inbox',
+    intro: 'Review who has registered, approve or reject applicants, export data, and jump to matching for any selected person.',
+  },
+  {
+    id: 'matching',
+    label: 'Matching & schedule',
+    introTitle: 'Matchmaking operations',
+    intro: 'Inspect participant profiles, generate suggestions, manage the review queue, and schedule approved meetings.',
+  },
 ];
 
 function parseMatchmakingTab(raw: string | undefined): MatchmakingTab | null {
   if (raw === 'portal' || raw === 'forms' || raw === 'registrations' || raw === 'matching') return raw;
   return null;
+}
+
+function TabIntro({ title, description }: { title: string; description: string }) {
+  return (
+    <div className={styles.tabIntro}>
+      <h2>{title}</h2>
+      <p>{description}</p>
+    </div>
+  );
+}
+
+function CopyLinkCard({ label, url, hint }: { label: string; url: string; hint?: string }) {
+  const [copied, setCopied] = useState(false);
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* clipboard unavailable */
+    }
+  };
+  return (
+    <div className={styles.linkCard}>
+      <div className={styles.linkCardHead}>
+        <strong>{label}</strong>
+        {hint ? <span className={styles.linkCardHint}>{hint}</span> : null}
+      </div>
+      <div className={styles.linkCardRow}>
+        <code className={styles.linkCardUrl}>{url}</code>
+        <button type="button" className={styles.btnSecondary} onClick={() => void onCopy()}>
+          {copied ? 'Copied!' : 'Copy link'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+type BadgeTone = 'success' | 'warn' | 'muted' | 'danger' | 'info';
+
+function StatusBadge({ label, tone = 'muted' }: { label: string; tone?: BadgeTone }) {
+  return <span className={`${styles.statusBadge} ${styles[`statusBadge_${tone}`]}`}>{label}</span>;
+}
+
+function registrationReviewTone(status: string | null | undefined): BadgeTone {
+  if (status === 'approved') return 'success';
+  if (status === 'rejected') return 'danger';
+  return 'warn';
+}
+
+function formStatusTone(status: string): BadgeTone {
+  if (status === 'submitted') return 'success';
+  if (status === 'draft') return 'muted';
+  return 'info';
+}
+
+function matchReviewTone(status: string): BadgeTone {
+  if (status === 'approved') return 'success';
+  if (status === 'rejected') return 'danger';
+  return 'warn';
 }
 
 export default function EventMatchmaking() {
@@ -1854,6 +1934,19 @@ export default function EventMatchmaking() {
 
   const setupCompleteCount = setupChecklist.filter((item) => item.done).length;
 
+  const activeTabMeta =
+    MATCHMAKING_TABS.find((tab) => tab.id === activeTab) ?? MATCHMAKING_TABS[0]!;
+
+  const registrationStats = useMemo(() => {
+    const rows = filteredSubmissions;
+    return {
+      total: rows.length,
+      submitted: rows.filter((row) => row.status === 'submitted').length,
+      pendingReview: rows.filter((row) => (row.registration_status ?? 'pending_review') === 'pending_review').length,
+      approved: rows.filter((row) => row.registration_status === 'approved').length,
+    };
+  }, [filteredSubmissions]);
+
   function goToTab(tab: MatchmakingTab) {
     if (!eventId) return;
     navigate(`/events/${eventId}/matchmaking/${tab}`);
@@ -1889,16 +1982,10 @@ export default function EventMatchmaking() {
             </button>
           ))}
         </nav>
-        <p className={styles.tabHint}>
-          {activeTab === 'portal'
-            ? 'Connect portal links, banner, Stage 2, and delegate menu settings.'
-            : activeTab === 'forms'
-              ? 'Registration forms, solution categories, and question editor.'
-              : activeTab === 'registrations'
-                ? 'Review incoming registrations and approve or reject applicants.'
-                : 'Match scores, review queue, and meeting schedule.'}
-        </p>
       </div>
+
+      <div className={styles.tabContent}>
+      <TabIntro title={activeTabMeta.introTitle} description={activeTabMeta.intro} />
 
       {activeTab === 'portal' ? (
         <section className={styles.setupChecklist}>
@@ -1921,34 +2008,46 @@ export default function EventMatchmaking() {
       {activeTab === 'portal' ? (
       <>
       <section className={styles.section}>
-        <h2>Registration portal</h2>
-        <p className={styles.hint}>
-          Share links with delegates/vendors/speakers. Toggle registration access per event.
+        <div className={styles.sectionHeader}>
+          <h2>Registration portal</h2>
+          <StatusBadge
+            label={registrationOpen ? 'Open' : 'Closed'}
+            tone={registrationOpen ? 'success' : 'muted'}
+          />
+        </div>
+        <p className={styles.sectionLead}>
+          Turn registration on when you are ready to accept sign-ups. Copy the links below for delegates, vendors, and speakers.
         </p>
-        <div className={styles.inlineForm}>
-          <label className={styles.checkboxInline}>
-            <input
-              type="checkbox"
-              checked={registrationOpen}
-              onChange={(e) => void saveSettings(e.target.checked)}
-              disabled={savingSettings}
-            />
-            Registration open
-          </label>
-          <code>{publicRegisterUrl(eventId, 'delegate')}</code>
-          <code>{publicRegisterUrl(eventId, 'vendor')}</code>
-          <code>{publicRegisterUrl(eventId, 'speaker')}</code>
-          <code>{publicPortalLoginUrl(eventId, 'delegate')}</code>
-          <code>{publicPortalLoginUrl(eventId, 'vendor')}</code>
+        <label className={styles.toggleCard}>
+          <input
+            type="checkbox"
+            checked={registrationOpen}
+            onChange={(e) => void saveSettings(e.target.checked)}
+            disabled={savingSettings}
+          />
+          <span>
+            <strong>Registration open</strong>
+            <span className={styles.toggleCardHint}>
+              {registrationOpen ? 'New sign-ups are allowed on connect.' : 'Registration links show as closed.'}
+            </span>
+          </span>
+        </label>
+        <div className={styles.linkCardGrid}>
+          <CopyLinkCard label="Delegate registration" hint="Stage 1 sign-up" url={publicRegisterUrl(eventId, 'delegate')} />
+          <CopyLinkCard label="Vendor registration" hint="Stage 1 sign-up" url={publicRegisterUrl(eventId, 'vendor')} />
+          <CopyLinkCard label="Speaker registration" hint="Stage 1 sign-up" url={publicRegisterUrl(eventId, 'speaker')} />
+          <CopyLinkCard label="Delegate portal login" hint="After account created" url={publicPortalLoginUrl(eventId, 'delegate')} />
+          <CopyLinkCard label="Vendor portal login" hint="After account created" url={publicPortalLoginUrl(eventId, 'vendor')} />
         </div>
       </section>
 
       <section className={styles.section}>
-        <h2>Connect portal banner</h2>
-        <p className={styles.hint}>
-          {PORTAL_BANNER_HINT} Recommended size: <strong>{PORTAL_BANNER_SIZE_LABEL}</strong>. Shown at the top of
-          connect.kbmcollective.org when delegates/vendors sign in. If empty, the badge header or app banner is used;
-          otherwise the event logo appears on a navy header.
+        <div className={styles.sectionHeader}>
+          <h2>Connect portal banner</h2>
+        </div>
+        <p className={styles.sectionLead}>
+          {PORTAL_BANNER_HINT} Recommended size: <strong>{PORTAL_BANNER_SIZE_LABEL}</strong>.
+          Shown at the top of connect.kbmcollective.org when delegates and vendors sign in. Leave empty to use the event logo on a navy header.
         </p>
         <input
           ref={portalBannerInputRef}
@@ -1985,157 +2084,111 @@ export default function EventMatchmaking() {
       </section>
 
       <section className={styles.section}>
-        <h2>Stage 2 portal activation</h2>
-        <p className={styles.hint}>
-          Stage 1 registration collects account info. When you activate Stage 2 per role, registrants can sign in and complete their
-          full profile on connect.kbmcollective.org. Until then they see the holding screen below.
+        <div className={styles.sectionHeader}>
+          <h2>Stage 2 portal activation</h2>
+        </div>
+        <p className={styles.sectionLead}>
+          Stage 1 collects account info. When Stage 2 is active, registrants sign in and complete their full profile. Until then they see the holding screen.
         </p>
-        <div className={styles.inlineForm} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12 }}>
-          <label className={styles.checkboxInline}>
+        <div className={styles.formStack}>
+          <label className={styles.toggleCard}>
             <input type="checkbox" checked={delegateStage2Active} onChange={(e) => setDelegateStage2Active(e.target.checked)} />
-            Delegate Stage 2 active
+            <span>
+              <strong>Delegate Stage 2 active</strong>
+              <span className={styles.toggleCardHint}>Delegates can complete Registration Details.</span>
+            </span>
           </label>
-          <label className={styles.checkboxInline}>
+          <label className={styles.toggleCard}>
             <input type="checkbox" checked={vendorStage2Active} onChange={(e) => setVendorStage2Active(e.target.checked)} />
-            Vendor Stage 2 active
+            <span>
+              <strong>Vendor Stage 2 active</strong>
+              <span className={styles.toggleCardHint}>Vendors can complete their full vendor profile.</span>
+            </span>
           </label>
-          <label>
-            Expected open date (optional — shown on holding screen and in confirmation email)
+          <label className={styles.field}>
+            <span>Expected open date (optional)</span>
             <input
               type="datetime-local"
               value={stage2ExpectedOpenAt}
               onChange={(e) => setStage2ExpectedOpenAt(e.target.value)}
-              style={{ width: '100%', marginTop: 6 }}
             />
+            <span className={styles.fieldHelp}>Shown on the holding screen and in confirmation email.</span>
           </label>
-          <label>
-            Holding screen message (shown when Stage 2 is not yet active)
+          <label className={styles.field}>
+            <span>Holding screen message</span>
             <textarea
               value={stage2HoldingMessage}
               onChange={(e) => setStage2HoldingMessage(e.target.value)}
               rows={4}
               placeholder="Your registration is confirmed! Full profile setup opens soon — we will email you when it is ready."
-              style={{ width: '100%', marginTop: 6 }}
             />
           </label>
-          <button type="button" disabled={savingPortalSettings} onClick={() => void savePortalSettings()}>
-            {savingPortalSettings ? 'Saving…' : 'Save Stage 2 settings'}
-          </button>
+          <div className={styles.formActions}>
+            <button type="button" className={styles.btnPrimary} disabled={savingPortalSettings} onClick={() => void savePortalSettings()}>
+              {savingPortalSettings ? 'Saving…' : 'Save Stage 2 settings'}
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2>Delegate portal (after registration)</h2>
+        </div>
+        <p className={styles.sectionLead}>
+          Control optional delegate menu items and who gets notified when someone submits registration.
+        </p>
+        <div className={styles.formStack}>
+          <label className={styles.toggleCard}>
+            <input type="checkbox" checked={meetingRequestsOpen} onChange={(e) => setMeetingRequestsOpen(e.target.checked)} />
+            <span>
+              <strong>Meeting requests open</strong>
+              <span className={styles.toggleCardHint}>Shows Meeting Requests in the delegate menu.</span>
+            </span>
+          </label>
+          <label className={styles.toggleCard}>
+            <input type="checkbox" checked={delegateHotelVisible} onChange={(e) => setDelegateHotelVisible(e.target.checked)} />
+            <span>
+              <strong>Show Hotel tab</strong>
+              <span className={styles.toggleCardHint}>Display hotel info in the delegate portal.</span>
+            </span>
+          </label>
+          <label className={styles.field}>
+            <span>Hotel tab content</span>
+            <textarea
+              value={delegateHotelContent}
+              onChange={(e) => setDelegateHotelContent(e.target.value)}
+              rows={6}
+              placeholder="Hotel address, included nights, booking link, check-in/out times, confirmation notes…"
+            />
+          </label>
+          <label className={styles.field}>
+            <span>Team notification emails</span>
+            <input
+              value={registrationNotifyTeamEmails}
+              onChange={(e) => setRegistrationNotifyTeamEmails(e.target.value)}
+              placeholder="ops@example.com, events@example.com"
+            />
+            <span className={styles.fieldHelp}>Comma-separated. Notified when someone submits registration.</span>
+          </label>
+          <div className={styles.formActions}>
+            <button type="button" className={styles.btnPrimary} onClick={() => void savePortalSettings()} disabled={savingPortalSettings}>
+              {savingPortalSettings ? 'Saving…' : 'Save portal settings'}
+            </button>
+          </div>
         </div>
       </section>
       </>
       ) : null}
 
       {activeTab === 'forms' ? (
-      <section className={styles.section}>
-        <h2>Solution categories</h2>
-        {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
-      </section>
-      ) : null}
-
-      {activeTab === 'matching' ? (
-      <section className={styles.section}>
-        <button
-          type="button"
-          className={styles.advancedToggle}
-          aria-expanded={scoringAdvancedOpen}
-          onClick={() => setScoringAdvancedOpen((open) => !open)}
-        >
-          {scoringAdvancedOpen ? '▾' : '▸'} Advanced — match scoring weights
-        </button>
-        {scoringAdvancedOpen ? (
-        <>
-        <p className={styles.hint}>
-          Adjust how much each signal contributes to server-side match scores. Category overlap uses solution categories synced from
-          multi_select answers when profiles are saved.
-        </p>
-        <div className={styles.grid2}>
-          {(
-            [
-              ['weight_category', 'Solution category overlap'],
-              ['weight_goals', 'Goals / priorities overlap'],
-              ['weight_seniority', 'Seniority (C-suite signal)'],
-              ['weight_revenue', 'Revenue tier match'],
-              ['weight_budget', 'Budget tier match'],
-              ['weight_scope', 'Scope of responsibility match'],
-              ['weight_semantic', 'Semantic (reserved for v1.1)'],
-            ] as const
-          ).map(([key, label]) => (
-            <label key={key}>
-              {label}
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={matchConfig[key]}
-                onChange={(e) =>
-                  setMatchConfig((prev) => ({
-                    ...prev,
-                    [key]: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
-                  }))
-                }
-              />
-            </label>
-          ))}
-        </div>
-        <button type="button" disabled={savingMatchConfig} onClick={() => void saveMatchConfig()} style={{ marginTop: 12 }}>
-          {savingMatchConfig ? 'Saving…' : 'Save scoring weights'}
-        </button>
-        </>
-        ) : null}
-      </section>
-      ) : null}
-
-      {activeTab === 'portal' ? (
-      <section className={styles.section}>
-        <h2>Delegate portal (after registration)</h2>
-        <p className={styles.hint}>
-          Delegates sign in at the portal link above. Meeting Requests stays hidden until you enable it below. Hotel tab can be hidden per
-          event. Admins and team emails receive notification when someone submits registration.
-        </p>
-        <div className={styles.inlineForm} style={{ flexDirection: 'column', alignItems: 'stretch', gap: 12 }}>
-          <label className={styles.checkboxInline}>
-            <input type="checkbox" checked={meetingRequestsOpen} onChange={(e) => setMeetingRequestsOpen(e.target.checked)} />
-            Meeting requests open (shows Meeting Requests menu with Request Meeting / Sent)
-          </label>
-          <label className={styles.checkboxInline}>
-            <input type="checkbox" checked={delegateHotelVisible} onChange={(e) => setDelegateHotelVisible(e.target.checked)} />
-            Show Hotel tab in delegate portal
-          </label>
-          <label>
-            Hotel tab content
-            <textarea
-              value={delegateHotelContent}
-              onChange={(e) => setDelegateHotelContent(e.target.value)}
-              rows={6}
-              placeholder="Hotel address, included nights, booking link, check-in/out times, confirmation notes…"
-              style={{ width: '100%', marginTop: 6 }}
-            />
-          </label>
-          <label>
-            Team notification emails (comma-separated)
-            <input
-              value={registrationNotifyTeamEmails}
-              onChange={(e) => setRegistrationNotifyTeamEmails(e.target.value)}
-              placeholder="ops@example.com, events@example.com"
-              style={{ width: '100%', marginTop: 6 }}
-            />
-          </label>
-          <button type="button" onClick={() => void savePortalSettings()} disabled={savingPortalSettings}>
-            {savingPortalSettings ? 'Saving…' : 'Save portal settings'}
-          </button>
-        </div>
-      </section>
-      ) : null}
-
-      {activeTab === 'forms' ? (
       <>
       <section className={styles.section}>
-        <h2>Registration forms</h2>
-        <p className={styles.hint}>
-          Master Build Spec defaults: delegate Registration Details uses six sections (identity, company, eligibility, solution
-          interest, meeting preferences, profile). Legacy KBM fields stay in the database but are hidden — they do not appear on the
-          connect portal unless you Show them here.
+        <div className={styles.sectionHeader}>
+          <h2>Registration forms</h2>
+        </div>
+        <p className={styles.sectionLead}>
+          Master Build Spec defaults use six delegate sections. Legacy KBM fields stay in the database but are hidden on connect unless you show them here.
         </p>
         {templateError ? <p className={styles.error}>{templateError}</p> : null}
         <div className={styles.inlineForm}>
@@ -2175,7 +2228,12 @@ export default function EventMatchmaking() {
       </section>
 
       <section className={styles.section}>
-        <h2>Questions {activeForm ? `— ${activeForm.name}` : ''}</h2>
+        <div className={styles.sectionHeader}>
+          <h2>Questions {activeForm ? `— ${activeForm.name}` : ''}</h2>
+          {activeForm ? (
+            <StatusBadge label={titleizeAudience(activeForm.audience)} tone="info" />
+          ) : null}
+        </div>
         {!activeForm ? (
           <p className={styles.hint}>Select a form to add questions.</p>
         ) : (
@@ -2608,28 +2666,68 @@ export default function EventMatchmaking() {
           </div>
         )}
       </section>
+
+      <section className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2>Solution categories</h2>
+        </div>
+        <p className={styles.sectionLead}>
+          Define the solution types delegates can select. These feed solution-interest questions and match scoring.
+        </p>
+        {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
+      </section>
       </>
       ) : null}
 
       {activeTab === 'registrations' ? (
       <section className={styles.section}>
-        <h2>Recent registrations</h2>
-        <div className={styles.inlineForm}>
-          <select value={subFilter} onChange={(e) => setSubFilter(e.target.value as 'all' | 'submitted' | 'draft')}>
-            <option value="all">All statuses</option>
-            <option value="submitted">Submitted</option>
-            <option value="draft">Draft</option>
-          </select>
-          <select value={audienceFilter} onChange={(e) => setAudienceFilter(e.target.value as 'all' | MatchmakingAudience)}>
-            <option value="all">All audiences</option>
-            <option value="attendee">Delegate</option>
-            <option value="vendor">Vendor</option>
-            <option value="user">Speaker</option>
-          </select>
-          <button type="button" onClick={exportSubmissionsCsv}>Export CSV</button>
+        <div className={styles.sectionHeader}>
+          <h2>Recent registrations</h2>
+          <StatusBadge label={`${registrationStats.total} total`} tone="info" />
+        </div>
+        <div className={styles.statsRow}>
+          <div className={styles.statCard}>
+            <span className={styles.statValue}>{registrationStats.submitted}</span>
+            <span className={styles.statLabel}>Submitted</span>
+          </div>
+          <div className={styles.statCard}>
+            <span className={styles.statValue}>{registrationStats.pendingReview}</span>
+            <span className={styles.statLabel}>Pending review</span>
+          </div>
+          <div className={styles.statCard}>
+            <span className={styles.statValue}>{registrationStats.approved}</span>
+            <span className={styles.statLabel}>Approved</span>
+          </div>
+        </div>
+        <div className={styles.toolbar}>
+          <label className={styles.field}>
+            <span>Form status</span>
+            <select value={subFilter} onChange={(e) => setSubFilter(e.target.value as 'all' | 'submitted' | 'draft')}>
+              <option value="all">All statuses</option>
+              <option value="submitted">Submitted</option>
+              <option value="draft">Draft</option>
+            </select>
+          </label>
+          <label className={styles.field}>
+            <span>Audience</span>
+            <select value={audienceFilter} onChange={(e) => setAudienceFilter(e.target.value as 'all' | MatchmakingAudience)}>
+              <option value="all">All audiences</option>
+              <option value="attendee">Delegate</option>
+              <option value="vendor">Vendor</option>
+              <option value="user">Speaker</option>
+            </select>
+          </label>
+          <div className={styles.toolbarActions}>
+            <button type="button" className={styles.btnSecondary} onClick={exportSubmissionsCsv}>
+              Export CSV
+            </button>
+          </div>
         </div>
         {filteredSubmissions.length === 0 ? (
-          <p className={styles.hint}>No registrations yet.</p>
+          <div className={styles.emptyState}>
+            <strong>No registrations yet</strong>
+            <p>When delegates and vendors sign up, they will appear here for review.</p>
+          </div>
         ) : (
           <div className={styles.tableWrap}>
             <table>
@@ -2656,9 +2754,19 @@ export default function EventMatchmaking() {
                     <td>{row.company_name ?? '—'}</td>
                     <td>{row.email ?? '—'}</td>
                     <td>{titleizeAudience(row.attendee_type)}</td>
-                    <td>{row.status}</td>
-                    <td>{row.registration_status ?? 'pending_review'}</td>
-                    <td>{row.profile_complete ? 'complete' : 'incomplete'}</td>
+                    <td><StatusBadge label={row.status} tone={formStatusTone(row.status)} /></td>
+                    <td>
+                      <StatusBadge
+                        label={row.registration_status ?? 'pending_review'}
+                        tone={registrationReviewTone(row.registration_status)}
+                      />
+                    </td>
+                    <td>
+                      <StatusBadge
+                        label={row.profile_complete ? 'Complete' : 'Incomplete'}
+                        tone={row.profile_complete ? 'success' : 'muted'}
+                      />
+                    </td>
                     <td className={styles.rowActions}>
                       {row.registration_status !== 'approved' ? (
                         <button
@@ -2733,15 +2841,26 @@ export default function EventMatchmaking() {
       {activeTab === 'matching' ? (
       <>
       <section className={styles.section}>
-        <h2>Participant detail + suggested matches</h2>
+        <div className={styles.sectionHeader}>
+          <h2>Participant detail &amp; suggested matches</h2>
+          {selectedSubmission ? (
+            <StatusBadge
+              label={[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Selected'}
+              tone="info"
+            />
+          ) : null}
+        </div>
         {!selectedSubmission ? (
-          <p className={styles.hint}>
-            Select a registrant on the{' '}
-            <button type="button" className={styles.tabLink} onClick={() => goToTab('registrations')}>
-              Registrations
-            </button>{' '}
-            tab to view answers and top match suggestions.
-          </p>
+          <div className={styles.emptyState}>
+            <strong>No participant selected</strong>
+            <p>
+              Select a registrant on the{' '}
+              <button type="button" className={styles.tabLink} onClick={() => goToTab('registrations')}>
+                Registrations
+              </button>{' '}
+              tab to view answers and ranked match suggestions.
+            </p>
+          </div>
         ) : (
           <div className={styles.detailGrid}>
             <div>
@@ -2838,18 +2957,25 @@ export default function EventMatchmaking() {
       </section>
 
       <section className={styles.section}>
-        <h2>Admin review queue</h2>
-        <div className={styles.inlineForm}>
-          <button type="button" onClick={() => void generateMatchSuggestions()} disabled={generatingSuggestions}>
-            {generatingSuggestions ? 'Generating…' : 'Generate match suggestions (v1 scoring)'}
-          </button>
+        <div className={styles.sectionHeader}>
+          <h2>Admin review queue</h2>
+          <StatusBadge label={`${reviews.length} matches`} tone="info" />
         </div>
-        <p className={styles.hint}>
-          Suggestions use solution-category overlap and interest requests. Only approved, profile-complete registrants with matching
-          opt-in are included.
+        <div className={styles.toolbar}>
+          <div className={styles.toolbarActions}>
+            <button type="button" className={styles.btnPrimary} onClick={() => void generateMatchSuggestions()} disabled={generatingSuggestions}>
+              {generatingSuggestions ? 'Generating…' : 'Generate match suggestions'}
+            </button>
+          </div>
+        </div>
+        <p className={styles.sectionLead}>
+          Uses solution-category overlap and interest requests. Only approved, profile-complete registrants with matching opt-in are included.
         </p>
         {reviews.length === 0 ? (
-          <p className={styles.hint}>No reviewed matches yet.</p>
+          <div className={styles.emptyState}>
+            <strong>No reviewed matches yet</strong>
+            <p>Generate suggestions to populate the review queue.</p>
+          </div>
         ) : (
           <div className={styles.tableWrap}>
             <table>
@@ -2871,7 +2997,7 @@ export default function EventMatchmaking() {
                       <td>{[from?.first_name, from?.last_name].filter(Boolean).join(' ') || from?.email || '—'}</td>
                       <td>{[to?.first_name, to?.last_name].filter(Boolean).join(' ') || to?.email || '—'}</td>
                       <td>{r.score}</td>
-                      <td>{r.status}</td>
+                      <td><StatusBadge label={r.status} tone={matchReviewTone(r.status)} /></td>
                       <td>{new Date(r.updated_at).toLocaleString()}</td>
                     </tr>
                   );
@@ -2883,23 +3009,26 @@ export default function EventMatchmaking() {
       </section>
 
       <section className={styles.section}>
-        <h2>Scheduling board</h2>
-        <p className={styles.hint}>Set slot time, approve matches, and assign meetings with conflict checks.</p>
-        <div className={styles.inlineForm}>
-          <label>
-            Start
+        <div className={styles.sectionHeader}>
+          <h2>Scheduling board</h2>
+          <StatusBadge label={`${scheduledMeetings.length} scheduled`} tone="info" />
+        </div>
+        <p className={styles.sectionLead}>Set slot time, approve matches, and assign meetings with conflict checks.</p>
+        <div className={styles.toolbar}>
+          <label className={styles.field}>
+            <span>Start</span>
             <input type="datetime-local" value={scheduleStart} onChange={(e) => setScheduleStart(e.target.value)} />
           </label>
-          <label>
-            End
+          <label className={styles.field}>
+            <span>End</span>
             <input type="datetime-local" value={scheduleEnd} onChange={(e) => setScheduleEnd(e.target.value)} />
           </label>
-          <label>
-            Location
+          <label className={styles.field}>
+            <span>Location</span>
             <input value={scheduleLocation} onChange={(e) => setScheduleLocation(e.target.value)} placeholder="Table A1" />
           </label>
         </div>
-        <h3>Approved matches ready to schedule</h3>
+        <h3 className={styles.subsectionTitle}>Approved matches ready to schedule</h3>
         {reviews.filter((r) => r.status === 'approved').length === 0 ? (
           <p className={styles.hint}>No approved matches yet.</p>
         ) : (
@@ -2921,11 +3050,16 @@ export default function EventMatchmaking() {
               })}
           </ul>
         )}
-        <div className={styles.inlineForm}>
-          <button type="button" onClick={exportScheduleCsv}>Export schedule CSV</button>
+        <div className={styles.toolbarActions} style={{ marginTop: 12 }}>
+          <button type="button" className={styles.btnSecondary} onClick={exportScheduleCsv}>
+            Export schedule CSV
+          </button>
         </div>
         {scheduledMeetings.length === 0 ? (
-          <p className={styles.hint}>No scheduled meetings yet.</p>
+          <div className={styles.emptyState}>
+            <strong>No scheduled meetings yet</strong>
+            <p>Schedule approved matches above to publish them to the app.</p>
+          </div>
         ) : (
           <div className={styles.tableWrap}>
             <table>
@@ -2973,8 +3107,61 @@ export default function EventMatchmaking() {
           </div>
         )}
       </section>
+
+      <section className={`${styles.section} ${styles.sectionAdvanced}`}>
+        <button
+          type="button"
+          className={styles.advancedToggle}
+          aria-expanded={scoringAdvancedOpen}
+          onClick={() => setScoringAdvancedOpen((open) => !open)}
+        >
+          {scoringAdvancedOpen ? '▾' : '▸'} Advanced — match scoring weights
+        </button>
+        {scoringAdvancedOpen ? (
+        <div className={styles.formStack}>
+        <p className={styles.sectionLead}>
+          Adjust how much each signal contributes to server-side match scores. Most events can leave these at defaults.
+        </p>
+        <div className={styles.grid2}>
+          {(
+            [
+              ['weight_category', 'Solution category overlap'],
+              ['weight_goals', 'Goals / priorities overlap'],
+              ['weight_seniority', 'Seniority (C-suite signal)'],
+              ['weight_revenue', 'Revenue tier match'],
+              ['weight_budget', 'Budget tier match'],
+              ['weight_scope', 'Scope of responsibility match'],
+              ['weight_semantic', 'Semantic (reserved for v1.1)'],
+            ] as const
+          ).map(([key, label]) => (
+            <label key={key} className={styles.field}>
+              <span>{label}</span>
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={matchConfig[key]}
+                onChange={(e) =>
+                  setMatchConfig((prev) => ({
+                    ...prev,
+                    [key]: Math.max(0, Math.min(100, Number(e.target.value) || 0)),
+                  }))
+                }
+              />
+            </label>
+          ))}
+        </div>
+        <div className={styles.formActions}>
+          <button type="button" className={styles.btnPrimary} disabled={savingMatchConfig} onClick={() => void saveMatchConfig()}>
+            {savingMatchConfig ? 'Saving…' : 'Save scoring weights'}
+          </button>
+        </div>
+        </div>
+        ) : null}
+      </section>
       </>
       ) : null}
+      </div>
     </div>
   );
 }
