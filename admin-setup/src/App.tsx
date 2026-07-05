@@ -160,7 +160,7 @@ export default function App() {
         <Route path="events/:eventId/announcements" element={<Announcements />} />
         <Route path="events/:eventId/photos" element={<EventPhotos />} />
         <Route path="events/:eventId/sponsors" element={<EventSponsors />} />
-        <Route path="events/:eventId/matchmaking" element={<EventMatchmaking />} />
+        <Route path="events/:eventId/matchmaking/:tab?" element={<EventMatchmaking />} />
         <Route path="events/:eventId/badges" element={<EventBadges />} />
         <Route path="events/:eventId/scan-log" element={<EventScanLog />} />
         <Route path="events/:eventId/session-attendance" element={<EventSessionAttendance />} />

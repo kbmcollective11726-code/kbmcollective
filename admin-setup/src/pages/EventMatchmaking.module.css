@@ -698,3 +698,145 @@
   flex-wrap: wrap;
   gap: 10px;
 }
+
+.tabBarSticky {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: grid;
+  gap: 8px;
+  padding: 8px 0 4px;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%);
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid #dbe4f0;
+  border-radius: 12px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+}
+
+.tab {
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #64748b;
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.tab:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+.tabActive {
+  color: #1d4ed8;
+  background: #dbeafe;
+}
+
+.tabActive:hover {
+  color: #1e40af;
+  background: #bfdbfe;
+}
+
+.tabHint {
+  margin: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.tabLink {
+  border: 0;
+  background: none;
+  padding: 0;
+  color: #2563eb;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.setupChecklist {
+  border: 1px solid #bbf7d0;
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: linear-gradient(180deg, #f0fdf4 0%, #fff 100%);
+  box-shadow: 0 6px 20px rgba(15, 23, 42, 0.04);
+}
+
+.setupChecklistHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.setupChecklistHead h2 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.setupChecklistProgress {
+  font-size: 13px;
+  font-weight: 600;
+  color: #15803d;
+}
+
+.setupChecklistList {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  font-size: 14px;
+  color: #334155;
+}
+
+.setupChecklistList li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setupChecklistDone {
+  color: #15803d;
+  font-weight: 600;
+}
+
+.registrationsSelectionHint {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  color: #1e3a8a;
+  font-size: 14px;
+}
+
+.advancedToggle {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: #f8fafc;
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #334155;
+  cursor: pointer;
+  margin-bottom: 8px;
+}
+
+.advancedToggle:hover {
+  background: #f1f5f9;
+}

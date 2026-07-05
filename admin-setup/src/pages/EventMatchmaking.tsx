@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import type {
@@ -367,8 +367,24 @@ function toPrimaryForms(inputForms: EventRegistrationForm[]) {
   return result;
 }
 
+type MatchmakingTab = 'portal' | 'forms' | 'registrations' | 'matching';
+
+const MATCHMAKING_TABS: { id: MatchmakingTab; label: string }[] = [
+  { id: 'portal', label: 'Portal setup' },
+  { id: 'forms', label: 'Forms & questions' },
+  { id: 'registrations', label: 'Registrations' },
+  { id: 'matching', label: 'Matching & schedule' },
+];
+
+function parseMatchmakingTab(raw: string | undefined): MatchmakingTab | null {
+  if (raw === 'portal' || raw === 'forms' || raw === 'registrations' || raw === 'matching') return raw;
+  return null;
+}
+
 export default function EventMatchmaking() {
-  const { eventId } = useParams<{ eventId: string }>();
+  const { eventId, tab: tabParam } = useParams<{ eventId: string; tab?: string }>();
+  const navigate = useNavigate();
+  const activeTab = parseMatchmakingTab(tabParam) ?? 'portal';
   const [event, setEvent] = useState<Event | null>(null);
   const [forms, setForms] = useState<EventRegistrationForm[]>([]);
   const [questions, setQuestions] = useState<EventRegistrationQuestion[]>([]);
@@ -421,6 +437,7 @@ export default function EventMatchmaking() {
   const [sectionFilterLabel, setSectionFilterLabel] = useState<'all' | string>('all');
   const [questionSearchQuery, setQuestionSearchQuery] = useState('');
   const [showHiddenLegacyQuestions, setShowHiddenLegacyQuestions] = useState(false);
+  const [scoringAdvancedOpen, setScoringAdvancedOpen] = useState(false);
   const [duplicatingQuestionId, setDuplicatingQuestionId] = useState('');
   const [sectionBusy, setSectionBusy] = useState(false);
   const [repairingSections, setRepairingSections] = useState(false);
@@ -1814,6 +1831,34 @@ export default function EventMatchmaking() {
     };
   }, [activeForm, activeQuestions, repairingSections]);
 
+  useEffect(() => {
+    if (!eventId || !tabParam) return;
+    if (parseMatchmakingTab(tabParam)) return;
+    navigate(`/events/${eventId}/matchmaking/portal`, { replace: true });
+  }, [eventId, tabParam, navigate]);
+
+  useEffect(() => {
+    if (!eventId || tabParam) return;
+    navigate(`/events/${eventId}/matchmaking/portal`, { replace: true });
+  }, [eventId, tabParam, navigate]);
+
+  const setupChecklist = useMemo(
+    () => [
+      { label: 'Registration open', done: registrationOpen },
+      { label: 'Stage 2 active (delegate or vendor)', done: delegateStage2Active || vendorStage2Active },
+      { label: 'Registration forms configured', done: forms.length > 0 },
+      { label: 'Questions added to active form', done: activeQuestions.length > 0 },
+    ],
+    [registrationOpen, delegateStage2Active, vendorStage2Active, forms.length, activeQuestions.length]
+  );
+
+  const setupCompleteCount = setupChecklist.filter((item) => item.done).length;
+
+  function goToTab(tab: MatchmakingTab) {
+    if (!eventId) return;
+    navigate(`/events/${eventId}/matchmaking/${tab}`);
+  }
+
   if (!eventId) return <div className={styles.error}>Missing event</div>;
   if (loading) return <div className={styles.loading}>Loading…</div>;
 
@@ -1830,6 +1875,51 @@ export default function EventMatchmaking() {
       </div>
       {error ? <p className={styles.error}>{error}</p> : null}
 
+      <div className={styles.tabBarSticky}>
+        <nav className={styles.tabs} aria-label="Matchmaking sections">
+          {MATCHMAKING_TABS.map(({ id, label }) => (
+            <button
+              key={id}
+              type="button"
+              className={activeTab === id ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+              onClick={() => goToTab(id)}
+              aria-current={activeTab === id ? 'page' : undefined}
+            >
+              {label}
+            </button>
+          ))}
+        </nav>
+        <p className={styles.tabHint}>
+          {activeTab === 'portal'
+            ? 'Connect portal links, banner, Stage 2, and delegate menu settings.'
+            : activeTab === 'forms'
+              ? 'Registration forms, solution categories, and question editor.'
+              : activeTab === 'registrations'
+                ? 'Review incoming registrations and approve or reject applicants.'
+                : 'Match scores, review queue, and meeting schedule.'}
+        </p>
+      </div>
+
+      {activeTab === 'portal' ? (
+        <section className={styles.setupChecklist}>
+          <div className={styles.setupChecklistHead}>
+            <h2>Setup checklist</h2>
+            <span className={styles.setupChecklistProgress}>
+              {setupCompleteCount}/{setupChecklist.length} complete
+            </span>
+          </div>
+          <ul className={styles.setupChecklistList}>
+            {setupChecklist.map((item) => (
+              <li key={item.label} className={item.done ? styles.setupChecklistDone : undefined}>
+                <span aria-hidden>{item.done ? '✓' : '○'}</span> {item.label}
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
+      {activeTab === 'portal' ? (
+      <>
       <section className={styles.section}>
         <h2>Registration portal</h2>
         <p className={styles.hint}>
@@ -1933,14 +2023,28 @@ export default function EventMatchmaking() {
           </button>
         </div>
       </section>
+      </>
+      ) : null}
 
+      {activeTab === 'forms' ? (
       <section className={styles.section}>
         <h2>Solution categories</h2>
         {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
       </section>
+      ) : null}
 
+      {activeTab === 'matching' ? (
       <section className={styles.section}>
-        <h2>Match scoring weights</h2>
+        <button
+          type="button"
+          className={styles.advancedToggle}
+          aria-expanded={scoringAdvancedOpen}
+          onClick={() => setScoringAdvancedOpen((open) => !open)}
+        >
+          {scoringAdvancedOpen ? '▾' : '▸'} Advanced — match scoring weights
+        </button>
+        {scoringAdvancedOpen ? (
+        <>
         <p className={styles.hint}>
           Adjust how much each signal contributes to server-side match scores. Category overlap uses solution categories synced from
           multi_select answers when profiles are saved.
@@ -1977,8 +2081,12 @@ export default function EventMatchmaking() {
         <button type="button" disabled={savingMatchConfig} onClick={() => void saveMatchConfig()} style={{ marginTop: 12 }}>
           {savingMatchConfig ? 'Saving…' : 'Save scoring weights'}
         </button>
+        </>
+        ) : null}
       </section>
+      ) : null}
 
+      {activeTab === 'portal' ? (
       <section className={styles.section}>
         <h2>Delegate portal (after registration)</h2>
         <p className={styles.hint}>
@@ -2018,7 +2126,10 @@ export default function EventMatchmaking() {
           </button>
         </div>
       </section>
+      ) : null}
 
+      {activeTab === 'forms' ? (
+      <>
       <section className={styles.section}>
         <h2>Registration forms</h2>
         <p className={styles.hint}>
@@ -2497,7 +2608,10 @@ export default function EventMatchmaking() {
           </div>
         )}
       </section>
+      </>
+      ) : null}
 
+      {activeTab === 'registrations' ? (
       <section className={styles.section}>
         <h2>Recent registrations</h2>
         <div className={styles.inlineForm}>
@@ -2601,12 +2715,33 @@ export default function EventMatchmaking() {
             </table>
           </div>
         )}
+        {selectedSubmission ? (
+          <p className={styles.registrationsSelectionHint}>
+            <strong>
+              {[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Registrant'}
+            </strong>{' '}
+            selected — open{' '}
+            <button type="button" className={styles.tabLink} onClick={() => goToTab('matching')}>
+              Matching &amp; schedule
+            </button>{' '}
+            for answers, suggestions, and scheduling.
+          </p>
+        ) : null}
       </section>
+      ) : null}
 
+      {activeTab === 'matching' ? (
+      <>
       <section className={styles.section}>
         <h2>Participant detail + suggested matches</h2>
         {!selectedSubmission ? (
-          <p className={styles.hint}>Select a registrant from the table above to view answers and top match suggestions.</p>
+          <p className={styles.hint}>
+            Select a registrant on the{' '}
+            <button type="button" className={styles.tabLink} onClick={() => goToTab('registrations')}>
+              Registrations
+            </button>{' '}
+            tab to view answers and top match suggestions.
+          </p>
         ) : (
           <div className={styles.detailGrid}>
             <div>
@@ -2838,6 +2973,8 @@ export default function EventMatchmaking() {
           </div>
         )}
       </section>
+      </>
+      ) : null}
     </div>
   );
 }
