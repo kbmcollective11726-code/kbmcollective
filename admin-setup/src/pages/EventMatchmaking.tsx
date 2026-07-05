@@ -18,6 +18,7 @@ import type {
 import {
   isRegistrationQuestionHiddenByDefault,
   normalizeRegistrationPrompt,
+  REGISTRATION_HEADER_FIELD_PROMPTS,
   VENDOR_ALWAYS_HIDDEN_PROMPTS,
 } from '../lib/registrationDefaultVisibility';
 import { publicPortalLoginUrl, publicRegisterUrl } from '../lib/publicPortalUrl';
@@ -398,7 +399,7 @@ const MATCHMAKING_TABS: { id: MatchmakingTab; label: string; introTitle: string;
     id: 'registrations',
     label: 'Registrations',
     introTitle: 'Registration inbox',
-    intro: 'Review who has registered, approve or reject applicants, export data, and jump to matching for any selected person.',
+    intro: 'Review who has registered, open a submission to see every answer before approving, export data, or jump to matching.',
   },
   {
     id: 'matching',
@@ -473,9 +474,37 @@ function matchReviewTone(status: string): BadgeTone {
   return 'warn';
 }
 
+function formatRegistrationAnswerDisplay(ans: EventRegistrationAnswer): string {
+  if (Array.isArray(ans.answer_json)) {
+    return (ans.answer_json as string[]).join(', ');
+  }
+  if (ans.answer_json != null && typeof ans.answer_json === 'object') {
+    return JSON.stringify(ans.answer_json);
+  }
+  if (ans.answer_json != null) return String(ans.answer_json);
+  if (ans.answer_text != null) return ans.answer_text;
+  if (ans.answer_number != null) return String(ans.answer_number);
+  if (ans.answer_boolean != null) return ans.answer_boolean ? 'Yes' : 'No';
+  return '';
+}
+
+function isImageAnswerValue(value: string): boolean {
+  const v = value.trim();
+  if (!v) return false;
+  if (v.startsWith('data:image/')) return true;
+  if (!/^https?:\/\//i.test(v)) return false;
+  return /\.(png|jpe?g|gif|webp)(\?|$)/i.test(v) || v.includes('/storage/v1/object/public/');
+}
+
+function isFileAnswerValue(value: string): boolean {
+  const v = value.trim();
+  return /^https?:\/\//i.test(v) || v.startsWith('data:');
+}
+
 export default function EventMatchmaking() {
   const { eventId, tab: tabParam } = useParams<{ eventId: string; tab?: string }>();
   const navigate = useNavigate();
+  const submissionReviewRef = useRef<HTMLDivElement | null>(null);
   const activeTab = parseMatchmakingTab(tabParam) ?? 'portal';
   const [event, setEvent] = useState<Event | null>(null);
   const [forms, setForms] = useState<EventRegistrationForm[]>([]);
@@ -720,7 +749,54 @@ export default function EventMatchmaking() {
     () => meetingRequests.filter((r) => r.submission_id === selectedSubmissionId),
     [meetingRequests, selectedSubmissionId]
   );
+  const selectedSubmissionReviewSections = useMemo(() => {
+    if (!selectedSubmission) return [];
+    const formQuestions = questions
+      .filter((q) => q.form_id === selectedSubmission.form_id)
+      .sort((a, b) => a.sort_order - b.sort_order || a.created_at.localeCompare(b.created_at));
+    const answerByQuestionId = new Map(selectedSubmissionAnswers.map((a) => [a.question_id, a]));
+    const sections = new Map<
+      string,
+      Array<{
+        question: EventRegistrationQuestion;
+        displayValue: string;
+        isImage: boolean;
+        isFile: boolean;
+      }>
+    >();
+
+    for (const q of formQuestions) {
+      const promptNorm = q.prompt.trim().toLowerCase();
+      if (REGISTRATION_HEADER_FIELD_PROMPTS.has(promptNorm)) continue;
+      const ans = answerByQuestionId.get(q.id) ?? null;
+      const displayValue = ans ? formatRegistrationAnswerDisplay(ans) : '';
+      const sectionLabel = (q.section_label ?? '').trim() || 'Registration';
+      if (!sections.has(sectionLabel)) sections.set(sectionLabel, []);
+      sections.get(sectionLabel)!.push({
+        question: q,
+        displayValue,
+        isImage: isImageAnswerValue(displayValue),
+        isFile: !isImageAnswerValue(displayValue) && isFileAnswerValue(displayValue),
+      });
+    }
+
+    return Array.from(sections.entries()).map(([label, items]) => ({ label, items }));
+  }, [selectedSubmission, questions, selectedSubmissionAnswers]);
   const questionById = useMemo(() => new Map(questions.map((q) => [q.id, q])), [questions]);
+
+  const scrollToSubmissionReview = useCallback(() => {
+    window.setTimeout(() => {
+      submissionReviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 0);
+  }, []);
+
+  const selectSubmissionForReview = useCallback(
+    (id: string) => {
+      setSelectedSubmissionId(id);
+      scrollToSubmissionReview();
+    },
+    [scrollToSubmissionReview],
+  );
 
   useEffect(() => {
     if (!eventId || !selectedSubmission) {
@@ -2969,7 +3045,7 @@ export default function EventMatchmaking() {
                   <tr
                     key={row.id}
                     className={selectedSubmissionId === row.id ? styles.rowActive : undefined}
-                    onClick={() => setSelectedSubmissionId(row.id)}
+                    onClick={() => selectSubmissionForReview(row.id)}
                   >
                     <td>{[row.first_name, row.last_name].filter(Boolean).join(' ') || '—'}</td>
                     <td>{row.company_name ?? '—'}</td>
@@ -2999,6 +3075,15 @@ export default function EventMatchmaking() {
                       )}
                     </td>
                     <td className={styles.rowActions}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          selectSubmissionForReview(row.id);
+                        }}
+                      >
+                        View
+                      </button>
                       {row.registration_status !== 'approved' ? (
                         <button
                           type="button"
@@ -3081,16 +3166,144 @@ export default function EventMatchmaking() {
           </div>
         )}
         {selectedSubmission ? (
-          <p className={styles.registrationsSelectionHint}>
-            <strong>
-              {[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Registrant'}
-            </strong>{' '}
-            selected — open{' '}
-            <button type="button" className={styles.tabLink} onClick={() => goToTab('matching')}>
-              Matching &amp; schedule
-            </button>{' '}
-            for answers, suggestions, and scheduling.
-          </p>
+          <div ref={submissionReviewRef} className={styles.submissionReviewPanel}>
+            <div className={styles.submissionReviewHead}>
+              <div>
+                <h3>
+                  {[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Registrant'}
+                </h3>
+                <p className={styles.submissionReviewMeta}>
+                  {selectedSubmission.email ?? '—'} · {selectedSubmission.company_name ?? '—'} ·{' '}
+                  {titleizeAudience(selectedSubmission.attendee_type)}
+                  {selectedSubmission.submitted_at
+                    ? ` · Submitted ${new Date(selectedSubmission.submitted_at).toLocaleString()}`
+                    : ''}
+                </p>
+                <div className={styles.submissionReviewBadges}>
+                  <StatusBadge label={selectedSubmission.status} tone={formStatusTone(selectedSubmission.status)} />
+                  <StatusBadge
+                    label={selectedSubmission.registration_status ?? 'pending_review'}
+                    tone={registrationReviewTone(selectedSubmission.registration_status)}
+                  />
+                  <StatusBadge
+                    label={selectedSubmission.profile_complete ? 'Profile complete' : 'Profile incomplete'}
+                    tone={selectedSubmission.profile_complete ? 'success' : 'muted'}
+                  />
+                  {isMatchPoolEligible(selectedSubmission.attendee_type) ? (
+                    <StatusBadge
+                      label={selectedSubmission.matching_opt_in ? 'Matching opted in' : 'Matching opted out'}
+                      tone={selectedSubmission.matching_opt_in ? 'success' : 'muted'}
+                    />
+                  ) : null}
+                </div>
+              </div>
+              <div className={styles.submissionReviewActions}>
+                {selectedSubmission.registration_status !== 'approved' ? (
+                  <button
+                    type="button"
+                    disabled={submissionActionId === selectedSubmission.id}
+                    onClick={() => void updateRegistrationStatus(selectedSubmission, 'approved')}
+                  >
+                    Approve
+                  </button>
+                ) : null}
+                {selectedSubmission.registration_status !== 'rejected' ? (
+                  <button
+                    type="button"
+                    className={styles.btnDangerOutline}
+                    disabled={submissionActionId === selectedSubmission.id}
+                    onClick={() => void updateRegistrationStatus(selectedSubmission, 'rejected')}
+                  >
+                    Reject
+                  </button>
+                ) : null}
+                {selectedSubmission.email ? (
+                  <button
+                    type="button"
+                    className={styles.btnSecondary}
+                    disabled={submissionActionId === selectedSubmission.id}
+                    onClick={() => void resendRegistrationEmail(selectedSubmission)}
+                  >
+                    Resend email
+                  </button>
+                ) : null}
+                <button type="button" className={styles.btnSecondary} onClick={() => goToTab('matching')}>
+                  Open matching
+                </button>
+              </div>
+            </div>
+            <div className={styles.submissionReviewBody}>
+              <section className={styles.submissionReviewSection}>
+                <h4>Identity</h4>
+                <div className={styles.submissionReviewGrid}>
+                  <div className={styles.submissionReviewField}>
+                    <span className={styles.submissionReviewFieldLabel}>First name</span>
+                    <span className={styles.submissionReviewFieldValue}>{selectedSubmission.first_name ?? '—'}</span>
+                  </div>
+                  <div className={styles.submissionReviewField}>
+                    <span className={styles.submissionReviewFieldLabel}>Last name</span>
+                    <span className={styles.submissionReviewFieldValue}>{selectedSubmission.last_name ?? '—'}</span>
+                  </div>
+                  <div className={styles.submissionReviewField}>
+                    <span className={styles.submissionReviewFieldLabel}>Email</span>
+                    <span className={styles.submissionReviewFieldValue}>{selectedSubmission.email ?? '—'}</span>
+                  </div>
+                  <div className={styles.submissionReviewField}>
+                    <span className={styles.submissionReviewFieldLabel}>Company</span>
+                    <span className={styles.submissionReviewFieldValue}>{selectedSubmission.company_name ?? '—'}</span>
+                  </div>
+                  <div className={styles.submissionReviewField}>
+                    <span className={styles.submissionReviewFieldLabel}>Job title</span>
+                    <span className={styles.submissionReviewFieldValue}>{selectedSubmission.job_title ?? '—'}</span>
+                  </div>
+                </div>
+              </section>
+              {selectedSubmissionReviewSections.map((section) => (
+                <section key={section.label} className={styles.submissionReviewSection}>
+                  <h4>{section.label}</h4>
+                  <div className={styles.submissionReviewGrid}>
+                    {section.items.map((item) => (
+                      <div
+                        key={item.question.id}
+                        className={`${styles.submissionReviewField} ${item.isImage ? styles.submissionReviewFieldWide : ''}`}
+                      >
+                        <span className={styles.submissionReviewFieldLabel}>{item.question.prompt}</span>
+                        {item.isImage ? (
+                          <div className={styles.submissionReviewMedia}>
+                            <a
+                              href={item.displayValue}
+                              target="_blank"
+                              rel="noreferrer"
+                              className={styles.submissionReviewLink}
+                            >
+                              View uploaded image
+                            </a>
+                            <img src={item.displayValue} alt="" className={styles.submissionReviewImage} />
+                          </div>
+                        ) : item.isFile ? (
+                          <a
+                            href={item.displayValue}
+                            target="_blank"
+                            rel="noreferrer"
+                            className={styles.submissionReviewLink}
+                          >
+                            View uploaded file
+                          </a>
+                        ) : item.displayValue ? (
+                          <span className={styles.submissionReviewFieldValue}>{item.displayValue}</span>
+                        ) : (
+                          <span className={styles.submissionReviewFieldValueMuted}>—</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ))}
+              {selectedSubmissionReviewSections.length === 0 ? (
+                <p className={styles.hint}>No additional form answers were saved with this submission.</p>
+              ) : null}
+            </div>
+          </div>
         ) : null}
       </section>
       ) : null}
