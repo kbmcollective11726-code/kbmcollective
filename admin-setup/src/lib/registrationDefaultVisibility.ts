@@ -41,10 +41,6 @@ const STAGE1_VENDOR_PROMPTS = new Set(
     'Job Title',
     'Cell Phone',
     TERMS_ACCEPTANCE_PROMPT,
-    'Company Description',
-    'Company Logo Image',
-    'Are you sending representatives to the event onsite?',
-    'Will your team take meetings virtually?',
   ].map((p) => p.toLowerCase()),
 );
 
