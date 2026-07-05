@@ -383,7 +383,7 @@ function toPrimaryForms(inputForms: EventRegistrationForm[]) {
   return result;
 }
 
-type MatchmakingTab = 'portal' | 'forms' | 'registrations' | 'matching';
+type MatchmakingTab = 'portal' | 'forms' | 'registrations' | 'matching' | 'schedule';
 
 const MATCHMAKING_TABS: { id: MatchmakingTab; label: string; introTitle: string; intro: string }[] = [
   {
@@ -406,15 +406,34 @@ const MATCHMAKING_TABS: { id: MatchmakingTab; label: string; introTitle: string;
   },
   {
     id: 'matching',
-    label: 'Matching & schedule',
-    introTitle: 'Matchmaking operations',
-    intro: 'Inspect participant profiles, portal meeting requests, automated match scores, the review queue, and scheduled meetings.',
+    label: 'Matching & approve',
+    introTitle: 'Review pairings',
+    intro:
+      'Pick a delegate or vendor, compare their ranked portal meeting requests with intelligent match suggestions, and approve pairings for scheduling.',
+  },
+  {
+    id: 'schedule',
+    label: 'Schedule',
+    introTitle: '1:1 meeting schedule',
+    intro: 'Assign times and locations to approved pairings, then publish meetings to the app.',
   },
 ];
 
 function parseMatchmakingTab(raw: string | undefined): MatchmakingTab | null {
-  if (raw === 'portal' || raw === 'forms' || raw === 'registrations' || raw === 'matching') return raw;
+  if (
+    raw === 'portal' ||
+    raw === 'forms' ||
+    raw === 'registrations' ||
+    raw === 'matching' ||
+    raw === 'schedule'
+  ) {
+    return raw;
+  }
   return null;
+}
+
+function submissionDisplayName(submission: EventRegistrationSubmission): string {
+  return [submission.first_name, submission.last_name].filter(Boolean).join(' ') || submission.email || 'Registrant';
 }
 
 function TabIntro({ title, description }: { title: string; description: string }) {
@@ -740,6 +759,17 @@ export default function EventMatchmaking() {
       }),
     [submissions, subFilter, audienceFilter]
   );
+  const matchPoolSubmissions = useMemo(
+    () =>
+      submissions
+        .filter((s) => isMatchPoolEligible(s.attendee_type))
+        .sort((a, b) => {
+          const aName = [a.first_name, a.last_name].filter(Boolean).join(' ') || a.email || '';
+          const bName = [b.first_name, b.last_name].filter(Boolean).join(' ') || b.email || '';
+          return aName.localeCompare(bName);
+        }),
+    [submissions],
+  );
   const selectedSubmission = useMemo(
     () => submissions.find((s) => s.id === selectedSubmissionId) ?? null,
     [submissions, selectedSubmissionId]
@@ -795,8 +825,6 @@ export default function EventMatchmaking() {
 
     return Array.from(sections.entries()).map(([label, items]) => ({ label, items }));
   }, [selectedSubmission, questions, selectedSubmissionAnswers]);
-  const questionById = useMemo(() => new Map(questions.map((q) => [q.id, q])), [questions]);
-
   const scrollToSubmissionReview = useCallback(() => {
     window.setTimeout(() => {
       submissionReviewRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -806,9 +834,11 @@ export default function EventMatchmaking() {
   const selectSubmissionForReview = useCallback(
     (id: string) => {
       setSelectedSubmissionId(id);
-      scrollToSubmissionReview();
+      if (activeTab === 'registrations') {
+        scrollToSubmissionReview();
+      }
     },
-    [scrollToSubmissionReview],
+    [scrollToSubmissionReview, activeTab],
   );
 
   const requestedNotInTopScores = useMemo(() => {
@@ -818,6 +848,23 @@ export default function EventMatchmaking() {
       (req) => req.target_submission_id && !topIds.has(req.target_submission_id),
     );
   }, [selectedSubmission, selectedSubmissionRequests, suggestedMatches]);
+
+  const meetingRequestByPair = useMemo(() => {
+    const map = new Map<string, EventMeetingInterestRequest>();
+    for (const req of meetingRequests) {
+      if (req.target_submission_id) {
+        map.set(`${req.submission_id}:${req.target_submission_id}`, req);
+      }
+    }
+    return map;
+  }, [meetingRequests]);
+
+  const approvedReviews = useMemo(() => reviews.filter((r) => r.status === 'approved'), [reviews]);
+
+  const scheduledReviewIds = useMemo(
+    () => new Set(scheduledMeetings.map((m) => m.review_id).filter(Boolean) as string[]),
+    [scheduledMeetings],
+  );
 
   useEffect(() => {
     if (!eventId || !selectedSubmission) {
@@ -1844,12 +1891,17 @@ export default function EventMatchmaking() {
     }
   };
 
-  const setReviewStatus = async (toSubmissionId: string, score: number, status: 'approved' | 'rejected') => {
-    if (!eventId || !selectedSubmission) return;
+  const updateMatchReviewStatus = async (
+    fromSubmissionId: string,
+    toSubmissionId: string,
+    score: number,
+    status: 'approved' | 'rejected',
+  ) => {
+    if (!eventId) return;
     try {
       const { error: upsertErr } = await supabase.from('event_match_reviews').upsert({
         event_id: eventId,
-        from_submission_id: selectedSubmission.id,
+        from_submission_id: fromSubmissionId,
         to_submission_id: toSubmissionId,
         score,
         status,
@@ -1860,6 +1912,11 @@ export default function EventMatchmaking() {
     } catch (e) {
       setError(postgrestErrorMessage(e) || 'Could not update review status');
     }
+  };
+
+  const setReviewStatus = async (toSubmissionId: string, score: number, status: 'approved' | 'rejected') => {
+    if (!eventId || !selectedSubmission) return;
+    await updateMatchReviewStatus(selectedSubmission.id, toSubmissionId, score, status);
   };
 
   const scheduleApprovedMatch = async (review: EventMatchReview) => {
@@ -3259,7 +3316,7 @@ export default function EventMatchmaking() {
                   </button>
                 ) : null}
                 <button type="button" className={styles.btnSecondary} onClick={() => goToTab('matching')}>
-                  Open matching
+                  Open matching &amp; approve
                 </button>
               </div>
             </div>
@@ -3365,9 +3422,9 @@ export default function EventMatchmaking() {
                 <p className={styles.hint}>
                   Open{' '}
                   <button type="button" className={styles.tabLink} onClick={() => goToTab('matching')}>
-                    Matching &amp; schedule
+                    Matching &amp; approve
                   </button>{' '}
-                  to compare these with automated match scores.
+                  to compare these with intelligent match suggestions.
                 </p>
               </section>
             </div>
@@ -3380,56 +3437,75 @@ export default function EventMatchmaking() {
       <>
       <section className={styles.section}>
         <div className={styles.sectionHeader}>
-          <h2>Participant detail — portal requests &amp; automated scores</h2>
+          <h2>Review a participant</h2>
           {selectedSubmission ? (
-            <StatusBadge
-              label={[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Selected'}
-              tone="info"
-            />
+            <StatusBadge label={submissionDisplayName(selectedSubmission)} tone="info" />
           ) : null}
         </div>
+
+        <div className={styles.matchingToolbar}>
+          <label className={styles.field}>
+            <span>Delegate or vendor</span>
+            <select
+              value={selectedSubmissionId}
+              onChange={(e) => setSelectedSubmissionId(e.target.value)}
+            >
+              <option value="">Select someone to review…</option>
+              {matchPoolSubmissions.map((row) => (
+                <option key={row.id} value={row.id}>
+                  {submissionDisplayName(row)} · {row.company_name ?? '—'} · {titleizeAudience(row.attendee_type)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedSubmission ? (
+            <button type="button" className={styles.btnSecondary} onClick={() => goToTab('registrations')}>
+              View full registration
+            </button>
+          ) : null}
+        </div>
+
         {!selectedSubmission ? (
           <div className={styles.emptyState}>
-            <strong>No participant selected</strong>
+            <strong>Choose a participant above</strong>
             <p>
-              Select a registrant on the{' '}
+              Or pick someone from the{' '}
               <button type="button" className={styles.tabLink} onClick={() => goToTab('registrations')}>
                 Registrations
               </button>{' '}
-              tab to view answers and ranked match suggestions.
+              tab — their portal meeting requests and intelligent match suggestions will appear here.
             </p>
           </div>
         ) : (
           <>
-          <p className={styles.sectionLead}>
-            Admins see <strong>both</strong> matching signals: portal meeting requests (explicit rank + interest) and
-            automated scores (category overlap, profile answers, and request boost combined).
-          </p>
-          <div className={styles.detailGrid}>
-            <div>
-              <div className={styles.detailHead}>
-                <h3>
-                  {[selectedSubmission.first_name, selectedSubmission.last_name].filter(Boolean).join(' ') || 'Registrant'}
-                </h3>
-                <button
-                  type="button"
-                  className={styles.btnDangerOutline}
-                  disabled={deletingSubmissionId === selectedSubmission.id}
-                  onClick={() => void deleteSubmission(selectedSubmission)}
-                >
-                  {deletingSubmissionId === selectedSubmission.id ? 'Deleting…' : 'Delete registration'}
-                </button>
+            <div className={styles.participantSummaryCard}>
+              <div className={styles.participantSummaryMain}>
+                <h3>{submissionDisplayName(selectedSubmission)}</h3>
+                <p className={styles.hint}>
+                  {selectedSubmission.company_name ?? '—'} · {titleizeAudience(selectedSubmission.attendee_type)} ·{' '}
+                  {selectedSubmission.email ?? '—'}
+                </p>
+                <div className={styles.participantSummaryBadges}>
+                  <StatusBadge label={selectedSubmission.status} tone={formStatusTone(selectedSubmission.status)} />
+                  <StatusBadge
+                    label={selectedSubmission.registration_status ?? 'pending_review'}
+                    tone={registrationReviewTone(selectedSubmission.registration_status)}
+                  />
+                  <StatusBadge
+                    label={selectedSubmission.profile_complete ? 'Profile complete' : 'Profile incomplete'}
+                    tone={selectedSubmission.profile_complete ? 'success' : 'muted'}
+                  />
+                  {isMatchPoolEligible(selectedSubmission.attendee_type) ? (
+                    <StatusBadge
+                      label={selectedSubmission.matching_opt_in ? 'Matching opted in' : 'Matching opted out'}
+                      tone={selectedSubmission.matching_opt_in ? 'success' : 'muted'}
+                    />
+                  ) : null}
+                </div>
               </div>
-              <p className={styles.hint}>
-                {selectedSubmission.company_name ?? '—'} · {titleizeAudience(selectedSubmission.attendee_type)} ·{' '}
-                {selectedSubmission.status}
-                {isMatchPoolEligible(selectedSubmission.attendee_type)
-                  ? ` · Matching: ${selectedSubmission.matching_opt_in ? 'opted in' : 'opted out'}`
-                  : ''}
-              </p>
-              {isMatchPoolEligible(selectedSubmission.attendee_type) ? (
-                <div className={styles.actionRow} style={{ marginBottom: 16 }}>
-                  {selectedSubmission.matching_opt_in ? (
+              <div className={styles.participantSummaryActions}>
+                {isMatchPoolEligible(selectedSubmission.attendee_type) ? (
+                  selectedSubmission.matching_opt_in ? (
                     <button
                       type="button"
                       className={styles.btnDangerOutline}
@@ -3446,152 +3522,244 @@ export default function EventMatchmaking() {
                     >
                       Opt in to matching
                     </button>
-                  )}
-                  <span className={styles.hint}>
-                    Delegates and vendors are automatically opted in when their profile is complete. Only admins can change this.
-                  </span>
-                </div>
-              ) : null}
-              <div className={styles.matchSignalPanel}>
-                <h4>Portal meeting requests</h4>
-                <p className={styles.matchSignalHint}>
-                  Explicit requests submitted by this participant — ranked priority and interest level (Low / Medium / High).
-                </p>
-              {selectedSubmissionRequests.length === 0 ? (
-                <p className={styles.hint}>No portal meeting requests yet.</p>
-              ) : (
-                <div className={styles.tableWrap}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Rank</th>
-                        <th>Target</th>
-                        <th>Interest</th>
-                        <th>Notes</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {selectedSubmissionRequests.map((req, index) => (
-                        <tr key={req.id}>
-                          <td>{index + 1}</td>
-                          <td>
-                            {req.target_company_name || '—'}
-                            {req.target_person_name ? ` · ${req.target_person_name}` : ''}
-                          </td>
-                          <td>{interestLevelLabel(req.interest_level)}</td>
-                          <td>{req.reason ?? '—'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-              {requestedNotInTopScores.length > 0 ? (
-                <p className={styles.hint}>
-                  {requestedNotInTopScores.length} requested target{requestedNotInTopScores.length === 1 ? '' : 's'} did not
-                  appear in the top automated scores — review them manually below.
-                </p>
-              ) : null}
-              </div>
-              <h4>Profile answers</h4>
-              <ul className={styles.optionList}>
-                {selectedSubmissionAnswers.map((ans) => {
-                  const q = questionById.get(ans.question_id);
-                  const val = Array.isArray(ans.answer_json)
-                    ? (ans.answer_json as string[]).join(', ')
-                    : ans.answer_text ?? (ans.answer_boolean === null ? '' : ans.answer_boolean ? 'Yes' : 'No');
-                  return (
-                    <li key={ans.id}>
-                      <strong>{q?.prompt ?? ans.question_id}:</strong> {val || '—'}
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-            <div>
-              <div className={styles.matchSignalPanel}>
-                <h3>Automated match scores</h3>
-                <p className={styles.matchSignalHint}>
-                  Server-side scoring from solution-category overlap, profile answers, and portal request boost
-                  (interest level + rank). Use alongside explicit portal requests on the left.
-                </p>
-              {loadingSuggestions ? (
-                <p className={styles.hint}>Computing server-side match scores…</p>
-              ) : suggestedMatches.length === 0 ? (
-                <p className={styles.hint}>No compatible matches yet. Ensure profiles are complete and categories are selected.</p>
-              ) : (
-                <div className={styles.tableWrap}>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Company</th>
-                        <th>Auto score</th>
-                        <th>Category overlap</th>
-                        <th>Portal request</th>
-                        <th>Review</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {suggestedMatches.map((item) => (
-                        <tr key={item.candidate.id}>
-                          <td>{[item.candidate.first_name, item.candidate.last_name].filter(Boolean).join(' ') || '—'}</td>
-                          <td>{item.candidate.company_name ?? '—'}</td>
-                          <td>{item.score}</td>
-                          <td>{item.overlap}</td>
-                          <td>
-                            {item.meetingRequest ? (
-                              <span>
-                                Rank {item.requestRank ?? '—'} · {interestLevelLabel(item.meetingRequest.interest_level)}
-                              </span>
-                            ) : (
-                              <span className={styles.hint}>Not requested</span>
-                            )}
-                          </td>
-                          <td>
-                            <div className={styles.actionRow}>
-                              <button type="button" onClick={() => void setReviewStatus(item.candidate.id, item.score, 'approved')}>
-                                Approve
-                              </button>
-                              <button type="button" onClick={() => void setReviewStatus(item.candidate.id, item.score, 'rejected')}>
-                                Reject
-                              </button>
-                              <span>{item.review?.status ?? 'pending'}</span>
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                  )
+                ) : null}
+                <button
+                  type="button"
+                  className={styles.btnDangerOutline}
+                  disabled={deletingSubmissionId === selectedSubmission.id}
+                  onClick={() => void deleteSubmission(selectedSubmission)}
+                >
+                  {deletingSubmissionId === selectedSubmission.id ? 'Deleting…' : 'Delete registration'}
+                </button>
               </div>
             </div>
-          </div>
+
+            {selectedSubmission.registration_status !== 'approved' ? (
+              <div className={styles.calloutInfo}>
+                <strong>Registration not approved yet</strong>
+                <p>Approve this registrant on the Registrations tab before they can send meeting requests in the portal.</p>
+              </div>
+            ) : null}
+
+            {isMatchPoolEligible(selectedSubmission.attendee_type) && !selectedSubmission.matching_opt_in ? (
+              <div className={styles.calloutWarning}>
+                <strong>Opted out of matching</strong>
+                <p>
+                  This participant is excluded from the match pool. Opt them in above to include them in intelligent
+                  suggestions and bulk generation.
+                </p>
+              </div>
+            ) : null}
+
+            <div className={styles.matchWorkflow}>
+              <div className={styles.matchWorkflowStep}>
+                <span className={styles.matchWorkflowNumber}>1</span>
+                <span>See what they ranked in the portal</span>
+              </div>
+              <div className={styles.matchWorkflowStep}>
+                <span className={styles.matchWorkflowNumber}>2</span>
+                <span>Compare with intelligent match suggestions</span>
+              </div>
+              <div className={styles.matchWorkflowStep}>
+                <span className={styles.matchWorkflowNumber}>3</span>
+                <span>Approve pairings, then schedule 1:1 meetings</span>
+              </div>
+            </div>
+
+            <div className={styles.matchCompareGrid}>
+              <div className={styles.matchCompareCard}>
+                <div className={styles.matchCompareCardHead}>
+                  <span className={styles.matchCompareStep}>A</span>
+                  <div>
+                    <h3>Their meeting requests</h3>
+                    <p>What this person chose in connect — ranked priority and interest (Low / Medium / High).</p>
+                  </div>
+                </div>
+                {selectedSubmissionRequests.length === 0 ? (
+                  <div className={styles.matchCompareEmpty}>
+                    <strong>No requests yet</strong>
+                    <p>
+                      They have not ranked anyone in the connect portal. Only intelligent suggestions will appear until
+                      they use Meeting Requests.
+                    </p>
+                  </div>
+                ) : (
+                  <div className={styles.tableWrap}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Rank</th>
+                          <th>Target</th>
+                          <th>Interest</th>
+                          <th>Notes</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {selectedSubmissionRequests.map((req, index) => (
+                          <tr key={req.id}>
+                            <td>{index + 1}</td>
+                            <td>
+                              {req.target_company_name || '—'}
+                              {req.target_person_name ? ` · ${req.target_person_name}` : ''}
+                            </td>
+                            <td>{interestLevelLabel(req.interest_level)}</td>
+                            <td>{req.reason ?? '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {requestedNotInTopScores.length > 0 ? (
+                  <p className={styles.hint}>
+                    {requestedNotInTopScores.length} requested target{requestedNotInTopScores.length === 1 ? '' : 's'}{' '}
+                    did not appear in the top suggestions — review them in the queue below.
+                  </p>
+                ) : null}
+              </div>
+
+              <div className={styles.matchCompareCard}>
+                <div className={styles.matchCompareCardHead}>
+                  <span className={styles.matchCompareStep}>B</span>
+                  <div>
+                    <h3>Intelligent match suggestions</h3>
+                    <p>Category overlap, profile signals, and request priority combined into one score.</p>
+                  </div>
+                </div>
+                {loadingSuggestions ? (
+                  <p className={styles.hint}>Computing match scores…</p>
+                ) : suggestedMatches.length === 0 ? (
+                  <div className={styles.matchCompareEmpty}>
+                    <strong>No suggestions yet</strong>
+                    <p>Ensure profiles are complete, categories are selected, and the participant is opted in to matching.</p>
+                  </div>
+                ) : (
+                  <div className={styles.tableWrap}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Name</th>
+                          <th>Company</th>
+                          <th>Score</th>
+                          <th>Categories</th>
+                          <th>Also requested?</th>
+                          <th>Your decision</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {suggestedMatches.map((item) => (
+                          <tr key={item.candidate.id}>
+                            <td>{submissionDisplayName(item.candidate)}</td>
+                            <td>{item.candidate.company_name ?? '—'}</td>
+                            <td>{item.score}</td>
+                            <td>{item.overlap}</td>
+                            <td>
+                              {item.meetingRequest ? (
+                                <span>
+                                  Rank {item.requestRank ?? '—'} · {interestLevelLabel(item.meetingRequest.interest_level)}
+                                </span>
+                              ) : (
+                                <span className={styles.hint}>Not requested</span>
+                              )}
+                            </td>
+                            <td>
+                              <div className={styles.actionRow}>
+                                {item.review?.status === 'approved' ? (
+                                  <>
+                                    <StatusBadge label="Approved" tone="success" />
+                                    <button type="button" className={styles.btnSecondary} onClick={() => goToTab('schedule')}>
+                                      Schedule →
+                                    </button>
+                                  </>
+                                ) : item.review?.status === 'rejected' ? (
+                                  <StatusBadge label="Rejected" tone="danger" />
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => void setReviewStatus(item.candidate.id, item.score, 'approved')}
+                                    >
+                                      Approve
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.btnDangerOutline}
+                                      onClick={() => void setReviewStatus(item.candidate.id, item.score, 'rejected')}
+                                    >
+                                      Reject
+                                    </button>
+                                  </>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <details className={styles.profileDetails}>
+              <summary>View registration answers</summary>
+              {selectedSubmissionReviewSections.length === 0 ? (
+                <p className={styles.hint}>No additional form answers were saved with this submission.</p>
+              ) : (
+                selectedSubmissionReviewSections.map((section) => (
+                  <section key={section.label} className={styles.submissionReviewSection}>
+                    <h4>{section.label}</h4>
+                    <div className={styles.submissionReviewGrid}>
+                      {section.items.map((item) => (
+                        <div key={item.question.id} className={styles.submissionReviewField}>
+                          <span className={styles.submissionReviewFieldLabel}>{item.question.prompt}</span>
+                          {item.displayValue ? (
+                            <span className={styles.submissionReviewFieldValue}>{item.displayValue}</span>
+                          ) : (
+                            <span className={styles.submissionReviewFieldValueMuted}>—</span>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                ))
+              )}
+            </details>
           </>
         )}
       </section>
 
       <section className={styles.section}>
         <div className={styles.sectionHeader}>
-          <h2>Admin review queue</h2>
-          <StatusBadge label={`${reviews.length} matches`} tone="info" />
+          <h2>All pairing decisions</h2>
+          <StatusBadge label={`${reviews.length} total · ${approvedReviews.length} approved`} tone="info" />
         </div>
         <div className={styles.toolbar}>
           <div className={styles.toolbarActions}>
-            <button type="button" className={styles.btnPrimary} onClick={() => void generateMatchSuggestions()} disabled={generatingSuggestions}>
+            <button
+              type="button"
+              className={styles.btnPrimary}
+              onClick={() => void generateMatchSuggestions()}
+              disabled={generatingSuggestions}
+            >
               {generatingSuggestions ? 'Generating…' : 'Generate match suggestions'}
             </button>
+            {approvedReviews.length > 0 ? (
+              <button type="button" className={styles.btnSecondary} onClick={() => goToTab('schedule')}>
+                Go to Schedule ({approvedReviews.length} approved)
+              </button>
+            ) : null}
           </div>
         </div>
         <p className={styles.sectionLead}>
-          Combines automated scoring (categories, profile signals, request boost) with explicit portal meeting requests.
-          Only approved, profile-complete registrants with matching opt-in are included.
+          Event-wide queue combining portal request boosts with intelligent scoring. Approve pairings here or per
+          participant above — approved matches move to the Schedule tab for 1:1 booking.
         </p>
         {reviews.length === 0 ? (
           <div className={styles.emptyState}>
-            <strong>No reviewed matches yet</strong>
-            <p>Generate suggestions to populate the review queue.</p>
+            <strong>No pairing decisions yet</strong>
+            <p>Review a participant above or generate suggestions for the whole event.</p>
           </div>
         ) : (
           <div className={styles.tableWrap}>
@@ -3601,120 +3769,85 @@ export default function EventMatchmaking() {
                   <th>From</th>
                   <th>To</th>
                   <th>Score</th>
+                  <th>Portal request</th>
                   <th>Status</th>
-                  <th>Updated</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {reviews.map((r) => {
                   const from = submissions.find((s) => s.id === r.from_submission_id);
                   const to = submissions.find((s) => s.id === r.to_submission_id);
+                  const portalRequest = meetingRequestByPair.get(`${r.from_submission_id}:${r.to_submission_id}`);
+                  const requestRank =
+                    portalRequest && from
+                      ? (() => {
+                          const idx = meetingRequests
+                            .filter((req) => req.submission_id === from.id)
+                            .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at))
+                            .findIndex((req) => req.id === portalRequest.id);
+                          return idx >= 0 ? idx + 1 : null;
+                        })()
+                      : null;
+                  const isScheduled = scheduledReviewIds.has(r.id);
                   return (
                     <tr key={r.id}>
-                      <td>{[from?.first_name, from?.last_name].filter(Boolean).join(' ') || from?.email || '—'}</td>
-                      <td>{[to?.first_name, to?.last_name].filter(Boolean).join(' ') || to?.email || '—'}</td>
+                      <td>{from ? submissionDisplayName(from) : '—'}</td>
+                      <td>{to ? submissionDisplayName(to) : '—'}</td>
                       <td>{r.score}</td>
-                      <td><StatusBadge label={r.status} tone={matchReviewTone(r.status)} /></td>
-                      <td>{new Date(r.updated_at).toLocaleString()}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
-
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <h2>Scheduling board</h2>
-          <StatusBadge label={`${scheduledMeetings.length} scheduled`} tone="info" />
-        </div>
-        <p className={styles.sectionLead}>Set slot time, approve matches, and assign meetings with conflict checks.</p>
-        <div className={styles.toolbar}>
-          <label className={styles.field}>
-            <span>Start</span>
-            <input type="datetime-local" value={scheduleStart} onChange={(e) => setScheduleStart(e.target.value)} />
-          </label>
-          <label className={styles.field}>
-            <span>End</span>
-            <input type="datetime-local" value={scheduleEnd} onChange={(e) => setScheduleEnd(e.target.value)} />
-          </label>
-          <label className={styles.field}>
-            <span>Location</span>
-            <input value={scheduleLocation} onChange={(e) => setScheduleLocation(e.target.value)} placeholder="Table A1" />
-          </label>
-        </div>
-        <h3 className={styles.subsectionTitle}>Approved matches ready to schedule</h3>
-        {reviews.filter((r) => r.status === 'approved').length === 0 ? (
-          <p className={styles.hint}>No approved matches yet.</p>
-        ) : (
-          <ul className={styles.optionList}>
-            {reviews
-              .filter((r) => r.status === 'approved')
-              .map((r) => {
-                const from = submissions.find((s) => s.id === r.from_submission_id);
-                const to = submissions.find((s) => s.id === r.to_submission_id);
-                return (
-                  <li key={r.id}>
-                    {[from?.first_name, from?.last_name].filter(Boolean).join(' ') || '—'} ↔{' '}
-                    {[to?.first_name, to?.last_name].filter(Boolean).join(' ') || '—'} (score {r.score}){' '}
-                    <button type="button" onClick={() => void scheduleApprovedMatch(r)}>
-                      Schedule
-                    </button>
-                  </li>
-                );
-              })}
-          </ul>
-        )}
-        <div className={styles.toolbarActions} style={{ marginTop: 12 }}>
-          <button type="button" className={styles.btnSecondary} onClick={exportScheduleCsv}>
-            Export schedule CSV
-          </button>
-        </div>
-        {scheduledMeetings.length === 0 ? (
-          <div className={styles.emptyState}>
-            <strong>No scheduled meetings yet</strong>
-            <p>Schedule approved matches above to publish them to the app.</p>
-          </div>
-        ) : (
-          <div className={styles.tableWrap}>
-            <table>
-              <thead>
-                <tr>
-                  <th>Participant A</th>
-                  <th>Participant B</th>
-                  <th>Start</th>
-                  <th>End</th>
-                  <th>Location</th>
-                  <th>App</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scheduledMeetings.map((m) => {
-                  const a = submissions.find((s) => s.id === m.submission_a_id);
-                  const b = submissions.find((s) => s.id === m.submission_b_id);
-                  return (
-                    <tr key={m.id}>
-                      <td>{[a?.first_name, a?.last_name].filter(Boolean).join(' ') || '—'}</td>
-                      <td>{[b?.first_name, b?.last_name].filter(Boolean).join(' ') || '—'}</td>
-                      <td>{new Date(m.start_time).toLocaleString()}</td>
-                      <td>{new Date(m.end_time).toLocaleString()}</td>
-                      <td>{m.location ?? '—'}</td>
                       <td>
-                        {m.published_to_app_at ? (
-                          <span>Published {new Date(m.published_to_app_at).toLocaleString()}</span>
-                        ) : m.status === 'scheduled' ? (
-                          <button
-                            type="button"
-                            disabled={publishingMeetingId === m.id}
-                            onClick={() => void publishMeetingToApp(m.id)}
-                          >
-                            {publishingMeetingId === m.id ? 'Publishing…' : 'Publish to app'}
-                          </button>
+                        {portalRequest ? (
+                          <span>
+                            Rank {requestRank ?? '—'} · {interestLevelLabel(portalRequest.interest_level)}
+                          </span>
                         ) : (
-                          '—'
+                          <span className={styles.hint}>Not requested</span>
                         )}
+                      </td>
+                      <td>
+                        <StatusBadge label={isScheduled ? 'scheduled' : r.status} tone={isScheduled ? 'info' : matchReviewTone(r.status)} />
+                      </td>
+                      <td>
+                        <div className={styles.actionRow}>
+                          {r.status === 'approved' ? (
+                            isScheduled ? (
+                              <span className={styles.hint}>On schedule</span>
+                            ) : (
+                              <button type="button" onClick={() => goToTab('schedule')}>
+                                Schedule →
+                              </button>
+                            )
+                          ) : r.status === 'rejected' ? (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void updateMatchReviewStatus(r.from_submission_id, r.to_submission_id, r.score, 'approved')
+                              }
+                            >
+                              Approve
+                            </button>
+                          ) : (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void updateMatchReviewStatus(r.from_submission_id, r.to_submission_id, r.score, 'approved')
+                                }
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.btnDangerOutline}
+                                onClick={() =>
+                                  void updateMatchReviewStatus(r.from_submission_id, r.to_submission_id, r.score, 'rejected')
+                                }
+                              >
+                                Reject
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -3777,6 +3910,150 @@ export default function EventMatchmaking() {
         ) : null}
       </section>
       </>
+      ) : null}
+
+      {activeTab === 'schedule' ? (
+      <section className={styles.section}>
+        <div className={styles.sectionHeader}>
+          <h2>Schedule 1:1 meetings</h2>
+          <StatusBadge label={`${approvedReviews.length} approved · ${scheduledMeetings.length} scheduled`} tone="info" />
+        </div>
+        <p className={styles.sectionLead}>
+          Approved pairings from{' '}
+          <button type="button" className={styles.tabLink} onClick={() => goToTab('matching')}>
+            Matching &amp; approve
+          </button>{' '}
+          appear here. Pick a time slot and location, then publish to the app when ready.
+        </p>
+
+        <div className={styles.toolbar}>
+          <label className={styles.field}>
+            <span>Meeting start</span>
+            <input type="datetime-local" value={scheduleStart} onChange={(e) => setScheduleStart(e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <span>Meeting end</span>
+            <input type="datetime-local" value={scheduleEnd} onChange={(e) => setScheduleEnd(e.target.value)} />
+          </label>
+          <label className={styles.field}>
+            <span>Location</span>
+            <input value={scheduleLocation} onChange={(e) => setScheduleLocation(e.target.value)} placeholder="Table A1" />
+          </label>
+        </div>
+
+        <h3 className={styles.subsectionTitle}>Approved pairings — ready to schedule</h3>
+        {approvedReviews.length === 0 ? (
+          <div className={styles.emptyState}>
+            <strong>No approved pairings yet</strong>
+            <p>
+              Approve matches on the{' '}
+              <button type="button" className={styles.tabLink} onClick={() => goToTab('matching')}>
+                Matching &amp; approve
+              </button>{' '}
+              tab first.
+            </p>
+          </div>
+        ) : (
+          <div className={styles.tableWrap}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Participant A</th>
+                  <th>Participant B</th>
+                  <th>Match score</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {approvedReviews.map((r) => {
+                  const from = submissions.find((s) => s.id === r.from_submission_id);
+                  const to = submissions.find((s) => s.id === r.to_submission_id);
+                  const isScheduled = scheduledReviewIds.has(r.id);
+                  return (
+                    <tr key={r.id}>
+                      <td>{from ? submissionDisplayName(from) : '—'}</td>
+                      <td>{to ? submissionDisplayName(to) : '—'}</td>
+                      <td>{r.score}</td>
+                      <td>
+                        <StatusBadge label={isScheduled ? 'Scheduled' : 'Awaiting slot'} tone={isScheduled ? 'success' : 'warn'} />
+                      </td>
+                      <td>
+                        {isScheduled ? (
+                          <span className={styles.hint}>See table below</span>
+                        ) : (
+                          <button type="button" onClick={() => void scheduleApprovedMatch(r)}>
+                            Schedule with times above
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className={styles.toolbarActions} style={{ marginTop: 16 }}>
+          <button type="button" className={styles.btnSecondary} onClick={exportScheduleCsv}>
+            Export schedule CSV
+          </button>
+        </div>
+
+        <h3 className={styles.subsectionTitle}>Scheduled meetings</h3>
+        {scheduledMeetings.length === 0 ? (
+          <div className={styles.emptyState}>
+            <strong>No meetings scheduled yet</strong>
+            <p>Assign a time slot to an approved pairing above.</p>
+          </div>
+        ) : (
+          <div className={styles.tableWrap}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Participant A</th>
+                  <th>Participant B</th>
+                  <th>Start</th>
+                  <th>End</th>
+                  <th>Location</th>
+                  <th>App</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scheduledMeetings.map((m) => {
+                  const a = submissions.find((s) => s.id === m.submission_a_id);
+                  const b = submissions.find((s) => s.id === m.submission_b_id);
+                  return (
+                    <tr key={m.id}>
+                      <td>{a ? submissionDisplayName(a) : '—'}</td>
+                      <td>{b ? submissionDisplayName(b) : '—'}</td>
+                      <td>{new Date(m.start_time).toLocaleString()}</td>
+                      <td>{new Date(m.end_time).toLocaleString()}</td>
+                      <td>{m.location ?? '—'}</td>
+                      <td>
+                        {m.published_to_app_at ? (
+                          <span>Published {new Date(m.published_to_app_at).toLocaleString()}</span>
+                        ) : m.status === 'scheduled' ? (
+                          <button
+                            type="button"
+                            disabled={publishingMeetingId === m.id}
+                            onClick={() => void publishMeetingToApp(m.id)}
+                          >
+                            {publishingMeetingId === m.id ? 'Publishing…' : 'Publish to app'}
+                          </button>
+                        ) : (
+                          '—'
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
       ) : null}
       </div>
     </div>
