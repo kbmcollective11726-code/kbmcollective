@@ -523,6 +523,11 @@ export default function EventMatchmaking() {
   const [sectionFromLabel, setSectionFromLabel] = useState('');
   const [sectionRenameLabel, setSectionRenameLabel] = useState('');
   const [newSectionName, setNewSectionName] = useState('');
+  /** Section label where inline “add question” form is open, or null. */
+  const [addingQuestionToSection, setAddingQuestionToSection] = useState<string | null>(null);
+  /** Section label with inline rename input open, or null. */
+  const [renamingSectionLabel, setRenamingSectionLabel] = useState<string | null>(null);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const [sectionFilterLabel, setSectionFilterLabel] = useState<'all' | string>('all');
   const [questionSearchQuery, setQuestionSearchQuery] = useState('');
   const [showHiddenLegacyQuestions, setShowHiddenLegacyQuestions] = useState(false);
@@ -629,6 +634,11 @@ export default function EventMatchmaking() {
     () => Array.from(new Set(activeQuestions.map((q) => canonicalSectionLabel(q.section_label)))),
     [activeQuestions]
   );
+  const sectionFilterChoices = useMemo(() => {
+    const labels = new Set<string>(activeFormSectionOrder);
+    sectionChoices.forEach((s) => labels.add(s));
+    return Array.from(labels);
+  }, [activeFormSectionOrder, sectionChoices]);
 
   const addQuestionSectionPickOptions = useMemo(() => {
     const merged = new Set<string>(templateSectionPicklist);
@@ -930,6 +940,14 @@ export default function EventMatchmaking() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    setAddingQuestionToSection(null);
+    setRenamingSectionLabel(null);
+    setCollapsedSections({});
+    setQuestionSearchQuery('');
+    setSectionFilterLabel('all');
+  }, [selectedFormId]);
+
   const addForm = async () => {
     if (!eventId) return;
     const name = newFormName.trim();
@@ -965,14 +983,15 @@ export default function EventMatchmaking() {
     }
   };
 
-  const addQuestion = async () => {
+  const addQuestion = async (forcedSectionLabel?: string) => {
     if (!selectedFormId) return;
     const prompt = questionPrompt.trim();
     if (!prompt) {
       setQuestionError('Question prompt is required.');
       return;
     }
-    if (questionSectionPick === '__custom__' && !questionSectionLabel.trim()) {
+    const useForcedSection = forcedSectionLabel !== undefined;
+    if (!useForcedSection && questionSectionPick === '__custom__' && !questionSectionLabel.trim()) {
       setQuestionError('Choose a section from the list or enter a custom section name.');
       return;
     }
@@ -981,6 +1000,15 @@ export default function EventMatchmaking() {
     try {
       const formQuestions = questions.filter((q) => q.form_id === selectedFormId);
       const nextSort = formQuestions.length > 0 ? Math.max(...formQuestions.map((q) => q.sort_order)) + 1 : 0;
+      const resolvedSectionLabel = useForcedSection
+        ? forcedSectionLabel === 'General'
+          ? null
+          : sectionLabelForDatabase(forcedSectionLabel)
+        : questionSectionPick === '__custom__'
+          ? sectionLabelForDatabase(questionSectionLabel)
+          : questionSectionPick === ''
+            ? null
+            : sectionLabelForDatabase(questionSectionPick);
       const { data, error: insErr } = await supabase
         .from('event_registration_questions')
         .insert({
@@ -988,12 +1016,7 @@ export default function EventMatchmaking() {
           prompt,
           question_type: questionType,
           is_required: questionRequired,
-          section_label:
-            questionSectionPick === '__custom__'
-              ? sectionLabelForDatabase(questionSectionLabel)
-              : questionSectionPick === ''
-                ? null
-                : sectionLabelForDatabase(questionSectionPick),
+          section_label: resolvedSectionLabel,
           is_base_question: false,
           sort_order: nextSort,
         })
@@ -1015,11 +1038,45 @@ export default function EventMatchmaking() {
       setQuestionRequired(false);
       setQuestionSectionPick('');
       setQuestionSectionLabel('');
+      if (useForcedSection) setAddingQuestionToSection(null);
     } catch (e) {
       setQuestionError(postgrestErrorMessage(e) || 'Could not add question');
     } finally {
       setSavingQuestion(false);
     }
+  };
+
+  const openAddQuestionToSection = (sectionLabel: string) => {
+    setAddingQuestionToSection(sectionLabel);
+    setRenamingSectionLabel(null);
+    setQuestionPrompt('');
+    setQuestionType('text');
+    setQuestionRequired(false);
+    setQuestionError('');
+  };
+
+  const cancelAddQuestionToSection = () => {
+    setAddingQuestionToSection(null);
+    setQuestionPrompt('');
+    setQuestionType('text');
+    setQuestionRequired(false);
+  };
+
+  const beginRenameSection = (sectionLabel: string) => {
+    setRenamingSectionLabel(sectionLabel);
+    setSectionFromLabel(sectionLabel);
+    setSectionRenameLabel(sectionLabel);
+    setAddingQuestionToSection(null);
+    setQuestionError('');
+  };
+
+  const cancelRenameSection = () => {
+    setRenamingSectionLabel(null);
+    setSectionRenameLabel('');
+  };
+
+  const toggleSectionCollapsed = (sectionLabel: string) => {
+    setCollapsedSections((prev) => ({ ...prev, [sectionLabel]: !prev[sectionLabel] }));
   };
 
   const saveFormSectionOrder = async (order: string[], options?: { silent?: boolean }) => {
@@ -1090,10 +1147,10 @@ export default function EventMatchmaking() {
     }
   };
 
-  const renameSection = async () => {
+  const renameSection = async (fromLabelOverride?: string, toLabelOverride?: string) => {
     if (!activeForm) return;
-    const fromLabel = sectionFromLabel.trim();
-    const toLabel = sectionRenameLabel.trim();
+    const fromLabel = (fromLabelOverride ?? sectionFromLabel).trim();
+    const toLabel = (toLabelOverride ?? sectionRenameLabel).trim();
     if (!fromLabel || fromLabel === 'General') {
       setQuestionError('Select a named section to rename.');
       return;
@@ -1114,6 +1171,7 @@ export default function EventMatchmaking() {
       await saveFormSectionOrder(nextOrder, { silent: true });
       setSectionFromLabel(toLabel);
       setSectionRenameLabel('');
+      setRenamingSectionLabel(null);
     } catch (e) {
       setQuestionError(postgrestErrorMessage(e) || 'Could not rename section');
     } finally {
@@ -2349,6 +2407,16 @@ export default function EventMatchmaking() {
 
       <section className={styles.section}>
         <div className={styles.sectionHeader}>
+          <h2>Solution categories</h2>
+        </div>
+        <p className={styles.sectionLead}>
+          Define the solution types delegates can select. These feed solution-interest questions and match scoring.
+        </p>
+        {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
+      </section>
+
+      <section className={styles.section}>
+        <div className={styles.sectionHeader}>
           <h2>Questions {activeForm ? `— ${activeForm.name}` : ''}</h2>
           {activeForm ? (
             <StatusBadge label={titleizeAudience(activeForm.audience)} tone="info" />
@@ -2358,201 +2426,62 @@ export default function EventMatchmaking() {
           <p className={styles.hint}>Select a form to add questions.</p>
         ) : (
           <div className={styles.workbench}>
-            <div className={`${styles.panel} ${styles.panelPrimary}`}>
-              <div className={styles.panelHead}>
-                <span className={styles.panelTitle}>Add question</span>
-                <span className={styles.panelHint}>Choose answer type and section, then add your wording.</span>
-              </div>
-              <div className={styles.panelBody}>
-                <div className={styles.fieldGrid}>
-                  <label className={styles.field}>
-                    <span>Question text</span>
-                    <input
-                      value={questionPrompt}
-                      onChange={(e) => setQuestionPrompt(e.target.value)}
-                      placeholder="e.g. Please list your top 5 priorities for 2026"
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span>Answer type</span>
-                    <select value={questionType} onChange={(e) => setQuestionType(e.target.value as MatchmakingQuestionType)}>
-                      {QUESTION_TYPE_OPTIONS.map((qt) => (
-                        <option value={qt} key={qt}>
-                          {qt}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className={`${styles.field} ${styles.fieldCheckbox}`}>
-                    <span>Required</span>
-                    <span className={styles.checkboxRow}>
-                      <input
-                        type="checkbox"
-                        checked={questionRequired}
-                        onChange={(e) => setQuestionRequired(e.target.checked)}
-                        id="new-q-required"
-                      />
-                      <label htmlFor="new-q-required">Must answer to submit</label>
-                    </span>
-                  </div>
-                  <label className={styles.field}>
-                    <span>Section</span>
-                    <select
-                      value={questionSectionPick}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setQuestionSectionPick(v);
-                        if (v !== '__custom__') setQuestionSectionLabel('');
-                      }}
-                      aria-label="Section for new question"
-                    >
-                      <option value="">General</option>
-                      {addQuestionSectionPickOptions.map((label) => (
-                        <option key={label} value={label}>
-                          {label}
-                        </option>
-                      ))}
-                      <option value="__custom__">Custom section…</option>
-                    </select>
-                  </label>
-                  {questionSectionPick === '__custom__' ? (
-                    <label className={styles.field}>
-                      <span>Custom section name</span>
-                      <input
-                        value={questionSectionLabel}
-                        onChange={(e) => setQuestionSectionLabel(e.target.value)}
-                        placeholder="New section name"
-                        aria-label="Custom section name"
-                      />
-                    </label>
-                  ) : null}
-                </div>
-                <div className={styles.panelActions}>
-                  <button type="button" className={styles.btnPrimary} onClick={() => void addQuestion()} disabled={savingQuestion}>
-                    {savingQuestion ? 'Adding…' : 'Add question'}
-                  </button>
-                </div>
-              </div>
+            <div className={styles.questionsToolbar}>
+              <input
+                type="search"
+                value={questionSearchQuery}
+                onChange={(e) => setQuestionSearchQuery(e.target.value)}
+                placeholder="Search questions…"
+                className={styles.questionsToolbarSearch}
+                aria-label="Search questions"
+              />
+              <select
+                value={sectionFilterLabel}
+                onChange={(e) => setSectionFilterLabel(e.target.value)}
+                className={styles.questionsToolbarSelect}
+                aria-label="Filter by section"
+              >
+                <option value="all">All sections</option>
+                {sectionFilterChoices.map((label) => (
+                  <option key={label} value={label}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+              {hiddenLegacyQuestionCount > 0 ? (
+                <label className={styles.questionsToolbarLegacy}>
+                  <input
+                    type="checkbox"
+                    checked={showHiddenLegacyQuestions}
+                    onChange={(e) => setShowHiddenLegacyQuestions(e.target.checked)}
+                  />
+                  Show {hiddenLegacyQuestionCount} hidden legacy
+                </label>
+              ) : null}
             </div>
 
-            <div className={styles.panel}>
-              <div className={styles.panelHead}>
-                <span className={styles.panelTitle}>Find & filter</span>
-              </div>
-              <div className={`${styles.panelBody} ${styles.filterRow}`}>
-                <label className={`${styles.field} ${styles.fieldGrow}`}>
-                  <span>Search</span>
-                  <input
-                    type="search"
-                    value={questionSearchQuery}
-                    onChange={(e) => setQuestionSearchQuery(e.target.value)}
-                    placeholder="Search question text, type, or section…"
-                    className={styles.searchInput}
-                  />
-                </label>
-                <label className={`${styles.field} ${styles.fieldShrink}`}>
-                  <span>Show section</span>
-                  <select value={sectionFilterLabel} onChange={(e) => setSectionFilterLabel(e.target.value)}>
-                    <option value="all">All sections</option>
-                    {sectionChoices.map((label) => (
-                      <option key={label} value={label}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {hiddenLegacyQuestionCount > 0 ? (
-                  <label className={styles.checkboxInline}>
-                    <input
-                      type="checkbox"
-                      checked={showHiddenLegacyQuestions}
-                      onChange={(e) => setShowHiddenLegacyQuestions(e.target.checked)}
-                    />
-                    {' '}Show {hiddenLegacyQuestionCount} hidden legacy question{hiddenLegacyQuestionCount === 1 ? '' : 's'}
-                  </label>
-                ) : null}
-              </div>
+            <div className={styles.addSectionBar}>
+              <input
+                value={newSectionName}
+                onChange={(e) => setNewSectionName(e.target.value)}
+                placeholder="New section name…"
+                aria-label="New section name"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void addEmptySection();
+                }}
+              />
+              <button type="button" className={styles.btnPrimary} onClick={() => void addEmptySection()} disabled={sectionBusy || !newSectionName.trim()}>
+                Add section
+              </button>
             </div>
 
             {repairingSections ? <p className={styles.hint}>Auto-organizing legacy questions into the right sections…</p> : null}
-
-            <div className={`${styles.panel} ${styles.panelAccent}`}>
-              <div className={styles.panelHead}>
-                <span className={styles.panelTitle}>Sections</span>
-                <span className={styles.panelHint}>Add empty sections, reorder how they appear on connect, then add questions to each.</span>
-              </div>
-              <div className={styles.panelBody}>
-                <div className={styles.addSectionBar}>
-                  <input
-                    value={newSectionName}
-                    onChange={(e) => setNewSectionName(e.target.value)}
-                    placeholder="New section name, e.g. Travel & logistics"
-                    aria-label="New section name"
-                  />
-                  <button type="button" className={styles.btnPrimary} onClick={() => void addEmptySection()} disabled={sectionBusy || !newSectionName.trim()}>
-                    Add section
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div className={`${styles.panel} ${styles.panelMuted}`}>
-              <div className={styles.panelHead}>
-                <span className={styles.panelTitle}>Section tools</span>
-                <span className={styles.panelHint}>Apply to every question in that section.</span>
-              </div>
-              <div className={styles.panelBody}>
-                <div className={styles.inlineForm}>
-                  <select value={sectionFromLabel} onChange={(e) => setSectionFromLabel(e.target.value)}>
-                    <option value="">Select section</option>
-                    {sectionChoices.map((label) => (
-                      <option key={label} value={label}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <input
-                    value={sectionRenameLabel}
-                    onChange={(e) => setSectionRenameLabel(e.target.value)}
-                    placeholder="Rename section to…"
-                  />
-                  <button type="button" className={styles.btnSecondary} onClick={() => void renameSection()} disabled={sectionBusy}>
-                    Rename
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.btnSecondary}
-                    onClick={() => void setSectionHidden(sectionFromLabel, true)}
-                    disabled={sectionBusy || !sectionFromLabel}
-                  >
-                    Hide all
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.btnSecondary}
-                    onClick={() => void setSectionHidden(sectionFromLabel, false)}
-                    disabled={sectionBusy || !sectionFromLabel}
-                  >
-                    Show all
-                  </button>
-                  <button
-                    type="button"
-                    className={styles.btnDangerOutline}
-                    onClick={() => void deleteSection(sectionFromLabel)}
-                    disabled={sectionBusy || !sectionFromLabel}
-                  >
-                    Delete section
-                  </button>
-                </div>
-              </div>
-            </div>
-
             {questionError ? <p className={styles.error}>{questionError}</p> : null}
 
             <div className={styles.questionsEditorSplit}>
               <div className={styles.questionsListColumn}>
                 {activeSectionGroups.length === 0 ? (
-                  <p className={styles.hint}>No sections yet. Add a section above, or add your first question.</p>
+                  <p className={styles.hint}>No sections yet. Add a section above, then add questions to it.</p>
                 ) : filteredQuestionSectionGroups.length === 0 ? (
                   <p className={styles.hint}>No questions match your search or filters. Clear search or choose “All sections”.</p>
                 ) : (
@@ -2562,10 +2491,24 @@ export default function EventMatchmaking() {
                       const canMoveSectionUp = sectionIdx > 0 && group.label !== 'General';
                       const canMoveSectionDown =
                         sectionIdx >= 0 && sectionIdx < activeFormSectionOrder.length - 1 && group.label !== 'General';
+                      const sectionCollapsed = Boolean(collapsedSections[group.label]);
+                      const sectionAllHidden = group.items.length > 0 && group.items.every((q) => q.is_hidden);
+                      const showAddForm = addingQuestionToSection === group.label;
                       return (
                       <div key={group.label} className={styles.sectionBlock}>
                         <div className={styles.sectionHead}>
-                          <h3>{group.label}</h3>
+                          <button
+                            type="button"
+                            className={styles.sectionTitleBtn}
+                            onClick={() => toggleSectionCollapsed(group.label)}
+                            aria-expanded={!sectionCollapsed}
+                          >
+                            <span className={styles.sectionChevron} aria-hidden>{sectionCollapsed ? '▸' : '▾'}</span>
+                            <h3>{group.label}</h3>
+                            <span className={styles.sectionCount}>
+                              {group.items.length} question{group.items.length === 1 ? '' : 's'}
+                            </span>
+                          </button>
                           <div className={styles.sectionHeadActions}>
                             {group.label !== 'General' ? (
                               <>
@@ -2573,62 +2516,162 @@ export default function EventMatchmaking() {
                                 <button type="button" className={styles.btnIcon} disabled={sectionBusy || !canMoveSectionDown} onClick={() => void moveSection(group.label, 1)} aria-label="Move section down">↓</button>
                               </>
                             ) : null}
-                            <button type="button" className={styles.btnSecondary} onClick={() => { setSectionFromLabel(group.label); void setSectionHidden(group.label, true); }} disabled={sectionBusy}>
-                              Hide section
+                            <button
+                              type="button"
+                              className={styles.btnSecondary}
+                              onClick={() => openAddQuestionToSection(group.label)}
+                              disabled={sectionBusy || showAddForm}
+                            >
+                              + Add question
                             </button>
-                            <button type="button" className={styles.btnSecondary} onClick={() => { setSectionFromLabel(group.label); void setSectionHidden(group.label, false); }} disabled={sectionBusy}>
-                              Show section
-                            </button>
-                            <button type="button" className={styles.btnDangerOutline} onClick={() => { setSectionFromLabel(group.label); void deleteSection(group.label); }} disabled={sectionBusy}>
-                              Delete section
-                            </button>
+                            {group.label !== 'General' ? (
+                              <button
+                                type="button"
+                                className={styles.btnSecondary}
+                                onClick={() => beginRenameSection(group.label)}
+                                disabled={sectionBusy || renamingSectionLabel === group.label}
+                              >
+                                Rename
+                              </button>
+                            ) : null}
+                            {group.items.length > 0 ? (
+                              <button
+                                type="button"
+                                className={styles.btnSecondary}
+                                onClick={() => { setSectionFromLabel(group.label); void setSectionHidden(group.label, !sectionAllHidden); }}
+                                disabled={sectionBusy}
+                              >
+                                {sectionAllHidden ? 'Show section' : 'Hide section'}
+                              </button>
+                            ) : null}
+                            {group.label !== 'General' ? (
+                              <button
+                                type="button"
+                                className={styles.btnDangerOutline}
+                                onClick={() => { setSectionFromLabel(group.label); void deleteSection(group.label); }}
+                                disabled={sectionBusy}
+                              >
+                                Delete
+                              </button>
+                            ) : null}
                           </div>
                         </div>
-                        {group.items.length === 0 ? (
-                          <p className={styles.sectionEmptyHint}>
-                            No questions in this section yet. Add a question above and assign it to &quot;{group.label}&quot;.
-                          </p>
-                        ) : (
-                        <ul className={styles.list}>
-                          {group.items.map((q) => (
-                            <li key={q.id} className={`${styles.questionRow} ${selectedQuestionId === q.id ? styles.questionRowSelected : ''}`}>
-                              <div className={styles.questionRowMain}>
-                                <button type="button" className={styles.qSelectBtn} onClick={() => setSelectedQuestionId(q.id)}>
-                                  <strong>{q.prompt}</strong>
-                                  <span className={styles.questionMeta}>
-                                    <span className={styles.typePill}>{q.question_type}</span>
-                                    {q.is_required ? <span className={styles.requiredPill}>Required</span> : null}
-                                    {q.is_base_question ? <span className={styles.baseTag}>base</span> : null}
-                                    {q.used_in_matching ? <span className={styles.requiredPill}>matching</span> : null}
-                                    {q.is_hidden ? <span className={styles.hiddenPill}>Hidden</span> : null}
-                                  </span>
-                                </button>
+
+                        {renamingSectionLabel === group.label ? (
+                          <div className={styles.inlineRenameRow}>
+                            <input
+                              value={sectionRenameLabel}
+                              onChange={(e) => setSectionRenameLabel(e.target.value)}
+                              placeholder="Section name"
+                              aria-label="Rename section"
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') void renameSection(group.label, sectionRenameLabel);
+                                if (e.key === 'Escape') cancelRenameSection();
+                              }}
+                            />
+                            <button type="button" className={styles.btnPrimary} onClick={() => void renameSection(group.label, sectionRenameLabel)} disabled={sectionBusy}>
+                              Save
+                            </button>
+                            <button type="button" className={styles.btnSecondary} onClick={cancelRenameSection} disabled={sectionBusy}>
+                              Cancel
+                            </button>
+                          </div>
+                        ) : null}
+
+                        {!sectionCollapsed ? (
+                          <>
+                            {showAddForm ? (
+                              <div className={styles.sectionAddForm}>
+                                <label className={styles.field}>
+                                  <span>Question text</span>
+                                  <input
+                                    value={questionPrompt}
+                                    onChange={(e) => setQuestionPrompt(e.target.value)}
+                                    placeholder="e.g. Please list your top 5 priorities for 2026"
+                                    autoFocus
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter') void addQuestion(group.label);
+                                    }}
+                                  />
+                                </label>
+                                <label className={styles.field}>
+                                  <span>Answer type</span>
+                                  <select value={questionType} onChange={(e) => setQuestionType(e.target.value as MatchmakingQuestionType)}>
+                                    {QUESTION_TYPE_OPTIONS.map((qt) => (
+                                      <option value={qt} key={qt}>
+                                        {qt}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className={styles.checkboxInline}>
+                                  <input
+                                    type="checkbox"
+                                    checked={questionRequired}
+                                    onChange={(e) => setQuestionRequired(e.target.checked)}
+                                  />
+                                  Required
+                                </label>
+                                <div className={styles.sectionAddFormActions}>
+                                  <button type="button" className={styles.btnPrimary} onClick={() => void addQuestion(group.label)} disabled={savingQuestion}>
+                                    {savingQuestion ? 'Adding…' : 'Add question'}
+                                  </button>
+                                  <button type="button" className={styles.btnSecondary} onClick={cancelAddQuestionToSection} disabled={savingQuestion}>
+                                    Cancel
+                                  </button>
+                                </div>
                               </div>
-                              <div className={styles.questionRowActions}>
-                                <button type="button" className={styles.btnSecondary} onClick={() => setSelectedQuestionId(q.id)}>
-                                  Edit
-                                </button>
-                                <button
-                                  type="button"
-                                  className={styles.btnSecondary}
-                                  disabled={Boolean(duplicatingQuestionId)}
-                                  onClick={() => void duplicateQuestion(q.id)}
-                                >
-                                  {duplicatingQuestionId === q.id ? 'Copying…' : 'Duplicate'}
-                                </button>
-                                <button type="button" className={styles.btnSecondary} onClick={() => void toggleQuestionHidden(q.id, !Boolean(q.is_hidden))}>
-                                  {q.is_hidden ? 'Show' : 'Hide'}
-                                </button>
-                                <button type="button" className={styles.btnIcon} onClick={() => void moveQuestion(q.id, -1)} aria-label="Move up">↑</button>
-                                <button type="button" className={styles.btnIcon} onClick={() => void moveQuestion(q.id, 1)} aria-label="Move down">↓</button>
-                                {!q.is_base_question ? (
-                                  <button type="button" className={styles.btnDangerOutline} onClick={() => void deleteQuestion(q.id)}>Delete</button>
-                                ) : null}
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                        )}
+                            ) : null}
+
+                            {group.items.length === 0 && !showAddForm ? (
+                              <p className={styles.sectionEmptyHint}>
+                                No questions yet. Click <strong>+ Add question</strong> to add one to this section.
+                              </p>
+                            ) : null}
+
+                            {group.items.length > 0 ? (
+                            <ul className={styles.list}>
+                              {group.items.map((q) => (
+                                <li key={q.id} className={`${styles.questionRow} ${selectedQuestionId === q.id ? styles.questionRowSelected : ''}`}>
+                                  <div className={styles.questionRowMain}>
+                                    <button type="button" className={styles.qSelectBtn} onClick={() => setSelectedQuestionId(q.id)}>
+                                      <strong>{q.prompt}</strong>
+                                      <span className={styles.questionMeta}>
+                                        <span className={styles.typePill}>{q.question_type}</span>
+                                        {q.is_required ? <span className={styles.requiredPill}>Required</span> : null}
+                                        {q.is_base_question ? <span className={styles.baseTag}>base</span> : null}
+                                        {q.used_in_matching ? <span className={styles.requiredPill}>matching</span> : null}
+                                        {q.is_hidden ? <span className={styles.hiddenPill}>Hidden</span> : null}
+                                      </span>
+                                    </button>
+                                  </div>
+                                  <div className={styles.questionRowActions}>
+                                    <button type="button" className={styles.btnSecondary} onClick={() => setSelectedQuestionId(q.id)}>
+                                      Edit
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className={styles.btnSecondary}
+                                      disabled={Boolean(duplicatingQuestionId)}
+                                      onClick={() => void duplicateQuestion(q.id)}
+                                    >
+                                      {duplicatingQuestionId === q.id ? 'Copying…' : 'Duplicate'}
+                                    </button>
+                                    <button type="button" className={styles.btnSecondary} onClick={() => void toggleQuestionHidden(q.id, !Boolean(q.is_hidden))}>
+                                      {q.is_hidden ? 'Show' : 'Hide'}
+                                    </button>
+                                    <button type="button" className={styles.btnIcon} onClick={() => void moveQuestion(q.id, -1)} aria-label="Move up">↑</button>
+                                    <button type="button" className={styles.btnIcon} onClick={() => void moveQuestion(q.id, 1)} aria-label="Move down">↓</button>
+                                    {!q.is_base_question ? (
+                                      <button type="button" className={styles.btnDangerOutline} onClick={() => void deleteQuestion(q.id)}>Delete</button>
+                                    ) : null}
+                                  </div>
+                                </li>
+                              ))}
+                            </ul>
+                            ) : null}
+                          </>
+                        ) : null}
                       </div>
                       );
                     })}
@@ -2823,16 +2866,6 @@ export default function EventMatchmaking() {
             </div>
           </div>
         )}
-      </section>
-
-      <section className={styles.section}>
-        <div className={styles.sectionHeader}>
-          <h2>Solution categories</h2>
-        </div>
-        <p className={styles.sectionLead}>
-          Define the solution types delegates can select. These feed solution-interest questions and match scoring.
-        </p>
-        {eventId ? <MatchmakingSolutionCategories eventId={eventId} /> : null}
       </section>
       </>
       ) : null}

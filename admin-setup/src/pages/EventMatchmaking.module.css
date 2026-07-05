@@ -567,7 +567,8 @@
 .sectionHead h3 {
   margin: 0;
   font-size: 14px;
-  color: #334155;
+  font-weight: 700;
+  color: #0f172a;
 }
 
 .optionEditor h3 {
@@ -1144,6 +1145,117 @@
   padding: 10px 12px;
   font-size: 14px;
   min-height: 42px;
+}
+
+.questionsToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.questionsToolbarSearch {
+  flex: 1 1 200px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  min-height: 38px;
+}
+
+.questionsToolbarSelect {
+  flex: 0 1 180px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 14px;
+  min-height: 38px;
+  background: #fff;
+}
+
+.questionsToolbarLegacy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.sectionTitleBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.sectionTitleBtn:hover .sectionChevron,
+.sectionTitleBtn:hover h3 {
+  color: #2563eb;
+}
+
+.sectionChevron {
+  color: #64748b;
+  font-size: 12px;
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.sectionCount {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  background: #f1f5f9;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.sectionAddForm {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid #93c5fd;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #eff6ff 0%, #fff 60%);
+}
+
+.sectionAddFormActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.inlineRenameRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fffbeb;
+  border: 1px solid #fcd34d;
+}
+
+.inlineRenameRow input {
+  flex: 1 1 180px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 14px;
+  min-height: 38px;
 }
 
 .sectionEmptyHint {
