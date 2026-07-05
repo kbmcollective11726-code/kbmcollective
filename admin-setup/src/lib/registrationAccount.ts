@@ -29,17 +29,11 @@ export async function ensureRegistrationAccount(
   const normalizedEmail = email.trim().toLowerCase();
   const fullName = metadata.full_name.trim();
 
-  const { data: sessionData } = await supabase.auth.getSession();
-  const sessionUser = sessionData.session?.user;
-  if (sessionUser?.email?.toLowerCase() === normalizedEmail && sessionUser.id) {
-    return { userId: sessionUser.id, signedIn: true };
-  }
-  if (sessionUser && sessionUser.email?.toLowerCase() !== normalizedEmail) {
-    await supabase.auth.signOut();
-  }
+  // Clear any stale session (e.g. placeholder user id from a prior failed attempt).
+  await supabase.auth.signOut();
 
   // Sign in first so returning users (e.g. after admin deleted their event registration) can re-register
-  // with the same email without hitting "email already exists" from signUp.
+  // with the same email without hitting signUp placeholder user ids.
   const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
     email: normalizedEmail,
     password,

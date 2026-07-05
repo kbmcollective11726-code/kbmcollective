@@ -396,7 +396,10 @@ export default function RegistrationPortal() {
           setError(accountResult.error);
           return;
         }
-        authUserId = accountResult.signedIn ? accountResult.userId : null;
+        const { data: sessionAfterAuth } = await supabase.auth.getSession();
+        const sessionUser = sessionAfterAuth.session?.user;
+        authUserId =
+          sessionUser?.email?.toLowerCase() === emailValue.toLowerCase() ? sessionUser.id : null;
       } else {
         const { data: authData } = await supabase.auth.getUser();
         authUserId = authData.user?.id ?? null;
