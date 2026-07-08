@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { formatB2BSlotRangeWallClock, formatB2BWhenLabelWallClock } from '../lib/b2bEventTime';
@@ -30,6 +30,12 @@ export default function B2BFeedback() {
   const [loading, setLoading] = useState(true);
   const [detail, setDetail] = useState<B2BFeedbackRow | null>(null);
   const [perf, setPerf] = useState<{ booth_id: string; vendor_name: string; feedback_count: number; avg_rating: number | null }[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [vendorFilter, setVendorFilter] = useState('all');
+  const [ratingFilter, setRatingFilter] = useState('all');
+  const [meetAgainFilter, setMeetAgainFilter] = useState<'all' | 'yes' | 'no'>('all');
+  const [recommendFilter, setRecommendFilter] = useState<'all' | 'yes' | 'no'>('all');
+  const [commentFilter, setCommentFilter] = useState<'all' | 'with' | 'without'>('all');
 
   useEffect(() => {
     if (!eventId) return;
@@ -58,6 +64,63 @@ export default function B2BFeedback() {
     };
   }, [eventId]);
 
+  const vendorOptions = useMemo(() => {
+    const names = new Set<string>();
+    for (const row of list) {
+      const name = row.vendor_name?.trim();
+      if (name) names.add(name);
+    }
+    return Array.from(names).sort((a, b) => a.localeCompare(b));
+  }, [list]);
+
+  const filteredList = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return list.filter((row) => {
+      if (vendorFilter !== 'all' && (row.vendor_name ?? '') !== vendorFilter) return false;
+      if (ratingFilter !== 'all' && String(row.rating) !== ratingFilter) return false;
+      if (meetAgainFilter === 'yes' && !row.meet_again) return false;
+      if (meetAgainFilter === 'no' && row.meet_again) return false;
+      if (recommendFilter === 'yes' && !row.recommend_vendor) return false;
+      if (recommendFilter === 'no' && row.recommend_vendor) return false;
+      const hasComment = Boolean(row.comment?.trim());
+      if (commentFilter === 'with' && !hasComment) return false;
+      if (commentFilter === 'without' && hasComment) return false;
+      if (!q) return true;
+      const haystack = [
+        row.vendor_name,
+        row.attendee_name,
+        row.attendee_email,
+        row.comment,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [list, searchQuery, vendorFilter, ratingFilter, meetAgainFilter, recommendFilter, commentFilter]);
+
+  const filteredPerf = useMemo(() => {
+    if (vendorFilter === 'all') return perf;
+    return perf.filter((p) => p.vendor_name === vendorFilter);
+  }, [perf, vendorFilter]);
+
+  const hasActiveFilters =
+    searchQuery.trim() !== '' ||
+    vendorFilter !== 'all' ||
+    ratingFilter !== 'all' ||
+    meetAgainFilter !== 'all' ||
+    recommendFilter !== 'all' ||
+    commentFilter !== 'all';
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setVendorFilter('all');
+    setRatingFilter('all');
+    setMeetAgainFilter('all');
+    setRecommendFilter('all');
+    setCommentFilter('all');
+  };
+
   const exportCsv = () => {
     const header = [
       'Vendor',
@@ -74,7 +137,7 @@ export default function B2BFeedback() {
     ];
     const lines = [
       header.join(','),
-      ...list.map((row) =>
+      ...filteredList.map((row) =>
         [
           escapeCsvCell(row.vendor_name ?? ''),
           escapeCsvCell(row.attendee_name ?? ''),
@@ -122,12 +185,94 @@ export default function B2BFeedback() {
       <header className={styles.printHead}>
         <h1>1:1 Meeting feedback — {event?.name ?? 'Event'}</h1>
         <p className={styles.meta}>All attendee feedback for vendor meetings.</p>
-        {list.length > 0 ? <p className={styles.meta}>{list.length} response{list.length === 1 ? '' : 's'}</p> : null}
+        {list.length > 0 ? (
+          <p className={styles.meta}>
+            {hasActiveFilters
+              ? `Showing ${filteredList.length} of ${list.length} response${list.length === 1 ? '' : 's'}`
+              : `${list.length} response${list.length === 1 ? '' : 's'}`}
+          </p>
+        ) : null}
       </header>
 
-      {perf.length > 0 && (
+      {list.length > 0 ? (
+        <div className={`${styles.filters} ${styles.noPrint}`}>
+          <input
+            className={styles.searchInput}
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search vendor, attendee, email, or comment…"
+            aria-label="Search 1:1 meeting feedback"
+          />
+          <div className={styles.filterRow}>
+            <select
+              className={styles.select}
+              value={vendorFilter}
+              onChange={(e) => setVendorFilter(e.target.value)}
+              aria-label="Filter by vendor"
+            >
+              <option value="all">All vendors</option>
+              {vendorOptions.map((name) => (
+                <option key={name} value={name}>
+                  {name}
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.select}
+              value={ratingFilter}
+              onChange={(e) => setRatingFilter(e.target.value)}
+              aria-label="Filter by rating"
+            >
+              <option value="all">All ratings</option>
+              {[5, 4, 3, 2, 1].map((r) => (
+                <option key={r} value={String(r)}>
+                  {r}/5
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.select}
+              value={meetAgainFilter}
+              onChange={(e) => setMeetAgainFilter(e.target.value as 'all' | 'yes' | 'no')}
+              aria-label="Filter by meet again"
+            >
+              <option value="all">Meet again: any</option>
+              <option value="yes">Meet again: Yes</option>
+              <option value="no">Meet again: No</option>
+            </select>
+            <select
+              className={styles.select}
+              value={recommendFilter}
+              onChange={(e) => setRecommendFilter(e.target.value as 'all' | 'yes' | 'no')}
+              aria-label="Filter by recommend"
+            >
+              <option value="all">Recommend: any</option>
+              <option value="yes">Recommend: Yes</option>
+              <option value="no">Recommend: No</option>
+            </select>
+            <select
+              className={styles.select}
+              value={commentFilter}
+              onChange={(e) => setCommentFilter(e.target.value as 'all' | 'with' | 'without')}
+              aria-label="Filter by comment"
+            >
+              <option value="all">Any comments</option>
+              <option value="with">Has comment</option>
+              <option value="without">No comment</option>
+            </select>
+            {hasActiveFilters ? (
+              <button type="button" className={styles.clearBtn} onClick={clearFilters}>
+                Clear filters
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {filteredPerf.length > 0 && (
         <section className={styles.summary}>
-          {perf.map((p) => (
+          {filteredPerf.map((p) => (
             <div key={p.booth_id} className={styles.summaryCard}>
               <strong>{p.vendor_name}</strong>
               <span>
@@ -138,9 +283,14 @@ export default function B2BFeedback() {
         </section>
       )}
 
-      <h2 className={styles.listTitle}>All feedback ({list.length})</h2>
+      <h2 className={styles.listTitle}>
+        All feedback ({filteredList.length}
+        {hasActiveFilters ? ` of ${list.length}` : ''})
+      </h2>
       {list.length === 0 ? (
         <p className={styles.empty}>No 1:1 Meeting feedback yet.</p>
+      ) : filteredList.length === 0 ? (
+        <p className={styles.empty}>No feedback matches your search or filters.</p>
       ) : (
         <div className={styles.tableWrap}>
           <table className={styles.table}>
@@ -157,7 +307,7 @@ export default function B2BFeedback() {
               </tr>
             </thead>
             <tbody>
-              {list.map((row) => (
+              {filteredList.map((row) => (
                 <tr key={row.id}>
                   <td>{row.vendor_name ?? '—'}</td>
                   <td>{row.attendee_name ?? row.attendee_email ?? '—'}</td>

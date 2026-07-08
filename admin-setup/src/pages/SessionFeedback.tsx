@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import type { Event } from '../lib/types';
@@ -25,6 +25,10 @@ export default function SessionFeedback() {
   const [list, setList] = useState<SessionRatingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [sessionFilter, setSessionFilter] = useState('all');
+  const [ratingFilter, setRatingFilter] = useState('all');
+  const [commentFilter, setCommentFilter] = useState<'all' | 'with' | 'without'>('all');
 
   useEffect(() => {
     if (!eventId) return;
@@ -51,11 +55,55 @@ export default function SessionFeedback() {
     };
   }, [eventId]);
 
+  const sessionOptions = useMemo(() => {
+    const titles = new Set<string>();
+    for (const row of list) {
+      const title = row.session_title?.trim();
+      if (title) titles.add(title);
+    }
+    return Array.from(titles).sort((a, b) => a.localeCompare(b));
+  }, [list]);
+
+  const filteredList = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return list.filter((row) => {
+      if (sessionFilter !== 'all' && (row.session_title ?? '') !== sessionFilter) return false;
+      if (ratingFilter !== 'all' && String(row.rating) !== ratingFilter) return false;
+      const hasComment = Boolean(row.comment?.trim());
+      if (commentFilter === 'with' && !hasComment) return false;
+      if (commentFilter === 'without' && hasComment) return false;
+      if (!q) return true;
+      const haystack = [
+        row.session_title,
+        row.user_name,
+        row.user_email,
+        row.comment,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [list, searchQuery, sessionFilter, ratingFilter, commentFilter]);
+
+  const hasActiveFilters =
+    searchQuery.trim() !== '' ||
+    sessionFilter !== 'all' ||
+    ratingFilter !== 'all' ||
+    commentFilter !== 'all';
+
+  const clearFilters = () => {
+    setSearchQuery('');
+    setSessionFilter('all');
+    setRatingFilter('all');
+    setCommentFilter('all');
+  };
+
   const exportCsv = () => {
     const header = ['Session', 'User', 'Email', 'Rating', 'Comment', 'Submitted'];
     const lines = [
       header.join(','),
-      ...list.map((row) =>
+      ...filteredList.map((row) =>
         [
           escapeCsvCell(row.session_title ?? ''),
           escapeCsvCell(row.user_name ?? ''),
@@ -98,14 +146,81 @@ export default function SessionFeedback() {
       <header className={styles.printHead}>
         <h1>Session feedback — {event?.name ?? 'Event'}</h1>
         <p className={styles.meta}>All session ratings (1–5 and comments) from attendees.</p>
-        {list.length > 0 ? <p className={styles.meta}>{list.length} rating{list.length === 1 ? '' : 's'}</p> : null}
+        {list.length > 0 ? (
+          <p className={styles.meta}>
+            {hasActiveFilters
+              ? `Showing ${filteredList.length} of ${list.length} rating${list.length === 1 ? '' : 's'}`
+              : `${list.length} rating${list.length === 1 ? '' : 's'}`}
+          </p>
+        ) : null}
       </header>
 
       {error && <p className={styles.error}>{error}</p>}
 
-      <h2 className={styles.listTitle}>Ratings ({list.length})</h2>
+      {list.length > 0 ? (
+        <div className={`${styles.filters} ${styles.noPrint}`}>
+          <input
+            className={styles.searchInput}
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search session, user, email, or comment…"
+            aria-label="Search session feedback"
+          />
+          <div className={styles.filterRow}>
+            <select
+              className={styles.select}
+              value={sessionFilter}
+              onChange={(e) => setSessionFilter(e.target.value)}
+              aria-label="Filter by session"
+            >
+              <option value="all">All sessions</option>
+              {sessionOptions.map((title) => (
+                <option key={title} value={title}>
+                  {title}
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.select}
+              value={ratingFilter}
+              onChange={(e) => setRatingFilter(e.target.value)}
+              aria-label="Filter by rating"
+            >
+              <option value="all">All ratings</option>
+              {[5, 4, 3, 2, 1].map((r) => (
+                <option key={r} value={String(r)}>
+                  {r}/5
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.select}
+              value={commentFilter}
+              onChange={(e) => setCommentFilter(e.target.value as 'all' | 'with' | 'without')}
+              aria-label="Filter by comment"
+            >
+              <option value="all">Any comments</option>
+              <option value="with">Has comment</option>
+              <option value="without">No comment</option>
+            </select>
+            {hasActiveFilters ? (
+              <button type="button" className={styles.clearBtn} onClick={clearFilters}>
+                Clear filters
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      <h2 className={styles.listTitle}>
+        Ratings ({filteredList.length}
+        {hasActiveFilters ? ` of ${list.length}` : ''})
+      </h2>
       {list.length === 0 ? (
         <p className={styles.empty}>{error ? 'Could not load ratings.' : 'No session feedback yet.'}</p>
+      ) : filteredList.length === 0 ? (
+        <p className={styles.empty}>No ratings match your search or filters.</p>
       ) : (
         <div className={styles.tableWrap}>
           <table className={styles.table}>
@@ -119,7 +234,7 @@ export default function SessionFeedback() {
               </tr>
             </thead>
             <tbody>
-              {list.map((row) => (
+              {filteredList.map((row) => (
                 <tr key={row.id}>
                   <td>{row.session_title ?? '—'}</td>
                   <td>{row.user_name ?? row.user_email ?? row.user_id}</td>
