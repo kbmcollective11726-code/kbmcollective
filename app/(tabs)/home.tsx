@@ -30,7 +30,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Calendar, MapPin, X, ChevronDown, ChevronUp, Home, ImageIcon, Trophy, Users, User, Store } from 'lucide-react-native';
 import { colors } from '../../constants/colors';
 import { theme } from '../../constants/theme';
-import type { Event, EventSponsor } from '../../lib/types';
+import type { Event } from '../../lib/types';
 import { isEventAccessible } from '../../lib/eventAccess';
 import { isAppMenuItemVisible } from '../../lib/effectiveEventMenu';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
@@ -52,6 +52,7 @@ import {
   type SessionForNowNext,
 } from '../../lib/scheduleNowNext';
 import CompactSponsorStrip from '../../components/CompactSponsorStrip';
+import { useResolvedEventSponsors } from '../../lib/useResolvedEventSponsors';
 
 type PointRuleDisplay = { action: string; points_value: number; description: string | null };
 const DISPLAY_ACTIONS = [
@@ -103,7 +104,11 @@ export default function HomeScreen() {
   const [selectedAnnouncement, setSelectedAnnouncement] = useState<AnnouncementListRow | null>(null);
   const [eventSwitcherVisible, setEventSwitcherVisible] = useState(false);
   const [nowNextTick, setNowNextTick] = useState(0);
-  const [sponsorsInfo, setSponsorsInfo] = useState<EventSponsor[]>([]);
+  const { sponsors: sponsorsInfo, reload: reloadSponsors } = useResolvedEventSponsors(
+    currentEvent?.id,
+    'info',
+    currentEvent?.reminder_timezone
+  );
   const { width: windowWidth } = useWindowDimensions();
   const fallbackBannerHeight = eventBannerHeightForWidth(windowWidth);
 
@@ -248,23 +253,6 @@ export default function HomeScreen() {
     }));
   }, []);
 
-  const loadSponsorsInfo = useCallback(async (eventId: string) => {
-    const { data, error } = await supabase
-      .from('event_sponsors')
-      .select(
-        'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_info_screen, show_in_hamburger, show_in_hamburger_header, show_in_hamburger_footer, show_on_schedule, show_on_feed, is_active'
-      )
-      .eq('event_id', eventId)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true });
-    if (error) {
-      setSponsorsInfo([]);
-      return;
-    }
-    const rows = (data ?? []) as EventSponsor[];
-    setSponsorsInfo(rows.filter((r) => r.show_on_info_screen));
-  }, []);
-
   const loadInfoScreenData = useCallback(async (eventId: string) => {
     const [rules, { data: sessions }, { data: ann }] = await Promise.all([
       fetchPointRules(eventId),
@@ -287,8 +275,8 @@ export default function HomeScreen() {
     setScheduleSessions((sessions ?? []) as SessionForNowNext[]);
     setAnnouncements(sortAnnouncementsNewestFirst((ann ?? []) as AnnouncementListRow[]));
     await fetchB2BHomeRows();
-    await loadSponsorsInfo(eventId);
-  }, [fetchPointRules, fetchB2BHomeRows, loadSponsorsInfo]);
+    await reloadSponsors();
+  }, [fetchPointRules, fetchB2BHomeRows, reloadSponsors]);
 
   const prevEventIdRef = useRef<string | null>(null);
 
@@ -303,7 +291,6 @@ export default function HomeScreen() {
       setScheduleSessions([]);
       setAnnouncements([]);
       setB2bHomeRows([]);
-      setSponsorsInfo([]);
       return;
     }
     if (previousEventId === null) return;
@@ -371,9 +358,9 @@ export default function HomeScreen() {
       }
       await loadInfoScreenData(eventId);
     } else {
-      setSponsorsInfo([]);
+      await reloadSponsors();
     }
-  }, [user?.id, user?.is_platform_admin, currentEvent?.id, refresh, loadInfoScreenData]);
+  }, [user?.id, user?.is_platform_admin, currentEvent?.id, refresh, loadInfoScreenData, reloadSponsors]);
 
   const refetchInfoDataRef = useRef(refetchInfoData);
   refetchInfoDataRef.current = refetchInfoData;

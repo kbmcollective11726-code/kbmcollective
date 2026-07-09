@@ -12,6 +12,8 @@ import {
 import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import type { Event, EventSponsor } from '../lib/types';
 import styles from './EventSponsors.module.css';
+import SponsorCreativesEditor from '../components/SponsorCreativesEditor';
+import { DEFAULT_EVENT_TIMEZONE } from '../lib/eventTimezones';
 
 type SponsorClickStatRow = {
   sponsor_id: string;
@@ -71,9 +73,16 @@ function normalizeWebsiteUrl(raw: string): string | null {
   return `https://${u.replace(/^\/+/, '')}`;
 }
 
-type Props = { sponsor: EventSponsor; eventId: string; onChanged: () => void };
+type Props = {
+  sponsor: EventSponsor;
+  eventId: string;
+  eventStartDate: string;
+  eventEndDate: string;
+  eventTimezone: string;
+  onChanged: () => void;
+};
 
-function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
+function SponsorEditor({ sponsor, eventId, eventStartDate, eventEndDate, eventTimezone, onChanged }: Props) {
   const [companyName, setCompanyName] = useState(sponsor.company_name);
   const [tierLabel, setTierLabel] = useState(sponsor.tier_label ?? '');
   const [websiteUrl, setWebsiteUrl] = useState(sponsor.website_url ?? '');
@@ -270,6 +279,13 @@ function SponsorEditor({ sponsor, eventId, onChanged }: Props) {
           {deleting ? 'Removing…' : 'Delete sponsor'}
         </button>
       </div>
+      <SponsorCreativesEditor
+        sponsorId={sponsor.id}
+        eventId={eventId}
+        eventStartDate={eventStartDate}
+        eventEndDate={eventEndDate}
+        eventTimezone={eventTimezone}
+      />
     </div>
   );
 }
@@ -356,7 +372,11 @@ export default function EventSponsors() {
     if (!eventId) return;
     setError('');
     try {
-      const { data: ev, error: evErr } = await supabase.from('events').select('id, name').eq('id', eventId).single();
+      const { data: ev, error: evErr } = await supabase
+        .from('events')
+        .select('id, name, start_date, end_date, reminder_timezone')
+        .eq('id', eventId)
+        .single();
       if (evErr) throw evErr;
       setEvent((ev as Event) ?? null);
       const [{ data, error: spErr }, { data: statsPack, error: statsErr }] = await Promise.all([
@@ -491,7 +511,8 @@ export default function EventSponsors() {
           sponsor can appear on the in-app <strong>Info</strong> tab, the hamburger <strong>header</strong> and/or{' '}
           <strong>footer</strong> (separate toggles), and the optional           <strong>Schedule</strong>, <strong>Feed</strong>, and the browser <strong>live wall</strong>{' '}
           (logo bar). Turn a placement off to hide that sponsor there only. Logo taps in the mobile app are counted below
-          (requires a current app build with click tracking).
+          (requires a current app build with click tracking). Use <strong>Scheduled logo images</strong> on each
+          sponsor to rotate creatives automatically by date/time (event timezone).
         </p>
         <div className={styles.logoSizeCallout}>
           <strong>{SPONSOR_LOGO_CALLOUT_TITLE}</strong>
@@ -576,7 +597,17 @@ export default function EventSponsors() {
       {sponsors.length === 0 ? (
         <p className={styles.hint}>No sponsors yet. Add one above, then open it to upload a logo.</p>
       ) : (
-        sponsors.map((s) => <SponsorEditor key={s.id} sponsor={s} eventId={eventId} onChanged={load} />)
+        sponsors.map((s) => (
+          <SponsorEditor
+            key={s.id}
+            sponsor={s}
+            eventId={eventId}
+            eventStartDate={event?.start_date ?? ''}
+            eventEndDate={event?.end_date ?? ''}
+            eventTimezone={(event?.reminder_timezone ?? '').trim() || DEFAULT_EVENT_TIMEZONE}
+            onChanged={load}
+          />
+        ))
       )}
     </div>
   );

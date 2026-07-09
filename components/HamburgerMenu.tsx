@@ -52,21 +52,7 @@ import type { EventSponsor } from '../lib/types';
 import { logSponsorClick, type SponsorClickPlacement } from '../lib/logSponsorClick';
 import { openExternalUrl } from '../lib/openExternalUrl';
 import { SponsorMark } from './SponsorMark';
-
-/** New columns, when missing, follow legacy `show_in_hamburger`. */
-function sponsorUsesHamburgerHeader(s: EventSponsor): boolean {
-  const h = s.show_in_hamburger_header;
-  if (h === true) return true;
-  if (h === false) return false;
-  return s.show_in_hamburger === true;
-}
-
-function sponsorUsesHamburgerFooter(s: EventSponsor): boolean {
-  const f = s.show_in_hamburger_footer;
-  if (f === true) return true;
-  if (f === false) return false;
-  return s.show_in_hamburger === true;
-}
+import { useResolvedEventSponsors } from '../lib/useResolvedEventSponsors';
 
 function getLiveWallBaseUrl(): string {
   const fromEnv =
@@ -99,8 +85,18 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   const isPlatformAdmin = user?.is_platform_admin === true;
   const effectiveIsEventAdmin = applyEventAdmin(isEventAdmin);
   const effectiveIsVendorRep = applyVendorRep(isVendorRep);
-  const [sponsorsMenuHeader, setSponsorsMenuHeader] = useState<EventSponsor[]>([]);
-  const [sponsorsMenuFooter, setSponsorsMenuFooter] = useState<EventSponsor[]>([]);
+  const { sponsors: sponsorsMenuHeader } = useResolvedEventSponsors(
+    currentEvent?.id,
+    'hamburger_header',
+    currentEvent?.reminder_timezone,
+    { enabled: visible, refreshKey: visible }
+  );
+  const { sponsors: sponsorsMenuFooter } = useResolvedEventSponsors(
+    currentEvent?.id,
+    'hamburger_footer',
+    currentEvent?.reminder_timezone,
+    { enabled: visible, refreshKey: visible }
+  );
 
   const fetchUnreadCount = useCallback(() => {
     if (!user?.id) return;
@@ -245,42 +241,6 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
       fetchVendorRepStatus();
     }
   }, [visible, user?.id, fetchEventAdminStatus, fetchVendorRepStatus]);
-
-  useEffect(() => {
-    setSponsorsMenuHeader([]);
-    setSponsorsMenuFooter([]);
-  }, [currentEvent?.id]);
-
-  useEffect(() => {
-    if (!currentEvent?.id || !visible) return;
-    let cancelled = false;
-    (async () => {
-      const { data, error } = await supabase
-        .from('event_sponsors')
-        .select(
-          'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_info_screen, show_in_hamburger, show_in_hamburger_header, show_in_hamburger_footer, show_on_schedule, show_on_feed, is_active'
-        )
-        .eq('event_id', currentEvent.id)
-        .eq('is_active', true)
-        .order('sort_order', { ascending: true });
-      if (cancelled) return;
-      if (error) {
-        if (__DEV__) {
-          // eslint-disable-next-line no-console
-          console.warn('HamburgerMenu: event_sponsors fetch failed', error);
-        }
-        setSponsorsMenuHeader([]);
-        setSponsorsMenuFooter([]);
-        return;
-      }
-      const rows = (data ?? []) as EventSponsor[];
-      setSponsorsMenuHeader(rows.filter(sponsorUsesHamburgerHeader));
-      setSponsorsMenuFooter(rows.filter(sponsorUsesHamburgerFooter));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [currentEvent?.id, visible]);
 
   const close = () => setVisible(false);
 

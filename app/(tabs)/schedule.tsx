@@ -75,8 +75,9 @@ import { supabase, supabaseStorage, withRetryAndRefresh, refreshSessionIfNeeded 
 import { fetchVendorRepBoothIds } from '../../lib/vendorBoothReps';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { colors, sessionTypeColors } from '../../constants/colors';
-import type { EventSponsor, ScheduleSession, SessionRating } from '../../lib/types';
+import type { ScheduleSession, SessionRating } from '../../lib/types';
 import CompactSponsorStrip from '../../components/CompactSponsorStrip';
+import { useResolvedEventSponsors } from '../../lib/useResolvedEventSponsors';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
 import {
   isSessionLiveWallClockOnEventDay,
@@ -328,36 +329,15 @@ export default function ScheduleScreen() {
   const [ratingJustSaved, setRatingJustSaved] = useState(false);
   /** Recompute "Live now" badges every minute (wall-clock vs device local). */
   const [liveTick, setLiveTick] = useState(0);
-  const [scheduleSponsors, setScheduleSponsors] = useState<EventSponsor[]>([]);
+  const { sponsors: scheduleSponsors, reload: reloadScheduleSponsors } = useResolvedEventSponsors(
+    currentEvent?.id,
+    'schedule',
+    currentEvent?.reminder_timezone
+  );
   useEffect(() => {
     const id = setInterval(() => setLiveTick((t) => t + 1), 60_000);
     return () => clearInterval(id);
   }, []);
-
-  const loadScheduleSponsors = React.useCallback(async () => {
-    if (!currentEvent?.id) {
-      setScheduleSponsors([]);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('event_sponsors')
-      .select(
-        'id, company_name, logo_url, website_url, tier_label, sort_order, show_on_schedule, is_active'
-      )
-      .eq('event_id', currentEvent.id)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true });
-    if (error) {
-      setScheduleSponsors([]);
-      return;
-    }
-    const rows = (data ?? []) as EventSponsor[];
-    setScheduleSponsors(rows.filter((r) => r.show_on_schedule));
-  }, [currentEvent?.id]);
-
-  useEffect(() => {
-    void loadScheduleSponsors();
-  }, [loadScheduleSponsors]);
 
   /** Same rule as agenda "live" / end time: rating only after the session has ended on its event day. */
   const canRateSelectedSession = useMemo(() => {
@@ -793,7 +773,7 @@ export default function ScheduleScreen() {
     setFetchError(null);
     try {
       await withRefreshTimeout(
-        Promise.all([fetchSessions(), fetchBookmarks(), fetchIsAdmin(), fetchB2BMeetings(), loadScheduleSponsors()]),
+        Promise.all([fetchSessions(), fetchBookmarks(), fetchIsAdmin(), fetchB2BMeetings(), reloadScheduleSponsors()]),
         LOAD_TIMEOUT_MS
       );
     } catch {

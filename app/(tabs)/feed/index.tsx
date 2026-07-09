@@ -29,7 +29,8 @@ import { awardPoints } from '../../../lib/points';
 import { createNotificationAndPush } from '../../../lib/notifications';
 import { withRefreshTimeout } from '../../../lib/refreshWithTimeout';
 import { selectAllInPages, chunkIds, SUPABASE_SELECT_PAGE_SIZE } from '../../../lib/supabaseSelectAllPages';
-import type { EventSponsor, Post } from '../../../lib/types';
+import type { Post } from '../../../lib/types';
+import { useResolvedEventSponsors } from '../../../lib/useResolvedEventSponsors';
 import { Camera } from 'lucide-react-native';
 import { colors } from '../../../constants/colors';
 import PostCard from '../../../components/PostCard';
@@ -49,7 +50,11 @@ export default function FeedScreen() {
   const [expandedImagePost, setExpandedImagePost] = useState<Post | null>(null);
   const [likingPostId, setLikingPostId] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [feedSponsors, setFeedSponsors] = useState<EventSponsor[]>([]);
+  const { sponsors: feedSponsors, reload: reloadFeedSponsors } = useResolvedEventSponsors(
+    currentEvent?.id,
+    'feed',
+    currentEvent?.reminder_timezone
+  );
   const fetchPostsRef = useRef<() => Promise<void>>(() => Promise.resolve());
   const fetchPosts = useCallback(async () => {
     const eventId = useEventStore.getState().currentEvent?.id;
@@ -121,34 +126,6 @@ export default function FeedScreen() {
     }
   }, [user?.id, blockedUserIds]);
   fetchPostsRef.current = fetchPosts;
-
-  const loadFeedSponsors = useCallback(async () => {
-    const eventId = useEventStore.getState().currentEvent?.id;
-    if (!eventId) {
-      setFeedSponsors([]);
-      return;
-    }
-    const { data, error } = await supabase
-      .from('event_sponsors')
-      .select('id, company_name, logo_url, website_url, tier_label, sort_order, show_on_feed, is_active')
-      .eq('event_id', eventId)
-      .eq('is_active', true)
-      .order('sort_order', { ascending: true });
-    if (error) {
-      setFeedSponsors([]);
-      return;
-    }
-    const rows = (data ?? []) as EventSponsor[];
-    setFeedSponsors(rows.filter((r) => r.show_on_feed));
-  }, []);
-
-  useEffect(() => {
-    if (!currentEvent?.id) {
-      setFeedSponsors([]);
-      return;
-    }
-    void loadFeedSponsors();
-  }, [currentEvent?.id, loadFeedSponsors]);
 
   useEffect(() => {
     if (user?.id) fetchBlockedUsers(user.id);
@@ -372,7 +349,7 @@ export default function FeedScreen() {
     addDebugLog('Feed', 'Pull-to-refresh started');
     try {
       await loadFeedWithRetry();
-      await loadFeedSponsors();
+      await reloadFeedSponsors();
       addDebugLog('Feed', 'Pull-to-refresh finished');
     } catch (e) {
       addDebugLog('Feed', 'Pull-to-refresh failed', getErrorMessage(e));

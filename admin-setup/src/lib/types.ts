@@ -100,6 +100,19 @@ export interface EventSponsor {
   updated_at: string;
 }
 
+export interface EventSponsorCreative {
+  id: string;
+  sponsor_id: string;
+  event_id: string;
+  image_url: string;
+  label: string | null;
+  starts_at: string;
+  ends_at: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
 export type MatchmakingAudience = 'attendee' | 'vendor' | 'user';
 export type MatchmakingQuestionType =
   | 'text'

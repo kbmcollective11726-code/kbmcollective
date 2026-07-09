@@ -19,6 +19,11 @@ import {
   type SessionForNowNext,
 } from '../../lib/scheduleNowNext';
 import { normalizeLiveWallSponsorImageUrl } from '../../lib/sponsorImageUrl';
+import {
+  LIVE_WALL_SPONSORS_SELECT,
+  resolveLiveWallSponsors,
+  type LiveWallSponsorRow,
+} from '../../lib/sponsorCreatives';
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -321,9 +326,7 @@ export default function WallPageContent() {
   const [leaderboard, setLeaderboard] = useState<any[]>([]);
   const [liveComments, setLiveComments] = useState<any[]>([]);
   const [featuredComments, setFeaturedComments] = useState<any[]>([]);
-  const [liveWallSponsors, setLiveWallSponsors] = useState<
-    { id: string; company_name: string; logo_url: string | null; website_url: string | null; tier_label: string | null }[]
-  >([]);
+  const [liveWallSponsorsRaw, setLiveWallSponsorsRaw] = useState<LiveWallSponsorRow[]>([]);
   const featuredPostIdRef = useRef<string | null>(null);
 
   const featuredPost = posts[featuredIndex] ?? null;
@@ -391,13 +394,13 @@ export default function WallPageContent() {
 
     supabase
       .from('event_sponsors')
-      .select('id, company_name, logo_url, website_url, tier_label, sort_order')
+      .select(LIVE_WALL_SPONSORS_SELECT)
       .eq('event_id', eventId)
       .eq('is_active', true)
       .eq('show_on_live_wall', true)
       .order('sort_order', { ascending: true })
       .order('id', { ascending: true })
-      .then(({ data }: any) => setLiveWallSponsors(data ?? []));
+      .then(({ data }: any) => setLiveWallSponsorsRaw(data ?? []));
 
     supabase
       .from('event_members')
@@ -502,6 +505,11 @@ export default function WallPageContent() {
     document.addEventListener('fullscreenchange', onFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
   }, []);
+
+  const liveWallSponsors = useMemo(
+    () => resolveLiveWallSponsors(liveWallSponsorsRaw, eventReminderTimezone, new Date()),
+    [liveWallSponsorsRaw, eventReminderTimezone, wallClockTick]
+  );
 
   const { nowSessions, nextSessions } = useMemo(() => {
     const list = (sessions ?? []) as SessionForNowNext[];
