@@ -21,7 +21,6 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useBlockStore } from '../../../../stores/blockStore';
 import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
-import { awardPoints } from '../../../../lib/points';
 import { createNotificationAndPush } from '../../../../lib/notifications';
 import { sendUserReportAdminPush } from '../../../../lib/pushNotifications';
 import { colors } from '../../../../constants/colors';
@@ -346,7 +345,6 @@ export default function UserProfileScreen() {
         connected_user_id: currentUser.id,
       });
       if (ins2) throw ins2;
-      await awardPoints(currentUser.id, currentEvent.id, 'connect');
       await createNotificationAndPush(
         userId,
         currentEvent.id,

@@ -19,6 +19,8 @@ const DEFAULT_POINT_RULES = [
   { action: 'comment', points_value: 10, max_per_day: null, description: "Comment on someone else's post" },
   { action: 'receive_like', points_value: 5, max_per_day: null, description: 'Someone liked your post' },
   { action: 'receive_comment', points_value: 5, max_per_day: null, description: 'Someone commented on your post' },
+  { action: 'give_comment_like', points_value: 5, max_per_day: 30, description: "Like someone else's comment" },
+  { action: 'receive_comment_like', points_value: 5, max_per_day: 50, description: 'Someone liked your comment' },
 ];
 
 export default function EventNew() {

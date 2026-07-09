@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { StyleSheet, Platform, View, Text, LogBox, AppState, AppStateStatus } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -14,6 +14,7 @@ import { abortAllRequests, supabase, isSupabaseConfigured, startForegroundRefres
 import { notifyAfterSessionRefreshed } from '../lib/onSessionRefreshed';
 import { registerPushToken } from '../lib/pushNotifications';
 import { ensureAndroidNotificationChannel } from '../lib/notificationChannel';
+import { isOtaUpdatesEnabled, prefetchAppUpdateOnResume, syncAppUpdateOnLaunch } from '../lib/appUpdates';
 
 SplashScreen.preventAutoHideAsync();
 
@@ -45,9 +46,23 @@ export default function RootLayout() {
   const { initialize, isLoading } = useAuthStore();
   const splashHidden = useRef(false);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const [otaReady, setOtaReady] = useState(!isOtaUpdatesEnabled());
+
   useEffect(() => {
+    if (otaReady) return;
+    let cancelled = false;
+    void syncAppUpdateOnLaunch().finally(() => {
+      if (!cancelled) setOtaReady(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [otaReady]);
+
+  useEffect(() => {
+    if (!otaReady) return;
     initialize();
-  }, [initialize]);
+  }, [initialize, otaReady]);
 
   // When app returns from background: abort stale requests, refresh Supabase session, then notify screens.
   useEffect(() => {
@@ -59,6 +74,7 @@ export default function RootLayout() {
       }
       if (state === 'active') {
         if (prev === 'background' || prev === 'inactive') {
+          void prefetchAppUpdateOnResume();
           const uid = useAuthStore.getState().session?.user?.id;
           if (uid && Constants.appOwnership !== 'expo') {
             registerPushToken(uid).catch(() => {});
@@ -101,9 +117,10 @@ export default function RootLayout() {
       hide();
       return;
     }
+    if (!otaReady) return;
     const t = setTimeout(hide, SPLASH_HIDE_MAX_MS);
     return () => clearTimeout(t);
-  }, [isLoading]);
+  }, [isLoading, otaReady]);
 
   // Expo Go only: if Supabase URL wasn't loaded into the bundle, pages will never load. Show clear message.
   const isExpoGo = Constants.appOwnership === 'expo';

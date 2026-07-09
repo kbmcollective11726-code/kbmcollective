@@ -21,7 +21,6 @@ import { useBlockStore } from '../../stores/blockStore';
 import { supabase, withRetryAndRefresh } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
-import { awardPoints } from '../../lib/points';
 import { createNotificationAndPush } from '../../lib/notifications';
 import { colors } from '../../constants/colors';
 import Avatar from '../../components/Avatar';
@@ -485,7 +484,6 @@ export default function CommunityScreen() {
         connected_user_id: user.id,
       });
       if (ins2) throw ins2;
-      await awardPoints(user.id, currentEvent.id, 'connect');
       await createNotificationAndPush(
         otherUserId,
         currentEvent.id,

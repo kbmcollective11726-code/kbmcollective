@@ -16,7 +16,9 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 import { useAuthStore } from '../../../stores/authStore';
+import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
+import { awardPoints } from '../../../lib/points';
 import { uploadAvatar } from '../../../lib/image';
 import { colors } from '../../../constants/colors';
 import Avatar from '../../../components/Avatar';
@@ -27,6 +29,7 @@ export default function EditProfileScreen() {
   const router = useRouter();
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user, updateProfile, refreshUser } = useAuthStore();
+  const { currentEvent } = useEventStore();
 
   const goBack = useCallback(() => {
     const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
@@ -92,15 +95,20 @@ export default function EditProfileScreen() {
       return;
     }
     setSaving(true);
+    const previousLinkedIn = (user.linkedin_url ?? '').trim();
+    const nextLinkedIn = linkedinUrl.trim();
     try {
       const { error } = await updateProfile({
         full_name: trimmedName,
         title: title.trim() || null,
         company: company.trim() || null,
-        linkedin_url: linkedinUrl.trim() || null,
+        linkedin_url: nextLinkedIn || null,
         bio: bio.trim() || null,
       });
       if (error) throw new Error(error);
+      if (nextLinkedIn && !previousLinkedIn && currentEvent?.id) {
+        await awardPoints(user.id, currentEvent.id, 'connect', user.id);
+      }
       await refreshUser();
       const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : '';
       if (returnPath) {

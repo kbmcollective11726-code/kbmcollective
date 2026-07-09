@@ -124,6 +124,7 @@ export interface EventSponsorCreative {
   sponsor_id: string;
   event_id: string;
   image_url: string;
+  website_url: string | null;
   label: string | null;
   starts_at: string;
   ends_at: string;
@@ -171,8 +172,17 @@ export interface Comment {
   post_id: string;
   user_id: string;
   content: string;
+  likes_count?: number;
   created_at: string;
   user?: User;
+  user_liked?: boolean;
+}
+
+export interface CommentLike {
+  id: string;
+  comment_id: string;
+  user_id: string;
+  created_at: string;
 }
 
 export interface Like {
@@ -384,6 +394,8 @@ export type PointAction =
   | 'give_like'
   | 'comment'
   | 'receive_comment'
+  | 'give_comment_like'
+  | 'receive_comment_like'
   | 'connect'
   | 'attend_session'
   | 'complete_profile'

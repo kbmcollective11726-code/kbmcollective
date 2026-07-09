@@ -67,6 +67,10 @@ if (!existsSync(easPath)) {
       if (preview?.env?.[key] && prod?.env?.[key]) ok(`EAS env "${key}" on preview + production`);
       else fail(`Set "${key}" in eas.json → build.preview.env and build.production.env (EAS injects at build time)`);
     }
+    if (preview?.channel === 'preview') ok('preview → channel: preview (EAS Update)');
+    else fail('preview profile must set channel: "preview" for OTA');
+    if (prod?.channel === 'production') ok('production → channel: production (EAS Update)');
+    else fail('production profile must set channel: "production" for OTA');
   }
 }
 

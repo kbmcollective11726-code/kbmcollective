@@ -67,6 +67,16 @@ try {
   const plugins = expo.plugins || [];
   const hasNotifications = plugins.some((p) => (Array.isArray(p) ? p[0] === 'expo-notifications' : p === 'expo-notifications'));
   if (hasNotifications) ok('expo-notifications plugin'); else { fail('expo-notifications plugin missing'); failed = true; }
+  const hasUpdates = plugins.some((p) => (Array.isArray(p) ? p[0] === 'expo-updates' : p === 'expo-updates'));
+  if (hasUpdates) ok('expo-updates plugin'); else { fail('expo-updates plugin missing'); failed = true; }
+  const updatesUrl = expo.updates?.url;
+  if (updatesUrl && String(updatesUrl).includes('u.expo.dev')) ok('EAS Update URL configured');
+  else { fail('expo.updates.url missing (EAS Update)'); failed = true; }
+  const rv = expo.runtimeVersion;
+  const rvOk =
+    rv?.policy === 'appVersion' || (typeof rv === 'string' && rv.trim().length > 0);
+  if (rvOk) ok(`runtimeVersion: ${typeof rv === 'string' ? rv : 'policy appVersion'}`);
+  else { fail('expo.runtimeVersion must be a string (bare workflow) or { policy: "appVersion" }'); failed = true; }
 } catch (e) {
   fail('Could not read app.json: ' + e.message);
   failed = true;
@@ -108,6 +118,7 @@ const requiredFiles = [
   'lib/pushNotifications.ts',
   'lib/meetingReminders.ts',
   'lib/useDeepLink.ts',
+  'lib/appUpdates.ts',
   'stores/authStore.ts',
   'stores/eventStore.ts',
 ];

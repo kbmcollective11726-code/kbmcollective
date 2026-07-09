@@ -23,15 +23,24 @@ type Props = {
 
 type Draft = {
   label: string;
+  websiteUrl: string;
   startsLocal: string;
   endsLocal: string;
 };
 
 const emptyDraft = (): Draft => ({
   label: '',
+  websiteUrl: '',
   startsLocal: '',
   endsLocal: '',
 });
+
+function normalizeWebsiteUrl(raw: string): string | null {
+  const u = raw.trim();
+  if (!u) return null;
+  if (/^https?:\/\//i.test(u)) return u;
+  return `https://${u.replace(/^\/+/, '')}`;
+}
 
 export default function SponsorCreativesEditor({
   sponsorId,
@@ -46,6 +55,8 @@ export default function SponsorCreativesEditor({
   const [draft, setDraft] = useState<Draft>(emptyDraft);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [urlEdits, setUrlEdits] = useState<Record<string, string>>({});
+  const [savingUrlId, setSavingUrlId] = useState<string | null>(null);
 
   const eventDays = useMemo(
     () => listEventDayKeys(eventStartDate, eventEndDate),
@@ -64,6 +75,11 @@ export default function SponsorCreativesEditor({
         .order('starts_at', { ascending: true });
       if (error) throw error;
       setRows((data as EventSponsorCreative[]) ?? []);
+      setUrlEdits(
+        Object.fromEntries(
+          ((data as EventSponsorCreative[]) ?? []).map((row) => [row.id, row.website_url?.trim() || ''])
+        )
+      );
     } catch (e) {
       setErr(postgrestErrorMessage(e) || 'Could not load scheduled images');
       setRows([]);
@@ -99,6 +115,7 @@ export default function SponsorCreativesEditor({
         sponsor_id: sponsorId,
         event_id: eventId,
         image_url: imageUrl,
+        website_url: normalizeWebsiteUrl(draft.websiteUrl),
         label: draft.label.trim() || null,
         starts_at: startsAt,
         ends_at: endsAt,
@@ -129,6 +146,23 @@ export default function SponsorCreativesEditor({
     }
   };
 
+  const saveCreativeUrl = async (id: string) => {
+    setSavingUrlId(id);
+    setErr('');
+    try {
+      const { error } = await supabase
+        .from('event_sponsor_creatives')
+        .update({ website_url: normalizeWebsiteUrl(urlEdits[id] ?? '') })
+        .eq('id', id);
+      if (error) throw error;
+      await load();
+    } catch (e) {
+      setErr(postgrestErrorMessage(e) || 'Could not save link');
+    } finally {
+      setSavingUrlId(null);
+    }
+  };
+
   const applyAllDay = (dayKey: string) => {
     const { startLocal, endLocal } = allDayDatetimeLocalRange(dayKey);
     setDraft((d) => ({ ...d, startsLocal: startLocal, endsLocal: endLocal }));
@@ -141,8 +175,9 @@ export default function SponsorCreativesEditor({
       <h3 className={styles.title}>Scheduled logo images</h3>
       <p className={styles.hint}>
         Upload extra images and set when each one should appear in the app and live wall. Times use the event
-        timezone (<strong>{tzLabel}</strong>). Outside these windows, the default logo above is shown. Overlapping
-        windows use the lowest sort order first.
+        timezone (<strong>{tzLabel}</strong>). Outside these windows, the default logo above is shown. Each
+        scheduled image can have its own click link; leave blank to use the sponsor&apos;s default website.
+        Overlapping windows use the lowest sort order first.
       </p>
       {err ? <p className={styles.error}>{err}</p> : null}
 
@@ -160,15 +195,33 @@ export default function SponsorCreativesEditor({
               <div className={styles.rowBody}>
                 <div className={styles.rowTitle}>{row.label?.trim() || 'Scheduled image'}</div>
                 <div className={styles.rowMeta}>{formatCreativeWindowLabel(row.starts_at, row.ends_at)}</div>
+                <label className={styles.urlLabel}>
+                  Click link (optional)
+                  <input
+                    value={urlEdits[row.id] ?? ''}
+                    onChange={(e) => setUrlEdits((prev) => ({ ...prev, [row.id]: e.target.value }))}
+                    placeholder="https://example.com"
+                  />
+                </label>
               </div>
-              <button
-                type="button"
-                className={`${styles.btn} ${styles.btnDanger}`}
-                disabled={deletingId === row.id}
-                onClick={() => void removeCreative(row.id)}
-              >
-                {deletingId === row.id ? 'Removing…' : 'Remove'}
-              </button>
+              <div className={styles.rowActions}>
+                <button
+                  type="button"
+                  className={styles.btn}
+                  disabled={savingUrlId === row.id}
+                  onClick={() => void saveCreativeUrl(row.id)}
+                >
+                  {savingUrlId === row.id ? 'Saving…' : 'Save link'}
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.btn} ${styles.btnDanger}`}
+                  disabled={deletingId === row.id}
+                  onClick={() => void removeCreative(row.id)}
+                >
+                  {deletingId === row.id ? 'Removing…' : 'Remove'}
+                </button>
+              </div>
             </li>
           ))}
         </ul>
@@ -182,6 +235,14 @@ export default function SponsorCreativesEditor({
             value={draft.label}
             onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
             placeholder="e.g. Day 2 keynote promo"
+          />
+        </label>
+        <label className={styles.label}>
+          Click link (optional)
+          <input
+            value={draft.websiteUrl}
+            onChange={(e) => setDraft((d) => ({ ...d, websiteUrl: e.target.value }))}
+            placeholder="https://example.com"
           />
         </label>
         <div className={styles.timeRow}>

@@ -27,7 +27,9 @@
     "kbm:auth": "node scripts/kbm-auth-status.mjs",
     "ios:build-number": "node scripts/ios-build-preflight.mjs",
     "build:ios:testflight": "node scripts/ios-build-preflight.mjs && eas build --platform ios --profile production --auto-submit --non-interactive",
-    "submit:ios": "eas submit --platform ios --latest --profile production"
+    "submit:ios": "eas submit --platform ios --latest --profile production",
+    "update:production": "eas update --channel production",
+    "update:preview": "eas update --channel preview"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": "2.2.0",
@@ -58,6 +60,7 @@
     "expo-sharing": "~14.0.8",
     "expo-splash-screen": "~31.0.13",
     "expo-status-bar": "~3.0.9",
+    "expo-updates": "~29.0.18",
     "js-md5": "^0.8.3",
     "lucide-react-native": "^0.460.0",
     "luxon": "^3.5.0",

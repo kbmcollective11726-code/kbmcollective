@@ -50,6 +50,7 @@ export interface LiveWallSponsorCreative {
   sponsor_id: string;
   event_id: string;
   image_url: string;
+  website_url: string | null;
   label: string | null;
   starts_at: string;
   ends_at: string;
@@ -100,7 +101,12 @@ export function resolveLiveWallSponsorLogo(
       return a.starts_at.localeCompare(b.starts_at);
     })[0];
   if (!active?.image_url?.trim()) return sponsor;
-  return { ...sponsor, logo_url: active.image_url.trim() };
+  const creativeUrl = active.website_url?.trim() || null;
+  return {
+    ...sponsor,
+    logo_url: active.image_url.trim(),
+    website_url: creativeUrl || sponsor.website_url,
+  };
 }
 
 export function resolveLiveWallSponsors(
@@ -123,6 +129,7 @@ export const LIVE_WALL_SPONSORS_SELECT = `
     sponsor_id,
     event_id,
     image_url,
+    website_url,
     label,
     starts_at,
     ends_at,

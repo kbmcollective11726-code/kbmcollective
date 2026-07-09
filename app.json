@@ -3,6 +3,12 @@
     "name": "KBM Connect",
     "slug": "kbmconnect",
     "version": "1.1.0",
+    "runtimeVersion": "1.1.0",
+    "updates": {
+      "url": "https://u.expo.dev/d4399477-1045-4301-b852-80e528aec992",
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0
+    },
     "orientation": "portrait",
     "extra": {
       "router": {},
@@ -68,6 +74,7 @@
     },
     "plugins": [
       "./plugins/withStripAndroidMediaPermissions.js",
+      "expo-updates",
       "expo-router",
       [
         "expo-notifications",

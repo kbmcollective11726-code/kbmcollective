@@ -182,10 +182,12 @@ export const DEFAULT_POINT_RULE_ACTIONS = [
   'comment',
   'receive_like',
   'receive_comment',
+  'give_comment_like',
+  'receive_comment_like',
 ] as const;
 
 /**
- * Initialize default point rules for a new event (only the 5 core rules).
+ * Initialize default point rules for a new event (core feed engagement rules).
  * Call this when an admin creates a new event or resets to defaults.
  */
 export async function initializePointRules(eventId: string): Promise<void> {
@@ -195,6 +197,8 @@ export async function initializePointRules(eventId: string): Promise<void> {
     { action: 'comment', points_value: 10, max_per_day: null, description: "Comment on someone else's post" },
     { action: 'receive_like', points_value: 5, max_per_day: null, description: 'Someone liked your post' },
     { action: 'receive_comment', points_value: 5, max_per_day: null, description: 'Someone commented on your post' },
+    { action: 'give_comment_like', points_value: 5, max_per_day: 30, description: "Like someone else's comment" },
+    { action: 'receive_comment_like', points_value: 5, max_per_day: 50, description: 'Someone liked your comment' },
   ];
 
   const rulesWithEventId = defaultRules.map((rule) => ({

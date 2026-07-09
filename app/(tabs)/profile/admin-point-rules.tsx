@@ -14,7 +14,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
-import { initializePointRules } from '../../../lib/points';
+import { initializePointRules, DEFAULT_POINT_RULE_ACTIONS } from '../../../lib/points';
 import { colors } from '../../../constants/colors';
 import { Trash2 } from 'lucide-react-native';
 
@@ -24,13 +24,9 @@ const ALL_ACTIONS = [
   'comment',
   'receive_like',
   'receive_comment',
+  'give_comment_like',
+  'receive_comment_like',
   'connect',
-  'attend_session',
-  'complete_profile',
-  'daily_streak',
-  'vendor_meeting',
-  'checkin',
-  'share_linkedin',
   'session_feedback',
   'b2b_feedback',
 ] as const;
@@ -41,15 +37,18 @@ const ACTION_LABELS: Record<string, string> = {
   comment: "Comment on someone else's post",
   receive_like: 'Someone liked your post',
   receive_comment: 'Someone commented on your post',
-  connect: 'Connect with another attendee',
+  give_comment_like: "Like someone else's comment",
+  receive_comment_like: 'Someone liked your comment',
+  connect: 'Connect your LinkedIn profile',
+  session_feedback: 'Leave feedback for a session',
+  b2b_feedback: 'Leave feedback for a 1:1 / vendor meeting',
+  /** Legacy rules — hidden from Add rule but still editable if already on the event */
   attend_session: 'Attend a session',
   complete_profile: 'Complete your profile',
   daily_streak: 'Daily streak',
   vendor_meeting: 'Visit a vendor booth',
   checkin: 'Check in at event',
   share_linkedin: 'Share on LinkedIn',
-  session_feedback: 'Leave feedback for a session',
-  b2b_feedback: 'Leave feedback for a 1:1 / vendor meeting',
 };
 
 type PointRuleRow = { id: string; action: string; points_value: number; max_per_day: number | null; description: string | null };
@@ -202,7 +201,7 @@ export default function AdminPointRulesScreen() {
     setSaving(true);
     try {
       await initializePointRules(currentEvent.id);
-      Alert.alert('Done', 'Default point rules (5) added. You can edit, add more, or delete.');
+      Alert.alert('Done', `Default point rules (${DEFAULT_POINT_RULE_ACTIONS.length}) added. You can edit, add more, or delete.`);
       await loadRules();
     } catch (err) {
       Alert.alert('Error', formatSupabaseError(err, 'Failed to add defaults.'));
@@ -215,7 +214,7 @@ export default function AdminPointRulesScreen() {
     if (!currentEvent?.id) return;
     Alert.alert(
       'Reset to default rules',
-      'This will remove all current rules and add only the 5 defaults: Post a photo, Like someone\'s post, Comment, Someone liked your post, Someone commented on your post. Continue?',
+      'This will remove all current rules and add the default set: Post a photo, Like posts, Comment, Like comments, and the matching “someone liked/commented” receive rules. Continue?',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -226,7 +225,7 @@ export default function AdminPointRulesScreen() {
             try {
               await supabase.from('point_rules').delete().eq('event_id', currentEvent.id);
               await initializePointRules(currentEvent.id);
-              Alert.alert('Done', 'Reset to 5 default point rules.');
+              Alert.alert('Done', `Reset to ${DEFAULT_POINT_RULE_ACTIONS.length} default point rules.`);
               await loadRules();
             } catch (err) {
               Alert.alert('Error', formatSupabaseError(err, 'Failed to reset.'));
@@ -324,17 +323,19 @@ export default function AdminPointRulesScreen() {
           showsVerticalScrollIndicator={true}
         >
           <Text style={styles.title}>Point rules</Text>
-          <Text style={styles.hint} numberOfLines={4}>
-            Add, edit, or delete rules. Default: Post a photo, Like someone's post, Comment, Someone liked your post, Someone commented on your post.
+          <Text style={styles.hint} numberOfLines={5}>
+            Add, edit, or delete rules. Defaults include post/comment likes: Post a photo, Like posts, Comment, Like comments, plus receive rules when others engage with your content.
           </Text>
           {rules.length === 0 ? (
             <TouchableOpacity style={styles.addDefaultsBtn} onPress={handleAddDefaults} disabled={saving}>
-              {saving ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.addDefaultsText}>Add default point rules (5)</Text>}
+              {saving ? <ActivityIndicator size="small" color="#fff" /> : (
+                <Text style={styles.addDefaultsText}>Add default point rules ({DEFAULT_POINT_RULE_ACTIONS.length})</Text>
+              )}
             </TouchableOpacity>
           ) : (
             <>
               <TouchableOpacity style={styles.resetBtn} onPress={handleResetToDefaults} disabled={saving}>
-                <Text style={styles.resetBtnText}>Reset to default rules (5)</Text>
+                <Text style={styles.resetBtnText}>Reset to default rules ({DEFAULT_POINT_RULE_ACTIONS.length})</Text>
               </TouchableOpacity>
               {availableToAdd.length > 0 ? (
                 <View style={styles.addSection}>

@@ -45,7 +45,7 @@ export function pickActiveSponsorCreative(
   return active[0] ?? null;
 }
 
-/** Replace `logo_url` with the active scheduled creative when one applies. */
+/** Replace logo and click URL with the active scheduled creative when one applies. */
 export function resolveSponsorDisplayLogo<T extends EventSponsor>(
   sponsor: T,
   eventIanaZone?: string | null,
@@ -54,7 +54,12 @@ export function resolveSponsorDisplayLogo<T extends EventSponsor>(
   const withCreatives = sponsor as T & { creatives?: EventSponsorCreative[] | null };
   const active = pickActiveSponsorCreative(withCreatives.creatives, eventIanaZone, now);
   if (!active?.image_url?.trim()) return sponsor;
-  return { ...sponsor, logo_url: active.image_url.trim() };
+  const creativeUrl = active.website_url?.trim() || null;
+  return {
+    ...sponsor,
+    logo_url: active.image_url.trim(),
+    website_url: creativeUrl || sponsor.website_url,
+  };
 }
 
 export function applyScheduledSponsorLogos<T extends SponsorWithCreatives>(
@@ -89,6 +94,7 @@ export const EVENT_SPONSORS_WITH_CREATIVES_SELECT = `
     sponsor_id,
     event_id,
     image_url,
+    website_url,
     label,
     starts_at,
     ends_at,

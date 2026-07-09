@@ -27,7 +27,6 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useBlockStore } from '../../../stores/blockStore';
 import { supabase } from '../../../lib/supabase';
 import { createNotificationAndPush } from '../../../lib/notifications';
-import { awardPoints } from '../../../lib/points';
 import {
   parseBadgeTokenFromQrData,
   resolveBadgeToken,
@@ -564,7 +563,6 @@ export default function BadgeScanScreen() {
         connected_user_id: currentUser.id,
       });
       if (ins2) throw ins2;
-      await awardPoints(currentUser.id, badgeEventId, 'connect');
       await createNotificationAndPush(
         uid,
         badgeEventId,

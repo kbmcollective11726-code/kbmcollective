@@ -81,6 +81,26 @@
   margin-top: 2px;
 }
 
+.urlLabel {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.urlLabel input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  font-weight: 400;
+}
+
+.rowActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .form {
   padding: 14px;
   border-radius: 8px;

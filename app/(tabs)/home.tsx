@@ -59,6 +59,7 @@ const DISPLAY_ACTIONS = [
   { action: 'post_photo', label: 'Post a Photo' },
   { action: 'comment', label: 'Comment' },
   { action: 'give_like', label: 'Like Posts' },
+  { action: 'give_comment_like', label: 'Like Comments' },
 ] as const;
 const ACTION_LABEL: Record<string, string> = Object.fromEntries(DISPLAY_ACTIONS.map((a) => [a.action, a.label]));
 

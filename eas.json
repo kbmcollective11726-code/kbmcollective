@@ -4,10 +4,12 @@
     "development": {
       "developmentClient": true,
       "distribution": "internal",
+      "channel": "development",
       "android": { "buildType": "apk" }
     },
     "preview": {
       "environment": "production",
+      "channel": "preview",
       "distribution": "internal",
       "android": { "buildType": "apk" },
       "ios": { "simulator": false },
@@ -21,6 +23,7 @@
     },
     "production": {
       "environment": "production",
+      "channel": "production",
       "distribution": "store",
       "android": { "buildType": "app-bundle" },
       "ios": {

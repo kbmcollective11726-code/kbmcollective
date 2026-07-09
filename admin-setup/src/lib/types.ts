@@ -105,6 +105,7 @@ export interface EventSponsorCreative {
   sponsor_id: string;
   event_id: string;
   image_url: string;
+  website_url: string | null;
   label: string | null;
   starts_at: string;
   ends_at: string;

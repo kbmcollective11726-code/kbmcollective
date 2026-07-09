@@ -35,7 +35,7 @@ SELECT
   CASE WHEN t.table_name IS NOT NULL THEN 'OK' ELSE 'MISSING' END AS "Status"
 FROM (
   SELECT unnest(ARRAY[
-    'users', 'events', 'event_members', 'posts', 'likes', 'comments',
+    'users', 'events', 'event_members', 'posts', 'likes', 'comments', 'comment_likes',
     'messages', 'notifications', 'announcements',
     'schedule_sessions', 'user_schedule', 'point_rules', 'point_log',
     'connections', 'connection_requests', 'blocked_users', 'user_reports',
@@ -67,6 +67,7 @@ WITH required AS (
   UNION ALL SELECT 'chat_group_members', unnest(ARRAY['id','group_id','user_id'])
   UNION ALL SELECT 'group_messages', unnest(ARRAY['id','group_id','sender_id','content','attachment_url'])
   UNION ALL SELECT 'announcements', unnest(ARRAY['id','event_id','title','content','scheduled_at','sent_at','send_push','sent_by'])
+  UNION ALL SELECT 'comments', unnest(ARRAY['id','post_id','user_id','content','likes_count'])
   UNION ALL SELECT 'schedule_sessions', unnest(ARRAY['id','event_id','title','start_time','is_active'])
   UNION ALL SELECT 'point_rules', unnest(ARRAY['id','event_id','action','points_value'])
   UNION ALL SELECT 'connections', unnest(ARRAY['event_id','user_id','connected_user_id'])
@@ -97,7 +98,7 @@ async function run() {
     if (missing.length) {
       console.log(`\n  ⚠ ${missing.length} table(s) MISSING: ${missing.map((r) => r.Table).join(', ')}`);
     } else {
-      console.log('\n  ✓ All 43 required tables exist.');
+      console.log(`\n  ✓ All ${tablesRes.rows.length} required tables exist.`);
     }
 
     console.log('\n--- Missing columns (empty = all good) ---');
