@@ -57,6 +57,8 @@ export default function SponsorCreativesEditor({
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [urlEdits, setUrlEdits] = useState<Record<string, string>>({});
   const [savingUrlId, setSavingUrlId] = useState<string | null>(null);
+  const [timeEdits, setTimeEdits] = useState<Record<string, { startsLocal: string; endsLocal: string }>>({});
+  const [savingTimeId, setSavingTimeId] = useState<string | null>(null);
 
   const eventDays = useMemo(
     () => listEventDayKeys(eventStartDate, eventEndDate),
@@ -78,6 +80,17 @@ export default function SponsorCreativesEditor({
       setUrlEdits(
         Object.fromEntries(
           ((data as EventSponsorCreative[]) ?? []).map((row) => [row.id, row.website_url?.trim() || ''])
+        )
+      );
+      setTimeEdits(
+        Object.fromEntries(
+          ((data as EventSponsorCreative[]) ?? []).map((row) => [
+            row.id,
+            {
+              startsLocal: utcIsoToDatetimeLocalWallClock(row.starts_at),
+              endsLocal: utcIsoToDatetimeLocalWallClock(row.ends_at),
+            },
+          ])
         )
       );
     } catch (e) {
@@ -163,6 +176,40 @@ export default function SponsorCreativesEditor({
     }
   };
 
+  const saveCreativeSchedule = async (id: string) => {
+    const times = timeEdits[id];
+    if (!times) return;
+    const startsAt = datetimeLocalToUtcIsoWallClock(times.startsLocal);
+    const endsAt = datetimeLocalToUtcIsoWallClock(times.endsLocal);
+    if (!startsAt || !endsAt) {
+      setErr('Set a start and end time for this image.');
+      return;
+    }
+    if (endsAt <= startsAt) {
+      setErr('End time must be after start time.');
+      return;
+    }
+    setSavingTimeId(id);
+    setErr('');
+    try {
+      const { error } = await supabase
+        .from('event_sponsor_creatives')
+        .update({ starts_at: startsAt, ends_at: endsAt })
+        .eq('id', id);
+      if (error) throw error;
+      await load();
+    } catch (e) {
+      setErr(postgrestErrorMessage(e) || 'Could not save schedule');
+    } finally {
+      setSavingTimeId(null);
+    }
+  };
+
+  const applyAllDayToRow = (id: string, dayKey: string) => {
+    const { startLocal, endLocal } = allDayDatetimeLocalRange(dayKey);
+    setTimeEdits((prev) => ({ ...prev, [id]: { startsLocal: startLocal, endsLocal: endLocal } }));
+  };
+
   const applyAllDay = (dayKey: string) => {
     const { startLocal, endLocal } = allDayDatetimeLocalRange(dayKey);
     setDraft((d) => ({ ...d, startsLocal: startLocal, endsLocal: endLocal }));
@@ -194,7 +241,49 @@ export default function SponsorCreativesEditor({
               </div>
               <div className={styles.rowBody}>
                 <div className={styles.rowTitle}>{row.label?.trim() || 'Scheduled image'}</div>
-                <div className={styles.rowMeta}>{formatCreativeWindowLabel(row.starts_at, row.ends_at)}</div>
+                <div className={styles.timeRow}>
+                  <label className={styles.urlLabel}>
+                    Show from ({tzLabel})
+                    <input
+                      type="datetime-local"
+                      value={timeEdits[row.id]?.startsLocal ?? ''}
+                      onChange={(e) =>
+                        setTimeEdits((prev) => ({
+                          ...prev,
+                          [row.id]: { ...prev[row.id], startsLocal: e.target.value, endsLocal: prev[row.id]?.endsLocal ?? '' },
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className={styles.urlLabel}>
+                    Show until ({tzLabel})
+                    <input
+                      type="datetime-local"
+                      value={timeEdits[row.id]?.endsLocal ?? ''}
+                      onChange={(e) =>
+                        setTimeEdits((prev) => ({
+                          ...prev,
+                          [row.id]: { startsLocal: prev[row.id]?.startsLocal ?? '', endsLocal: e.target.value },
+                        }))
+                      }
+                    />
+                  </label>
+                </div>
+                {eventDays.length > 0 ? (
+                  <div className={styles.quickDays}>
+                    <span className={styles.quickLabel}>All day:</span>
+                    {eventDays.map((dayKey, i) => (
+                      <button
+                        key={`${row.id}-${dayKey}`}
+                        type="button"
+                        className={`${styles.btn} ${styles.btnGhost}`}
+                        onClick={() => applyAllDayToRow(row.id, dayKey)}
+                      >
+                        Day {i + 1}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <label className={styles.urlLabel}>
                   Click link (optional)
                   <input
@@ -205,6 +294,14 @@ export default function SponsorCreativesEditor({
                 </label>
               </div>
               <div className={styles.rowActions}>
+                <button
+                  type="button"
+                  className={styles.btn}
+                  disabled={savingTimeId === row.id}
+                  onClick={() => void saveCreativeSchedule(row.id)}
+                >
+                  {savingTimeId === row.id ? 'Saving…' : 'Save schedule'}
+                </button>
                 <button
                   type="button"
                   className={styles.btn}
