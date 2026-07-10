@@ -24,6 +24,10 @@ import {
   resolveLiveWallSponsors,
   type LiveWallSponsorRow,
 } from '../../lib/sponsorCreatives';
+import { parseEngagementSettings } from '../../lib/wallEngagement';
+import { useWallEngagement } from '../../hooks/useWallEngagement';
+import WallEngagementLayer, { WallHeartBursts, PhotoOfHourBadge } from '../../components/WallEngagementLayer';
+import { pickStartupFeaturedIndex, rememberFeaturedPost } from '../../lib/wallFeaturedRotation';
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -328,9 +332,79 @@ export default function WallPageContent() {
   const [featuredComments, setFeaturedComments] = useState<any[]>([]);
   const [liveWallSponsorsRaw, setLiveWallSponsorsRaw] = useState<LiveWallSponsorRow[]>([]);
   const featuredPostIdRef = useRef<string | null>(null);
+  const startupFeaturedPickedRef = useRef(false);
 
   const featuredPost = posts[featuredIndex] ?? null;
   featuredPostIdRef.current = featuredPost?.id ?? null;
+
+  // Each time the wall opens, feature a different photo (not always index 0)
+  useEffect(() => {
+    startupFeaturedPickedRef.current = false;
+  }, [eventId]);
+
+  useEffect(() => {
+    if (!eventId || posts.length === 0 || startupFeaturedPickedRef.current) return;
+    startupFeaturedPickedRef.current = true;
+    setFeaturedIndex(pickStartupFeaturedIndex(posts, eventId));
+  }, [eventId, posts]);
+
+  useEffect(() => {
+    if (!eventId || !featuredPost?.id) return;
+    rememberFeaturedPost(eventId, featuredPost.id);
+  }, [eventId, featuredPost?.id]);
+
+  const engagementSettings = useMemo(() => parseEngagementSettings(searchParams), [searchParams]);
+  const engagement = useWallEngagement({
+    settings: engagementSettings,
+    posts,
+    featuredPost,
+    leaderboard,
+    liveComments,
+    wallClockTick,
+  });
+
+  const refetchPosts = useCallback(() => {
+    if (!eventId || !supabase) return;
+    supabase
+      .from('posts')
+      .select('id, image_url, caption, likes_count, comments_count, created_at, user:users(full_name)')
+      .eq('event_id', eventId)
+      .eq('is_deleted', false)
+      .eq('is_approved', true)
+      .order('is_pinned', { ascending: false })
+      .order('created_at', { ascending: false })
+      .limit(50)
+      .then(({ data }: { data: typeof posts | null }) => setPosts(data ?? []));
+  }, [eventId]);
+
+  const refetchLeaderboard = useCallback(() => {
+    if (!eventId || !supabase) return;
+    supabase
+      .from('event_members')
+      .select('user_id, points, users!inner(full_name, avatar_url, title)')
+      .eq('event_id', eventId)
+      .order('points', { ascending: false })
+      .limit(10)
+      .then(({ data }: { data: typeof leaderboard | null }) => setLeaderboard(data ?? []));
+  }, [eventId]);
+
+  // Jump featured photo to crowd favorite when it wins / is celebrated
+  useEffect(() => {
+    if (!engagement.photoOfHourPostId || posts.length === 0) return;
+    const idx = posts.findIndex((p) => p.id === engagement.photoOfHourPostId);
+    if (idx >= 0 && engagement.hero?.kind === 'photo_of_hour') {
+      setFeaturedIndex(idx);
+    }
+  }, [engagement.hero?.id, engagement.hero?.kind, engagement.photoOfHourPostId, posts]);
+
+  // Show newest post on the big screen when a new one arrives
+  const prevPostsLenRef = useRef(0);
+  useEffect(() => {
+    if (posts.length > prevPostsLenRef.current && prevPostsLenRef.current > 0) {
+      setFeaturedIndex(0);
+    }
+    prevPostsLenRef.current = posts.length;
+  }, [posts.length]);
 
   useEffect(() => {
     const id = setInterval(() => setWallClockTick((t) => t + 1), 60_000);
@@ -447,33 +521,46 @@ export default function WallPageContent() {
         });
     };
     fetchLiveComments();
-    // Periodic refetch so new comments from other users show up even if realtime lags
     const interval = setInterval(fetchLiveComments, 20000);
+    const leaderboardInterval = setInterval(() => {
+      refetchLeaderboard();
+      fetchEventAndStats();
+    }, 12000);
 
     const ch = supabase
       .channel('wall-summit')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'posts', filter: `event_id=eq.${eventId}` }, () => {
-        supabase.from('posts').select('id, image_url, caption, likes_count, comments_count, created_at, user:users(full_name)').eq('event_id', eventId).eq('is_deleted', false).eq('is_approved', true).order('is_pinned', { ascending: false }).order('created_at', { ascending: false }).limit(50).then(({ data }: any) => setPosts(data ?? []));
+        refetchPosts();
         fetchEventAndStats();
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => fetchEventAndStats())
+      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'point_log', filter: `event_id=eq.${eventId}` }, () => {
+        fetchEventAndStats();
+        refetchLeaderboard();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => {
+        fetchEventAndStats();
+        refetchPosts();
+        refetchLeaderboard();
+      })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, () => {
         fetchLiveComments();
         const pid = featuredPostIdRef.current;
         if (pid) {
           supabase.from('comments').select('id, content, created_at, user:users(full_name)').eq('post_id', pid).order('created_at', { ascending: false }).limit(10).then(({ data }: any) => setFeaturedComments(data ?? []));
         }
+        refetchLeaderboard();
       })
       .on('postgres_changes', { event: '*', schema: 'public', table: 'event_members', filter: `event_id=eq.${eventId}` }, () => {
         fetchEventAndStats();
-        supabase.from('event_members').select('user_id, points, users!inner(full_name, avatar_url, title)').eq('event_id', eventId).order('points', { ascending: false }).limit(10).then(({ data }: any) => setLeaderboard(data ?? []));
+        refetchLeaderboard();
       })
       .subscribe();
     return () => {
       clearInterval(interval);
+      clearInterval(leaderboardInterval);
       supabase.removeChannel(ch);
     };
-  }, [eventId, fetchEventAndStats]);
+  }, [eventId, fetchEventAndStats, refetchPosts, refetchLeaderboard]);
 
   useEffect(() => {
     if (!featuredPost?.id || !supabase) {
@@ -820,12 +907,14 @@ export default function WallPageContent() {
                 boxShadow: '0 8px 32px rgba(0,0,0,0.35)',
               }}
             >
-              <div style={{ aspectRatio: '16/10', minHeight: 320, background: COLORS.photoBg }}>
+              <div style={{ aspectRatio: '16/10', minHeight: 320, background: COLORS.photoBg, position: 'relative' }}>
+                {engagement.photoOfHourPostId === featuredPost.id ? <PhotoOfHourBadge /> : null}
                 <img
                   src={featuredPost.image_url}
                   alt=""
                   style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                 />
+                <WallHeartBursts hearts={engagement.hearts} />
               </div>
               <div style={{ padding: 24 }}>
                 <p style={{ margin: 0, fontSize: 20, fontWeight: 600 }}>{(featuredPost.user as any)?.full_name ?? 'Unknown'}</p>
@@ -939,14 +1028,17 @@ export default function WallPageContent() {
               {leaderboard.map((r, i) => {
                 const rankColors = [COLORS.rankGold, COLORS.rankSilver, COLORS.rankBronze, COLORS.rankRest, COLORS.rankRest];
                 const initials = ((r.users?.full_name ?? '?').split(' ').map((n: string) => n[0]).join('') || '?').slice(0, 2).toUpperCase();
+                const rankHighlighted = engagement.highlightedUserIds.has(r.user_id);
                 return (
                   <div
                     key={r.user_id}
+                    className={rankHighlighted ? 'wall-rank-highlight' : undefined}
                     style={{
                       display: 'flex',
                       alignItems: 'center',
                       gap: 12,
-                      padding: '10px 0',
+                      padding: rankHighlighted ? '10px 8px' : '10px 0',
+                      margin: rankHighlighted ? '0 -8px' : 0,
                       borderBottom: i < leaderboard.length - 1 ? `1px solid ${COLORS.textMuted}22` : 'none',
                     }}
                   >
@@ -1045,6 +1137,14 @@ export default function WallPageContent() {
         eventName={eventName}
         leaderboard={leaderboard}
         posts={posts}
+      />
+
+      <WallEngagementLayer
+        hero={engagement.hero}
+        hearts={engagement.hearts}
+        soundEnabled={engagement.soundEnabled}
+        effectsEnabled={engagement.effectsEnabled}
+        onToggleSound={engagement.toggleSound}
       />
     </div>
   );

@@ -5,7 +5,9 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "deploy": "node scripts/vercel-deploy-prod.mjs",
+    "deploy:git": "node scripts/vercel-deploy-from-git.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
