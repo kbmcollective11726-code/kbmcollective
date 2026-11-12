@@ -1,31 +1,24 @@
 {
-  "cli": { "version": ">= 12.0.0", "appVersionSource": "local" },
+  "cli": {
+    "version": ">= 16.32.0",
+    "appVersionSource": "local"
+  },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
       "channel": "development",
-      "android": { "buildType": "apk" }
+      "android": {
+        "buildType": "apk"
+      }
     },
     "preview": {
       "environment": "production",
       "channel": "preview",
       "distribution": "internal",
-      "android": { "buildType": "apk" },
-      "ios": { "simulator": false },
-      "env": {
-        "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
-        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
-        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://cadmin.kbmcollective.org/auth-recovery.html",
-        "EXPO_PUBLIC_LIVE_WALL_URL": "https://live-wall-six.vercel.app",
-        "EXPO_PUBLIC_ADMIN_CONSOLE_URL": "https://cadmin.kbmcollective.org"
-      }
-    },
-    "production": {
-      "environment": "production",
-      "channel": "production",
-      "distribution": "store",
-      "android": { "buildType": "app-bundle" },
+      "android": {
+        "buildType": "apk"
+      },
       "ios": {
         "simulator": false
       },
@@ -33,8 +26,32 @@
         "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
         "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
         "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://cadmin.kbmcollective.org/auth-recovery.html",
-        "EXPO_PUBLIC_LIVE_WALL_URL": "https://live-wall-six.vercel.app",
-        "EXPO_PUBLIC_ADMIN_CONSOLE_URL": "https://cadmin.kbmcollective.org"
+        "EXPO_PUBLIC_LIVE_WALL_URL": "https://wall.kbmcollective.org",
+        "EXPO_PUBLIC_ADMIN_CONSOLE_URL": "https://cadmin.kbmcollective.org",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://6f1f8b0664d105232bd1fe8033a4eb85@o4511723186356224.ingest.us.sentry.io/4511723194351616",
+        "SENTRY_ALLOW_FAILURE": "true",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
+      }
+    },
+    "production": {
+      "environment": "production",
+      "channel": "production",
+      "distribution": "store",
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "ios": {
+        "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_SUPABASE_URL": "https://noydhokbswedvltjyenr.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5veWRob2tic3dlZHZsdGp5ZW5yIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAyNDQ3MjQsImV4cCI6MjA4NTgyMDcyNH0.TDkaesXUtRrUcjzbQ8DqEUKTvcjBJDN3VZdYBTwnQ8s",
+        "EXPO_PUBLIC_PASSWORD_RESET_WEB_URL": "https://cadmin.kbmcollective.org/auth-recovery.html",
+        "EXPO_PUBLIC_LIVE_WALL_URL": "https://wall.kbmcollective.org",
+        "EXPO_PUBLIC_ADMIN_CONSOLE_URL": "https://cadmin.kbmcollective.org",
+        "EXPO_PUBLIC_SENTRY_DSN": "https://6f1f8b0664d105232bd1fe8033a4eb85@o4511723186356224.ingest.us.sentry.io/4511723194351616",
+        "SENTRY_ALLOW_FAILURE": "true",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       }
     }
   },

@@ -20,11 +20,16 @@ export const colors = {
   warning: '#f59e0b',
   info: '#3b82f6',
 
-  // Neutrals
-  background: '#ffffff',
+  // Neutrals — cool soft canvas; cards stay pure white for contrast
+  background: '#f6f8fc',
   surface: '#f8fafc',
   surfaceHover: '#f1f5f9',
   card: '#ffffff',
+
+  // Page atmosphere (very light vertical wash)
+  atmosphereTop: '#eef3fb',
+  atmosphereMid: '#f6f8fc',
+  atmosphereBottom: '#fafbfd',
 
   // Text
   text: '#0f172a',

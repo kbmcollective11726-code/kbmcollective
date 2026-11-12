@@ -4,7 +4,7 @@
 
 export interface User {
   id: string;
-  email: string;
+  email: string | null;
   full_name: string;
   avatar_url: string | null;
   title: string | null;
@@ -15,8 +15,11 @@ export interface User {
   push_token: string | null;
   /** When true (default), server skips agenda "starting soon" reminders if same room as previous bookmarked session that day. */
   session_reminder_skip_same_room?: boolean | null;
+  /** When true, agenda "starting soon" reminders only go out for sessions the user saved. Default false. */
+  session_reminder_saved_only?: boolean | null;
   is_active: boolean;
   is_platform_admin?: boolean;
+  last_login_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -58,14 +61,18 @@ export interface Event {
   menu_show_1on1?: boolean;
   /** Hamburger: Live wall (default on). */
   menu_show_live_wall?: boolean;
+  /** Public live-wall RPCs allowed when event is active (default true). */
+  live_wall_enabled?: boolean;
   /** Hamburger: Solution Provider (default on). */
   menu_show_solution_providers?: boolean;
-  /** Hamburger: Scan badge (default on). */
+  /** Hamburger: Scan badge (platform-controlled; default off). */
   menu_show_scan_badge?: boolean;
   /** Hamburger: Agenda link (default on). */
   menu_show_agenda?: boolean;
   /** Hamburger: Notes (badge scans) for admins / vendor reps (default on). */
   menu_show_notes?: boolean;
+  /** Vendor notes box on badge scans and the 1:1 Meetings page (default on). */
+  menu_show_scan_notes?: boolean;
   /** Hamburger: Session check-in (room badge scan) for event / platform admins. */
   menu_show_session_check_in?: boolean;
   /** Web hub tiles enabled for event admins (includes session_attendance). */
@@ -76,7 +83,14 @@ export interface Event {
   platform_menu_show_solution_providers?: boolean;
   platform_menu_show_live_wall?: boolean;
   platform_menu_show_notes?: boolean;
+  platform_menu_show_scan_notes?: boolean;
   platform_menu_show_session_check_in?: boolean;
+  /** Platform: duplicate Info in hamburger (default off; bottom tab always on). */
+  platform_hamburger_show_info?: boolean;
+  platform_hamburger_show_feed?: boolean;
+  platform_hamburger_show_agenda?: boolean;
+  platform_hamburger_show_community?: boolean;
+  platform_hamburger_show_rank?: boolean;
   vendor_scan_show_meeting_checkin?: boolean;
   /** When true (default), vendors/admins see the pre-meeting attendee brief + "have we met before" history. */
   vendor_brief_enabled?: boolean;

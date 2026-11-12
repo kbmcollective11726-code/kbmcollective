@@ -12,30 +12,44 @@ import {
   Dimensions,
   Alert,
   ActivityIndicator,
-  AppState,
-  AppStateStatus,
+  useWindowDimensions,
+  Platform,
 } from 'react-native';
 import { X } from 'lucide-react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { useBlockStore } from '../../../stores/blockStore';
-import { supabase, isSupabaseConfigured, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
+import { supabase, isSupabaseConfigured, withRetryAndRefresh, getErrorMessage } from '../../../lib/supabase';
 import { addDebugLog } from '../../../lib/debugLog';
 import { awardPoints } from '../../../lib/points';
 import { createNotificationAndPush } from '../../../lib/notifications';
 import { withRefreshTimeout } from '../../../lib/refreshWithTimeout';
-import { selectAllInPages, chunkIds, SUPABASE_SELECT_PAGE_SIZE } from '../../../lib/supabaseSelectAllPages';
+import { registerRefetchOnSessionRefreshed } from '../../../lib/onSessionRefreshed';
+import { chunkIds } from '../../../lib/supabaseSelectAllPages';
+import {
+  getRecentFeedPosts,
+  mergeRecentFeedPosts,
+  removeRecentFeedPost,
+  subscribeToRecentFeedPosts,
+} from '../../../lib/recentFeedPosts';
+import { loadCachedFeed, saveCachedFeed } from '../../../lib/eventOfflineCache';
 import type { Post } from '../../../lib/types';
 import { useResolvedEventSponsors } from '../../../lib/useResolvedEventSponsors';
 import { Camera } from 'lucide-react-native';
 import { colors } from '../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme';
 import PostCard from '../../../components/PostCard';
 import CommentSheet from '../../../components/CommentSheet';
 import CompactSponsorStrip from '../../../components/CompactSponsorStrip';
+import EmptyState from '../../../components/ui/EmptyState';
+
+const FEED_PAGE_SIZE = 25;
+/** Skip network refetch on tab focus if we fetched this recently and already have posts. */
+const FEED_FOCUS_TTL_MS = 20_000;
 
 export default function FeedScreen() {
   const { user } = useAuthStore();
@@ -43,123 +57,265 @@ export default function FeedScreen() {
   const blockedUserIds = useBlockStore((s) => s.blockedUserIds);
   const { fetchBlockedUsers, isBlocked } = useBlockStore();
   const router = useRouter();
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
+  const { width: winW } = useWindowDimensions();
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [commentPost, setCommentPost] = useState<Post | null>(null);
   const [expandedImagePost, setExpandedImagePost] = useState<Post | null>(null);
   const [likingPostId, setLikingPostId] = useState<string | null>(null);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const { sponsors: feedSponsors, reload: reloadFeedSponsors } = useResolvedEventSponsors(
+  const { sponsors: feedSponsors, loading: sponsorsLoading, reload: reloadFeedSponsors } = useResolvedEventSponsors(
     currentEvent?.id,
     'feed',
     currentEvent?.reminder_timezone
   );
-  const fetchPostsRef = useRef<() => Promise<void>>(() => Promise.resolve());
-  const fetchPosts = useCallback(async () => {
+  /** Reserve strip height while sponsors load so posts don't jump when the banner appears. */
+  const sponsorReserveHeight = 14 + 18 + 10 + Math.min(104, Math.max(56, Math.round(winW / 3.6))) + 20;
+  const fetchPostsRef = useRef<(opts?: { append?: boolean }) => Promise<void>>(async () => {});
+  const postsLengthRef = useRef(0);
+  const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
+  const fetchInProgressRef = useRef(false);
+  const refreshQueuedRef = useRef(false);
+  const lastFetchedAtRef = useRef(0);
+  const hydratedEventRef = useRef<string | null>(null);
+  postsLengthRef.current = posts.length;
+  hasMoreRef.current = hasMore;
+
+  const attachLikedFlags = async (normalized: Post[], userId: string): Promise<Post[]> => {
+    const postIds = normalized.map((p) => p.id);
+    const likedSet = new Set<string>();
+    const LIKES_IN_CHUNK = 120;
+    if (postIds.length > 0) {
+      for (const idChunk of chunkIds(postIds, LIKES_IN_CHUNK)) {
+        const { data: likesData, error: likesError } = await supabase
+          .from('likes')
+          .select('post_id')
+          .eq('user_id', userId)
+          .in('post_id', idChunk);
+        if (!likesError) {
+          for (const row of likesData ?? []) {
+            likedSet.add((row as { post_id: string }).post_id);
+          }
+        }
+      }
+    }
+    return normalized
+      .filter((p) => !isBlocked(p.user_id))
+      .map((p) => ({
+        ...p,
+        user_liked: likedSet.has(p.id),
+      }));
+  };
+
+  const prependRecentPost = useCallback((post: Post) => {
+    if (post.event_id !== currentEvent?.id || isBlocked(post.user_id)) return;
+    setPosts((prev) => {
+      if (prev.some((existing) => existing.id === post.id)) return prev;
+      return [post, ...prev];
+    });
+    setLoading(false);
+    setFetchError(null);
+  }, [currentEvent?.id, isBlocked]);
+
+  const fetchAndPrependPost = useCallback(async (postId: string) => {
+    const { data, error } = await supabase
+      .from('posts')
+      .select(
+        'id, event_id, user_id, image_url, caption, image_hash, likes_count, comments_count, is_pinned, is_approved, is_deleted, created_at, user:users(id, full_name, avatar_url)'
+      )
+      .eq('id', postId)
+      .eq('is_deleted', false)
+      .eq('is_approved', true)
+      .maybeSingle();
+    if (error || !data) return;
+    const raw = data as Record<string, unknown>;
+    const post = {
+      ...raw,
+      user: Array.isArray(raw.user) ? (raw.user[0] ?? null) : raw.user,
+      user_liked: false,
+    } as Post;
+    prependRecentPost(post);
+  }, [prependRecentPost]);
+  const fetchAndPrependPostRef = useRef(fetchAndPrependPost);
+  fetchAndPrependPostRef.current = fetchAndPrependPost;
+
+  const fetchPosts = useCallback(async (opts?: { append?: boolean }) => {
+    const append = opts?.append === true;
     const eventId = useEventStore.getState().currentEvent?.id;
     if (!eventId || !user?.id) {
       setPosts([]);
+      setHasMore(false);
+      hasMoreRef.current = false;
       setLoading(false);
       setFetchError(null);
       return;
     }
-    setFetchError(null);
+    if (!append && fetchInProgressRef.current) {
+      refreshQueuedRef.current = true;
+      return;
+    }
+    if (append) {
+      if (loadingMoreRef.current || !hasMoreRef.current) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else {
+      fetchInProgressRef.current = true;
+      setFetchError(null);
+      setHasMore(true);
+      hasMoreRef.current = true;
+    }
+    const from = append ? postsLengthRef.current : 0;
+    const to = from + FEED_PAGE_SIZE - 1;
     try {
       await withRetryAndRefresh(async () => {
-        const postsData = await selectAllInPages<Record<string, unknown>>(SUPABASE_SELECT_PAGE_SIZE, async (from, to) => {
-          const res = await supabase
-            .from('posts')
-            .select(
-              'id, event_id, user_id, image_url, caption, image_hash, likes_count, comments_count, is_pinned, is_approved, is_deleted, created_at, user:users(id, full_name, avatar_url)'
-            )
-            .eq('event_id', eventId)
-            .eq('is_deleted', false)
-            .eq('is_approved', true)
-            .order('is_pinned', { ascending: false })
-            .order('created_at', { ascending: false })
-            .range(from, to);
-          return res;
-        });
+        const res = await supabase
+          .from('posts')
+          .select(
+            'id, event_id, user_id, image_url, caption, image_hash, likes_count, comments_count, is_pinned, is_approved, is_deleted, created_at, user:users(id, full_name, avatar_url)'
+          )
+          .eq('event_id', eventId)
+          .eq('is_deleted', false)
+          .eq('is_approved', true)
+          .order('is_pinned', { ascending: false })
+          .order('created_at', { ascending: false })
+          .range(from, to);
+        if (res.error) throw res.error;
 
-        const raw = postsData;
+        const raw = (res.data ?? []) as Record<string, unknown>[];
         const normalized: Post[] = raw.map((p) => ({
           ...p,
           user: Array.isArray(p.user) ? (p.user[0] ?? null) : p.user,
         })) as Post[];
-
-        const postIds = normalized.map((p) => p.id);
-        const likedSet = new Set<string>();
-        const LIKES_IN_CHUNK = 120;
-        if (postIds.length > 0) {
-          for (const idChunk of chunkIds(postIds, LIKES_IN_CHUNK)) {
-            const { data: likesData, error: likesError } = await supabase
-              .from('likes')
-              .select('post_id')
-              .eq('user_id', user.id)
-              .in('post_id', idChunk);
-            if (!likesError) {
-              for (const row of likesData ?? []) {
-                likedSet.add((row as { post_id: string }).post_id);
-              }
-            }
-          }
+        const withLiked = await attachLikedFlags(normalized, user.id);
+        const more = raw.length >= FEED_PAGE_SIZE;
+        setHasMore(more);
+        hasMoreRef.current = more;
+        if (!append) {
+          const merged = mergeRecentFeedPosts(eventId, withLiked);
+          setPosts(merged);
+          void saveCachedFeed(eventId, user.id, merged);
+          lastFetchedAtRef.current = Date.now();
+        } else {
+          setPosts((prev) => {
+            const seen = new Set(prev.map((p) => p.id));
+            return [...prev, ...withLiked.filter((p) => !seen.has(p.id))];
+          });
         }
-
-        const filtered = normalized.filter((p) => !isBlocked(p.user_id));
-        const withLiked = filtered.map((p) => ({
-          ...p,
-          user_liked: likedSet.has(p.id),
-        }));
-        setPosts(withLiked);
       });
       setFetchError(null);
     } catch (err: unknown) {
       const msg = getErrorMessage(err) || 'Error - page not loading';
       addDebugLog('Feed', 'Load failed', msg);
       if (__DEV__) console.warn('Feed fetch error:', err);
-      setPosts([]);
-      setFetchError(msg);
+      if (!append) {
+        if (postsLengthRef.current > 0) {
+          // Keep showing what we already have; soft-fail.
+          setFetchError(null);
+        } else {
+          const cached = await loadCachedFeed(eventId, user.id);
+          if (cached && cached.length > 0) {
+            setPosts(mergeRecentFeedPosts(eventId, cached as Post[]));
+            setFetchError(null);
+          } else {
+            setPosts([]);
+            setFetchError(msg);
+          }
+        }
+      }
     } finally {
+      if (!append) {
+        fetchInProgressRef.current = false;
+        if (refreshQueuedRef.current) {
+          refreshQueuedRef.current = false;
+          setTimeout(() => fetchPostsRef.current().catch(() => {}), 0);
+        }
+      }
       setLoading(false);
       setRefreshing(false);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
-  }, [user?.id, blockedUserIds]);
+  }, [user?.id, blockedUserIds, isBlocked]);
   fetchPostsRef.current = fetchPosts;
 
   useEffect(() => {
     if (user?.id) fetchBlockedUsers(user.id);
   }, [user?.id]);
 
-  // Like Info: run and wait. No timer so first try can complete.
+  // Event switch: drop previous event's posts so we don't flash the wrong feed.
   useEffect(() => {
-    if (!currentEvent?.id || !user?.id) {
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    fetchPostsRef.current()
-      .catch(() => { if (!cancelled) setTimeout(() => fetchPostsRef.current().finally(() => {}), 2000); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [currentEvent?.id, user?.id]);
+    hydratedEventRef.current = null;
+    lastFetchedAtRef.current = 0;
+    setPosts([]);
+    setHasMore(true);
+    hasMoreRef.current = true;
+    setLoading(true);
+    setFetchError(null);
+  }, [currentEvent?.id]);
 
   useFocusEffect(
     useCallback(() => {
-      if (currentEvent?.id && user?.id) fetchPostsRef.current().catch(() => {});
-    }, [currentEvent?.id, user?.id])
+      if (!currentEvent?.id || !user?.id) return;
+      const eventId = currentEvent.id;
+      const userId = user.id;
+      let cancelled = false;
+
+      void (async () => {
+        if (hydratedEventRef.current !== eventId) {
+          hydratedEventRef.current = eventId;
+          lastFetchedAtRef.current = 0;
+          if (postsLengthRef.current === 0) {
+            const cached = await loadCachedFeed(eventId, userId);
+            if (cancelled) return;
+            if (cached && cached.length > 0) {
+              setPosts(mergeRecentFeedPosts(eventId, cached as Post[]));
+              setLoading(false);
+              setFetchError(null);
+            }
+          }
+        } else if (postsLengthRef.current === 0) {
+          const cached = await loadCachedFeed(eventId, userId);
+          if (cancelled) return;
+          if (cached && cached.length > 0) {
+            setPosts(mergeRecentFeedPosts(eventId, cached as Post[]));
+            setLoading(false);
+            setFetchError(null);
+          }
+        }
+
+        if (cancelled) return;
+        for (const post of getRecentFeedPosts(eventId)) {
+          prependRecentPost(post);
+        }
+
+        const freshEnough =
+          postsLengthRef.current > 0 &&
+          Date.now() - lastFetchedAtRef.current < FEED_FOCUS_TTL_MS;
+        if (freshEnough) return;
+
+        await fetchPostsRef.current().catch(() => {});
+      })();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [currentEvent?.id, user?.id, prependRecentPost])
   );
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && currentEvent?.id && user?.id) {
-        refreshSessionIfNeeded()
-          .catch(() => {})
-          .finally(() => fetchPostsRef.current().catch(() => {}));
-      }
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (currentEvent?.id && user?.id) fetchPostsRef.current().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [currentEvent?.id, user?.id]);
+
+  useEffect(() => subscribeToRecentFeedPosts(prependRecentPost), [prependRecentPost]);
 
   const loadingStartRef = useRef<number | null>(null);
   useEffect(() => {
@@ -180,22 +336,45 @@ export default function FeedScreen() {
   useEffect(() => {
     if (!currentEvent?.id) return;
     const channel = supabase
-      .channel('feed-posts')
+      .channel(`feed-posts-${currentEvent.id}`)
       .on(
         'postgres_changes',
         { event: 'INSERT', schema: 'public', table: 'posts', filter: `event_id=eq.${currentEvent.id}` },
-        () => { fetchPosts().catch(() => {}); }
+        (payload) => {
+          // Prepend only — a full refetch would cut the list back to page 1 under a scrolled user.
+          const id = (payload.new as { id?: string } | null)?.id;
+          if (id) fetchAndPrependPostRef.current(id).catch(() => {});
+        }
       )
       .on(
         'postgres_changes',
-        { event: '*', schema: 'public', table: 'likes' },
-        () => { fetchPosts().catch(() => {}); }
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'posts',
+          filter: `event_id=eq.${currentEvent.id}`,
+        },
+        (payload) => {
+          // likes_count is maintained on posts via trigger — event-scoped, avoids global likes fan-out
+          const row = payload.new as { id?: string; likes_count?: number } | null;
+          if (!row?.id || typeof row.likes_count !== 'number') return;
+          const likesCount = row.likes_count;
+          setPosts((prev) => {
+            const idx = prev.findIndex((p) => p.id === row.id);
+            if (idx < 0) return prev;
+            const post = prev[idx]!;
+            if (post.likes_count === likesCount) return prev;
+            const next = [...prev];
+            next[idx] = { ...post, likes_count: likesCount };
+            return next;
+          });
+        }
       )
       .subscribe();
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [currentEvent?.id, fetchPosts]);
+  }, [currentEvent?.id]);
 
   const handleLike = async (post: Post) => {
     if (!user?.id || !currentEvent?.id) return;
@@ -248,8 +427,17 @@ export default function FeedScreen() {
           { post_id: post.id }
         );
       }
-      // Refetch to get correct likes_count from DB (trigger-updated)
-      await fetchPosts();
+      const { data: countRow } = await supabase
+        .from('posts')
+        .select('likes_count')
+        .eq('id', post.id)
+        .maybeSingle();
+      if (countRow && typeof (countRow as { likes_count?: number }).likes_count === 'number') {
+        const likesCount = (countRow as { likes_count: number }).likes_count;
+        setPosts((prev) =>
+          prev.map((p) => (p.id === post.id ? { ...p, likes_count: likesCount } : p))
+        );
+      }
     } catch (err) {
       console.error('Like error:', err);
       setPosts((prev) =>
@@ -302,6 +490,7 @@ export default function FeedScreen() {
                 Alert.alert('Error', 'Could not delete post. You can only delete your own posts.');
                 return;
               }
+              removeRecentFeedPost(post.id);
               setPosts((prev) => prev.filter((p) => p.id !== post.id));
               if (commentPost?.id === post.id) setCommentPost(null);
             } catch (err) {
@@ -358,6 +547,43 @@ export default function FeedScreen() {
     }
   };
 
+  // Stable per-post handlers so memo(PostCard) can skip cards whose post didn't change.
+  const postHandlersRef = useRef({ handleLike, handleComment, handleDeleteOwnPost });
+  postHandlersRef.current = { handleLike, handleComment, handleDeleteOwnPost };
+  const onLikePost = useCallback((post: Post) => {
+    postHandlersRef.current.handleLike(post);
+  }, []);
+  const onCommentPost = useCallback((post: Post) => {
+    postHandlersRef.current.handleComment(post);
+  }, []);
+  const onDeletePost = useCallback((post: Post) => {
+    postHandlersRef.current.handleDeleteOwnPost(post);
+  }, []);
+  const onPressPostUser = useCallback(
+    (userId: string) => {
+      router.push(`/(tabs)/feed/user/${userId}?from=${encodeURIComponent('/(tabs)/feed')}` as never);
+    },
+    [router]
+  );
+  const renderPost = useCallback(
+    ({ item }: { item: Post }) => {
+      const own = item.user_id === user?.id;
+      return (
+        <PostCard
+          post={item}
+          onLike={onLikePost}
+          onComment={onCommentPost}
+          onPressUser={onPressPostUser}
+          onPressImage={setExpandedImagePost}
+          isOwnPost={own}
+          onDelete={own ? onDeletePost : undefined}
+          likeDisabled={likingPostId === item.id}
+        />
+      );
+    },
+    [user?.id, likingPostId, onLikePost, onCommentPost, onDeletePost, onPressPostUser]
+  );
+
   if (!currentEvent) {
     return (
       <SafeAreaView style={styles.container} edges={[]}>
@@ -383,9 +609,22 @@ export default function FeedScreen() {
         contentContainerStyle={styles.list}
         showsVerticalScrollIndicator={false}
         initialNumToRender={8}
-        maxToRenderPerBatch={8}
-        windowSize={6}
-        removeClippedSubviews={true}
+        maxToRenderPerBatch={6}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS === 'android'}
+        onEndReached={() => {
+          if (hasMore && !loadingMore && !loading) {
+            fetchPostsRef.current({ append: true }).catch(() => {});
+          }
+        }}
+        onEndReachedThreshold={0.4}
+        ListFooterComponent={
+          loadingMore ? (
+            <View style={{ paddingVertical: 16 }}>
+              <ActivityIndicator size="small" color={themeColor} />
+            </View>
+          ) : null
+        }
         ListHeaderComponent={
           feedSponsors.length > 0 ? (
             <CompactSponsorStrip
@@ -394,13 +633,15 @@ export default function FeedScreen() {
               eventId={currentEvent?.id}
               placement="feed"
             />
+          ) : sponsorsLoading ? (
+            <View style={{ height: sponsorReserveHeight }} accessibilityElementsHidden />
           ) : null
         }
         ListEmptyComponent={
           <View style={styles.placeholder}>
             {loading ? (
               <>
-                <ActivityIndicator size="large" color={colors.primary} />
+                <ActivityIndicator size="large" color={themeColor} />
                 <Text style={styles.placeholderTitle}>Loading feed…</Text>
                 <Text style={styles.subtitle}>Fetching the latest posts</Text>
               </>
@@ -427,6 +668,7 @@ export default function FeedScreen() {
                   }}
                   style={({ pressed }) => [
                     styles.retryButton,
+                    { backgroundColor: themeColor },
                     pressed && styles.retryButtonPressed,
                   ]}
                 >
@@ -434,31 +676,17 @@ export default function FeedScreen() {
                 </Pressable>
               </>
             ) : (
-              <>
-                <View style={styles.placeholderIconWrap}>
-                  <Camera size={48} color={colors.primary} strokeWidth={1.5} />
-                </View>
-                <Text style={styles.placeholderTitle}>No posts yet</Text>
-                <Text style={styles.subtitle}>Be the first to share a photo from this event!</Text>
-              </>
+              <EmptyState
+                title="The feed is quiet"
+                subtitle="Be the first to share a photo from this event — your moment might start the buzz."
+              />
             )}
           </View>
         }
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
         }
-        renderItem={({ item }) => (
-          <PostCard
-            post={item}
-            onLike={() => handleLike(item)}
-            onComment={() => handleComment(item)}
-            onPressUser={(userId) => router.push(`/feed/user/${userId}`)}
-            onPressImage={() => setExpandedImagePost(item)}
-            isOwnPost={item.user_id === user?.id}
-            onDelete={item.user_id === user?.id ? () => handleDeleteOwnPost(item) : undefined}
-            likeDisabled={likingPostId === item.id}
-          />
-        )}
+        renderItem={renderPost}
       />
       <CommentSheet
         visible={!!commentPost}
@@ -512,7 +740,7 @@ export default function FeedScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.surface,
+    backgroundColor: 'transparent',
   },
   list: {
     paddingHorizontal: 0,

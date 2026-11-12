@@ -1,0 +1,183 @@
+{
+  "standard": "OWASP ASVS 5.0",
+  "auditId": "2026-08-31-reaudit-10",
+  "auditedAt": "2026-08-31",
+  "reportPath": "docs/security-audits/2026-08-31-asvs.md",
+  "summary": {
+    "critical": 0,
+    "high": 3,
+    "medium": 4,
+    "low": 3,
+    "note": "2026-08-31: M10 push_token lockdown restored; M2 fail-closed closed; web password reset shipped; H1/H2/H3 still deferred"
+  },
+  "categories": [
+    {
+      "id": "authentication",
+      "name": "Authentication",
+      "score": 3,
+      "max": 5,
+      "status": "partial",
+      "note": "Web reset works; password/MFA/TOTP deferred",
+      "whyScore": "Lockout fail-closed on mobile and cadmin; email OTP for platform and event admins; password min 8; TOTP not routed.",
+      "strengths": [
+        "Login rate-limit fail-closed on mobile",
+        "Password reset via HTTPS web form (no broken deep link)",
+        "Platform + event admin email OTP in cadmin",
+        "SecureStore for mobile sessions"
+      ],
+      "gaps": [
+        "Password minimum still 8 — H1",
+        "TOTP MFA not wired — H2",
+        "Web reset validates min 8 client-side only"
+      ],
+      "relatedFindings": ["H1", "H2"]
+    },
+    {
+      "id": "authorization",
+      "name": "Authorization",
+      "score": 4,
+      "max": 5,
+      "status": "partial",
+      "note": "RLS strong; push_token column lockdown restored",
+      "whyScore": "RLS and admin gates remain solid. push_token column SELECT revoked again (M10 closed); co-members cannot read peer device tokens.",
+      "strengths": [
+        "Anon cannot SELECT public.users",
+        "Chat push requires event_id + membership",
+        "send-registration-setup-email requires admin JWT",
+        "CORS allowlist on Edge Functions"
+      ],
+      "gaps": [
+        "DEFINER RPC grant noise — M5",
+        "Co-member email/phone by design — M3"
+      ],
+      "relatedFindings": ["M3", "M5"]
+    },
+    {
+      "id": "input-validation",
+      "name": "Input Validation",
+      "score": 4,
+      "max": 5,
+      "status": "partial",
+      "note": "R2 magic bytes; Storage residual",
+      "whyScore": "R2 upload path validates content; some Storage uploads bypass proxy validators.",
+      "strengths": [
+        "upload-image-to-r2 magic-byte checks",
+        "get-r2-upload-url contentLength + mime binding",
+        "Parameterized Supabase queries"
+      ],
+      "gaps": ["Storage / registration uploads — M9"],
+      "relatedFindings": ["M9"]
+    },
+    {
+      "id": "encryption",
+      "name": "Encryption",
+      "score": 4,
+      "max": 5,
+      "status": "partial",
+      "note": "TLS + SecureStore; cadmin localStorage",
+      "whyScore": "Transport and mobile storage solid; browser admin session in localStorage.",
+      "strengths": ["HTTPS on hosted surfaces", "Mobile tokens in SecureStore"],
+      "gaps": ["cadmin session in localStorage"],
+      "relatedFindings": []
+    },
+    {
+      "id": "logging",
+      "name": "Logging",
+      "score": 4,
+      "max": 5,
+      "status": "partial",
+      "note": "Auth logging + fail-closed lockout",
+      "whyScore": "Security events logged; mobile lockout no longer fails open.",
+      "strengths": ["log-auth-attempt", "Security anomaly processors", "Fail-closed rate limit"],
+      "gaps": [],
+      "relatedFindings": []
+    },
+    {
+      "id": "data-protection",
+      "name": "Data Protection",
+      "score": 3,
+      "max": 5,
+      "status": "partial",
+      "note": "push_token lockdown restored; co-member PII",
+      "whyScore": "push_token no longer readable by co-members; networking still shares contact fields by design.",
+      "strengths": ["Anon cannot dump users", "push_token column SELECT revoked", "Audit log for platform actions"],
+      "gaps": ["Co-member PII — M3"],
+      "relatedFindings": ["M3"]
+    },
+    {
+      "id": "api-security",
+      "name": "API Security",
+      "score": 4,
+      "max": 5,
+      "status": "partial",
+      "note": "CORS + cron secret; registration gated",
+      "whyScore": "Edge auth patterns improved; CRON_SECRET fail-closed.",
+      "strengths": [
+        "CORS reflect allowlist",
+        "CRON_SECRET on cron functions",
+        "Registration setup email admin-only"
+      ],
+      "gaps": [],
+      "relatedFindings": []
+    },
+    {
+      "id": "cloud-security",
+      "name": "Cloud Security",
+      "score": 4,
+      "max": 5,
+      "status": "partial",
+      "note": "R2 public feed URLs accepted",
+      "whyScore": "No open Postgres; public CDN URLs for feed images by design.",
+      "strengths": ["Supabase not public DB", "R2 path allowlists"],
+      "gaps": ["Public R2 URLs — M1"],
+      "relatedFindings": ["M1"]
+    },
+    {
+      "id": "dependencies",
+      "name": "Dependencies",
+      "score": 3,
+      "max": 5,
+      "status": "partial",
+      "note": "Mobile Expo highs; admin/live-wall clean",
+      "whyScore": "8 High in mobile toolchain; admin-setup and live-wall at 0 advisories.",
+      "strengths": ["0 Critical", "Secret scan clean", "admin-setup + live-wall clean"],
+      "gaps": ["Mobile metro/image-size highs — H3"],
+      "relatedFindings": ["H3"]
+    }
+  ],
+  "findings": {
+    "critical": [],
+    "high": [
+      { "id": "H1", "title": "Password policy still min 8 (ASVS wants ≥12)" },
+      { "id": "H2", "title": "TOTP MFA unwired (email OTP only)" },
+      { "id": "H3", "title": "Mobile dependency highs (Expo toolchain)" }
+    ],
+    "medium": [
+      { "id": "M1", "title": "Public R2 object URLs for feed assets" },
+      { "id": "M3", "title": "Co-member can SELECT email/phone (by design)" },
+      { "id": "M5", "title": "Security Advisor DEFINER EXECUTE grant noise" },
+      { "id": "M9", "title": "Storage uploads bypass R2 validators" }
+    ],
+    "low": [
+      { "id": "L1", "title": "Anon key / Sentry DSN in public clients (expected)" },
+      { "id": "L2", "title": "Public live-wall display names (by design)" },
+      { "id": "L3", "title": "Edge isEventMember ignores event_members.is_active" }
+    ],
+    "closedThisPass": [
+      { "id": "M2", "title": "Mobile login rate-limit fail-open → fail-closed" },
+      { "id": "M8", "title": "Platform OTP UI skipped on profile miss" },
+      { "id": "M10", "title": "push_token column SELECT re-granted → revoked (lockdown restored)" },
+      { "id": "REG", "title": "send-registration-setup-email open endpoint → admin gated" }
+    ]
+  },
+  "openHigh": [
+    { "id": "H1", "title": "Password policy still min 8 (deferred)" },
+    { "id": "H2", "title": "TOTP MFA unwired (deferred)" },
+    { "id": "H3", "title": "Mobile Expo dependency highs (deferred)" }
+  ],
+  "nextSteps": [
+    "When ready: password ≥12 (H1)",
+    "Optional: Wire TOTP for cadmin (H2)",
+    "Schedule Expo SDK major for mobile dep highs (H3)"
+  ]
+}

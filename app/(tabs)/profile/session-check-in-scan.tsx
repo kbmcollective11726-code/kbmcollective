@@ -7,6 +7,7 @@ import { AlertCircle, CheckCircle2 } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 import { colors } from '../../../constants/colors';
+import { useEventThemeColor } from '../../../lib/eventTheme';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
@@ -28,6 +29,7 @@ export default function SessionCheckInScanScreen() {
   const insets = useSafeAreaInsets();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
   const isPlatformAdmin = user?.is_platform_admin === true;
   const previewRole = useRolePreviewStore((s) => s.previewRole);
   const params = useLocalSearchParams<{ sessionId?: string; title?: string; initialCount?: string }>();
@@ -177,7 +179,7 @@ export default function SessionCheckInScanScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <ProfileStackScreenHeader variant="back" title="Session check-in" onBack={() => router.back()} />
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
         </View>
       </SafeAreaView>
     );
@@ -206,7 +208,7 @@ export default function SessionCheckInScanScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <ProfileStackScreenHeader variant="back" title="Session check-in" onBack={() => router.back()} />
         <Text style={styles.hint}>Camera access is required to scan badges.</Text>
-        <TouchableOpacity style={styles.btn} onPress={() => requestPermission()}>
+        <TouchableOpacity style={[styles.btn, { backgroundColor: themeColor }]} onPress={() => requestPermission()}>
           <Text style={styles.btnText}>Allow camera</Text>
         </TouchableOpacity>
       </SafeAreaView>
@@ -220,7 +222,7 @@ export default function SessionCheckInScanScreen() {
         {sessionTitle}
       </Text>
       <View style={styles.statsBar}>
-        <Text style={styles.statsText}>{checkInCount} checked in</Text>
+        <Text style={[styles.statsText, { color: themeColor }]}>{checkInCount} checked in</Text>
         {lastName ? <Text style={styles.lastScan}>Last: {lastName}</Text> : null}
       </View>
       {lastScanKind === 'already_scanned' ? (
@@ -270,7 +272,7 @@ const styles = StyleSheet.create({
   centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   sessionTitle: { fontSize: 16, fontWeight: '700', color: colors.text, paddingHorizontal: 20, marginBottom: 8 },
   statsBar: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, marginBottom: 8 },
-  statsText: { fontSize: 15, fontWeight: '700', color: colors.primary },
+  statsText: { fontSize: 15, fontWeight: '700' },
   lastScan: { fontSize: 13, color: colors.textSecondary, flex: 1, textAlign: 'right', marginLeft: 12 },
   bannerAlready: {
     flexDirection: 'row',
@@ -312,7 +314,6 @@ const styles = StyleSheet.create({
   hint: { padding: 20, color: colors.textSecondary, fontSize: 14 },
   btn: {
     marginHorizontal: 20,
-    backgroundColor: colors.primary,
     paddingVertical: 14,
     borderRadius: 12,
     alignItems: 'center',

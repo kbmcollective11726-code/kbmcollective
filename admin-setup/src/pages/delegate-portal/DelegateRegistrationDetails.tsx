@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { postgrestErrorMessage } from '../../lib/postgrestErrorMessage';
 import { syncSubmissionSolutionCategories } from '../../lib/syncSolutionCategories';
+import { requestMatchThemeExtraction } from '../../lib/extractMatchThemes';
 import { filterRegistrationDetailsQuestions } from '../../lib/portalRegistrationDetailsQuestions';
 import { mergeSectionOrder } from '../../lib/registrationSectionOrder';
 import {
@@ -13,6 +14,8 @@ import {
   requiredQuestionsComplete,
 } from '../../lib/registrationIdentitySync';
 import PortalRegistrationQuestionList from '../../components/PortalRegistrationQuestionList';
+import { findRegistrationHeadshotUrl, syncUserAvatarFromUrl } from '../../lib/registrationHeadshot';
+import { isRegistrationQuestionVisible } from '../../lib/registrationQuestionConditions';
 import type { EventRegistrationQuestion, EventRegistrationQuestionOption } from '../../lib/types';
 import type { DelegatePortalContext } from './DelegatePortalLayout';
 import styles from './DelegatePortal.module.css';
@@ -29,6 +32,13 @@ export default function DelegateRegistrationDetails() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  const statusRef = useRef<HTMLParagraphElement | null>(null);
+
+  useEffect(() => {
+    if (!success && !error) return;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    statusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [success, error]);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,10 +85,25 @@ export default function DelegateRegistrationDetails() {
           .eq('submission_id', submission.id);
         if (aErr) throw aErr;
         const map: AnswerMap = {};
-        for (const row of (aRows ?? []) as Array<{ question_id: string; answer_text?: string | null; answer_json?: unknown }>) {
+        for (const row of (aRows ?? []) as Array<{
+          question_id: string;
+          answer_text?: string | null;
+          answer_json?: unknown;
+          answer_boolean?: boolean | null;
+          answer_number?: number | null;
+        }>) {
           if (row.answer_json != null) {
-            if (Array.isArray(row.answer_json)) map[row.question_id] = row.answer_json as string[];
-            else map[row.question_id] = String(row.answer_json);
+            if (Array.isArray(row.answer_json)) {
+              map[row.question_id] = row.answer_json as string[];
+            } else if (typeof row.answer_json === 'boolean') {
+              map[row.question_id] = row.answer_json;
+            } else {
+              map[row.question_id] = String(row.answer_json);
+            }
+          } else if (row.answer_boolean != null) {
+            map[row.question_id] = row.answer_boolean;
+          } else if (row.answer_number != null) {
+            map[row.question_id] = String(row.answer_number);
           } else if (row.answer_text != null) {
             map[row.question_id] = row.answer_text;
           }
@@ -98,12 +123,23 @@ export default function DelegateRegistrationDetails() {
   }, [submission.form_id, submission.id, submission]);
 
   const questionsForDisplay = useMemo(
-    () => filterRegistrationDetailsQuestions('attendee', questions),
-    [questions],
+    () =>
+      filterRegistrationDetailsQuestions('attendee', questions).filter((question) =>
+        isRegistrationQuestionVisible(question, answers),
+      ),
+    [answers, questions],
   );
 
   const setAnswer = (questionId: string, value: string | string[] | boolean) => {
-    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+    setAnswers((prev) => {
+      const next = { ...prev, [questionId]: value };
+      for (const question of questions) {
+        if (question.condition_question_id && !isRegistrationQuestionVisible(question, next)) {
+          delete next[question.id];
+        }
+      }
+      return next;
+    });
   };
 
   const save = async () => {
@@ -135,6 +171,22 @@ export default function DelegateRegistrationDetails() {
         .eq('id', submission.id);
       if (subErr) throw subErr;
 
+      const hiddenConditionalQuestionIds = questions
+        .filter(
+          (question) =>
+            question.condition_question_id &&
+            !isRegistrationQuestionVisible(question, answers),
+        )
+        .map((question) => question.id);
+      if (hiddenConditionalQuestionIds.length > 0) {
+        const { error: deleteHiddenErr } = await supabase
+          .from('event_registration_answers')
+          .delete()
+          .eq('submission_id', submission.id)
+          .in('question_id', hiddenConditionalQuestionIds);
+        if (deleteHiddenErr) throw deleteHiddenErr;
+      }
+
       for (const q of questionsForDisplay) {
         const value = answers[q.id];
         if (value === undefined || value === '' || (Array.isArray(value) && value.length === 0)) continue;
@@ -151,8 +203,20 @@ export default function DelegateRegistrationDetails() {
       }
 
       await syncSubmissionSolutionCategories(submission.id);
+      requestMatchThemeExtraction(submission.id);
+      const headshotUrl = findRegistrationHeadshotUrl(questionsForDisplay, answers);
+      if (headshotUrl && submission.user_id) {
+        try {
+          await syncUserAvatarFromUrl(submission.user_id, headshotUrl);
+        } catch {
+          /* best-effort */
+        }
+      }
       await reloadSubmission();
-      setSuccess(profileComplete ? 'Profile complete — your details are saved.' : 'Registration details saved.');
+      const message = profileComplete
+        ? 'Your registration details were saved successfully. Profile complete.'
+        : 'Your registration details were saved successfully.';
+      setSuccess(message);
     } catch (e) {
       setError(postgrestErrorMessage(e) || 'Could not save changes');
     } finally {
@@ -168,22 +232,36 @@ export default function DelegateRegistrationDetails() {
       <p className={styles.detailsIntro}>
         Find below your previously submitted registration details. You may make adjustments if needed.
       </p>
-      {error ? <p className={styles.error}>{error}</p> : null}
-      {success ? <p className={styles.success}>{success}</p> : null}
+      <div ref={statusRef}>
+        {error ? (
+          <p className={styles.error} role="alert">
+            {error}
+          </p>
+        ) : null}
+        {success ? (
+          <p className={styles.success} role="status">
+            {success}
+          </p>
+        ) : null}
+      </div>
 
       <PortalRegistrationQuestionList
         eventId={event.id}
+        formId={submission.form_id}
         audience="attendee"
         questions={questionsForDisplay}
         options={options}
         answers={answers}
         onChange={setAnswer}
+        profileUserId={submission.user_id}
         sectionOrder={sectionOrder}
       />
 
-      <button type="button" className={styles.primaryBtn} disabled={saving} onClick={() => void save()}>
-        {saving ? 'Saving…' : 'Save changes'}
-      </button>
+      <div className={styles.saveFooter}>
+        <button type="button" className={styles.primaryBtn} disabled={saving} onClick={() => void save()}>
+          {saving ? 'Saving…' : 'Save changes'}
+        </button>
+      </div>
     </div>
   );
 }

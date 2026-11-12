@@ -1,7 +1,5 @@
 import type { MatchmakingAudience, EventRegistrationQuestion } from './types';
 import {
-  isHeadshotPrompt,
-  isSolutionCategoryInterestPrompt,
   SPEC_DELEGATE_STAGE2_PROMPTS,
   SPEC_VENDOR_STAGE2_PROMPTS,
 } from './specRegistrationQuestions';
@@ -95,6 +93,25 @@ export function normalizeRegistrationPrompt(prompt: string): string {
   return prompt.trim().toLowerCase();
 }
 
+/** Matches registration_prompt_is_contact in the database: never shown on participant profiles. */
+export function isRegistrationContactPrompt(prompt: string): boolean {
+  const norm = normalizeRegistrationPrompt(prompt);
+  return (
+    /(phone|e-?mail|password|zip|postal)/.test(norm) ||
+    ['address', 'street address', 'personal address', 'home address'].includes(norm) ||
+    norm.startsWith('assistant ')
+  );
+}
+
+/**
+ * Identity fields wired into the public registration header grid / account create.
+ * Renaming or deleting these in Matchmaking breaks Company / name / email capture —
+ * treat prompt + answer type as immutable for everyone (including platform admins).
+ */
+export function isRegistrationIdentityLockedPrompt(prompt: string): boolean {
+  return REGISTRATION_HEADER_FIELD_PROMPTS.has(normalizeRegistrationPrompt(prompt));
+}
+
 function stage1SetForAudience(audience: MatchmakingAudience): Set<string> {
   if (audience === 'vendor') return STAGE1_VENDOR_PROMPTS;
   if (audience === 'user') return STAGE1_SPEAKER_PROMPTS;
@@ -116,9 +133,16 @@ export function isStage1RegistrationQuestion(audience: MatchmakingAudience, prom
 export function isRegistrationQuestionHiddenByDefault(audience: MatchmakingAudience, prompt: string): boolean {
   const norm = normalizeRegistrationPrompt(prompt);
   if (audience === 'vendor' && VENDOR_ALWAYS_HIDDEN_PROMPTS.has(norm)) return true;
+  if (norm === normalizeRegistrationPrompt('I sit in the C-suite or report directly to the C-suite')) return true;
   return !stage2SetForAudience(audience).has(norm);
 }
 
+/**
+ * Stage 2 Registration Details (delegate/vendor portals).
+ * Shows every non-hidden form question, including Identity & contact fields
+ * (name, email, company, etc.) so registrants can review/edit them.
+ * Excludes terms, username leftovers, and known always-hidden logistics.
+ */
 export function isStage2RegistrationQuestion(
   audience: MatchmakingAudience,
   question: Pick<EventRegistrationQuestion, 'prompt' | 'is_hidden' | 'is_base_question'>,
@@ -126,11 +150,13 @@ export function isStage2RegistrationQuestion(
   if (question.is_hidden) return false;
   const norm = normalizeRegistrationPrompt(question.prompt);
   if (norm === normalizeRegistrationPrompt(TERMS_ACCEPTANCE_PROMPT)) return false;
+  // Username is Stage 1–only / unused on connect portals
+  if (norm.startsWith('username')) return false;
   if (audience === 'vendor' && VENDOR_ALWAYS_HIDDEN_PROMPTS.has(norm)) return false;
   if (audience === 'vendor' && norm === 'company logo url') return false;
-  if (question.is_base_question === false) return true;
-  if (isSolutionCategoryInterestPrompt(question.prompt) || isHeadshotPrompt(question.prompt)) return true;
-  return stage2SetForAudience(audience).has(norm);
+  // Intentionally ignore is_base_question — default vs custom only affects admin locks,
+  // not whether registrants see the field.
+  return true;
 }
 
 export const DELEGATE_ALWAYS_HIDDEN_PROMPTS = DELEGATE_STAGE1_HIDDEN_PROMPTS;

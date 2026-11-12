@@ -6,6 +6,7 @@ import {
   MIN_HERO_INTERVAL_MS,
   LIKE_HEART_COOLDOWN_MS,
   RANK_HIGHLIGHT_MS,
+  HEART_BURST_MS,
   detectFirstPhoto,
   detectMilestones,
   detectNewLeader,
@@ -45,13 +46,15 @@ export interface WallEngagementState {
 function heroDuration(kind: WallHeroKind): number {
   switch (kind) {
     case 'comment_spotlight':
-      return 5500;
+      return 12_000;
     case 'photo_of_hour':
-      return 6500;
+      return 8_500;
     case 'new_leader':
-      return 4500;
+      return 11_000;
+    case 'first_photo':
+      return 10_000;
     default:
-      return 3800;
+      return 9_500;
   }
 }
 
@@ -78,14 +81,14 @@ export function useWallEngagement({
   const prevLeaderboardRef = useRef<LeaderboardRow[] | null>(null);
   const prevPostCountRef = useRef<number | null>(null);
   const prevFeaturedLikesRef = useRef<number | null>(null);
+  const prevFeaturedIdRef = useRef<string | null>(null);
   const prevCommentIdsRef = useRef<Set<string>>(new Set());
   const spotlightCommentIdsRef = useRef<Set<string>>(new Set());
   const initializedRef = useRef(false);
 
   const photoOfHour = computePhotoOfHourDetailed(posts);
   const photoOfHourPostId = photoOfHour?.postId ?? null;
-  const prevPhotoOfHourRef = useRef<string | null>(null);
-  const photoOfHourInitRef = useRef(false);
+  const prevFeaturedIsPohRef = useRef(false);
 
   const playSound = useCallback(
     (kind: WallSoundKind) => {
@@ -154,18 +157,21 @@ export function useWallEngagement({
     [effectsEnabled, tryDequeueHero],
   );
 
-  const pushHeart = useCallback(() => {
-    if (!effectsEnabled) return;
-    const now = Date.now();
-    if (now - lastLikeAtRef.current < LIKE_HEART_COOLDOWN_MS) return;
-    lastLikeAtRef.current = now;
-    const id = `heart-${now}`;
-    setHearts((prev) => [...prev.slice(-2), { id }]);
-    playSound('like');
-    setTimeout(() => {
-      setHearts((prev) => prev.filter((h) => h.id !== id));
-    }, 1600);
-  }, [effectsEnabled, playSound]);
+  const pushHeart = useCallback(
+    (opts?: { force?: boolean; silent?: boolean }) => {
+      if (!effectsEnabled) return;
+      const now = Date.now();
+      if (!opts?.force && now - lastLikeAtRef.current < LIKE_HEART_COOLDOWN_MS) return;
+      lastLikeAtRef.current = now;
+      const id = `heart-${now}-${Math.random().toString(36).slice(2, 6)}`;
+      setHearts((prev) => [...prev.slice(-2), { id }]);
+      if (!opts?.silent) playSound('like');
+      setTimeout(() => {
+        setHearts((prev) => prev.filter((h) => h.id !== id));
+      }, HEART_BURST_MS + 200);
+    },
+    [effectsEnabled, playSound],
+  );
 
   const flashRankUp = useCallback((userId: string) => {
     const now = Date.now();
@@ -236,49 +242,72 @@ export function useWallEngagement({
     }
   }, [posts, effectsEnabled, enqueueHero]);
 
-  // Featured post likes
+  // Featured post likes — hearts when a liked photo lands on the big screen, and on live new likes
   useEffect(() => {
     if (!effectsEnabled || !featuredPost) {
       prevFeaturedLikesRef.current = featuredPost?.likes_count ?? null;
+      prevFeaturedIdRef.current = featuredPost?.id ?? null;
       return;
     }
     const likes = featuredPost.likes_count ?? 0;
-    const prev = prevFeaturedLikesRef.current;
+    const prevLikes = prevFeaturedLikesRef.current;
+    const prevId = prevFeaturedIdRef.current;
     prevFeaturedLikesRef.current = likes;
-    if (prev === null) return;
-    if (likes > prev) pushHeart();
-  }, [featuredPost?.id, featuredPost?.likes_count, effectsEnabled, pushHeart, featuredPost]);
+    prevFeaturedIdRef.current = featuredPost.id;
 
-  // Photo of the hour — celebrate when a new post takes the lead (most likes in last 60 min)
-  useEffect(() => {
-    if (!effectsEnabled) return;
-    const currentId = photoOfHour?.postId ?? null;
-    const prevId = prevPhotoOfHourRef.current;
-    prevPhotoOfHourRef.current = currentId;
-
-    if (!photoOfHourInitRef.current) {
-      photoOfHourInitRef.current = true;
+    if (prevId !== featuredPost.id) {
+      if (likes > 0) {
+        pushHeart({ force: true, silent: false });
+        if (likes >= 2) {
+          window.setTimeout(() => pushHeart({ force: true, silent: true }), 280);
+        }
+        if (likes >= 5) {
+          window.setTimeout(() => pushHeart({ force: true, silent: true }), 560);
+        }
+      }
       return;
     }
-    if (!photoOfHour || !currentId || currentId === prevId) return;
+
+    if (prevLikes !== null && likes > prevLikes) pushHeart();
+  }, [featuredPost?.id, featuredPost?.likes_count, effectsEnabled, pushHeart, featuredPost]);
+
+  // Photo of the hour — banner + confetti each time that photo lands on the big screen
+  useEffect(() => {
+    if (!effectsEnabled || !photoOfHour || !featuredPost || !photoOfHourPostId) {
+      if (!featuredPost?.id || featuredPost.id !== photoOfHourPostId) {
+        prevFeaturedIsPohRef.current = false;
+      }
+      return;
+    }
+    const isPohFeatured = featuredPost.id === photoOfHourPostId;
+    const wasPohFeatured = prevFeaturedIsPohRef.current;
+    prevFeaturedIsPohRef.current = isPohFeatured;
+    if (!isPohFeatured || wasPohFeatured) return;
+
+    const subtitle = photoOfHour.isRecentHour
+      ? `${photoOfHour.likes} like${photoOfHour.likes === 1 ? '' : 's'} in the last hour`
+      : `${photoOfHour.likes} like${photoOfHour.likes === 1 ? '' : 's'} — crowd favorite`;
 
     enqueueHero(
       'photo_of_hour',
       `${photoOfHour.name} has the crowd favorite!`,
-      `${photoOfHour.likes} like${photoOfHour.likes === 1 ? '' : 's'} in the last hour`,
+      subtitle,
       undefined,
       true,
     );
-  }, [photoOfHour?.postId, photoOfHour?.likes, photoOfHour?.name, effectsEnabled, enqueueHero, photoOfHour]);
+  }, [featuredPost?.id, photoOfHourPostId, photoOfHour, effectsEnabled, enqueueHero, featuredPost]);
 
   // Hourly reminder if the same photo is still #1
   useEffect(() => {
     if (!effectsEnabled || !photoOfHour || wallClockTick === 0) return;
     if (wallClockTick % 60 !== 0) return;
+    const subtitle = photoOfHour.isRecentHour
+      ? `${photoOfHour.likes} likes this hour`
+      : `${photoOfHour.likes} likes — still the crowd favorite`;
     enqueueHero(
       'photo_of_hour',
       `Still the crowd favorite — ${photoOfHour.name}!`,
-      `${photoOfHour.likes} likes this hour`,
+      subtitle,
       undefined,
       true,
     );

@@ -1,0 +1,33 @@
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+  padding: 10px 16px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 14px;
+  line-height: 1.4;
+}
+
+.banner strong {
+  font-weight: 700;
+  color: #fff;
+}
+
+.exitBtn {
+  border: 1px solid #94a3b8;
+  border-radius: 8px;
+  background: transparent;
+  color: #f8fafc;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.exitBtn:hover {
+  background: #1e293b;
+  border-color: #e2e8f0;
+}

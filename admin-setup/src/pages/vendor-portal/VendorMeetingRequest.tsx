@@ -11,6 +11,7 @@ export default function VendorMeetingRequest() {
       submissionId={submission.id}
       viewerRole="vendor"
       meetingRequestsOpen={settings.meeting_requests_open}
+      matchSuggestionsEnabled={settings.portal_match_suggestions_vendors_enabled}
       sentPath={vendorStepPath(event.id, 'meetings/sent')}
     />
   );

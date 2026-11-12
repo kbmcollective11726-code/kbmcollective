@@ -8,20 +8,21 @@ import {
   RefreshControl,
   ActivityIndicator,
   Dimensions,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { Users, PlusCircle } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useRolePreviewContext } from '../../../../hooks/useRolePreviewContext';
 import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../../lib/supabase';
+import { registerRefetchOnSessionRefreshed } from '../../../../lib/onSessionRefreshed';
 import { addDebugLog } from '../../../../lib/debugLog';
 import { colors } from '../../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../../lib/eventTheme';
+import { groupChatHref, navigateBackToFrom, newGroupHref } from '../../../../lib/navReturn';
 import Avatar from '../../../../components/Avatar';
 import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
 
@@ -34,16 +35,21 @@ type ChatGroup = {
   member_count?: number;
 };
 
-const RESUME_REFETCH_DEBOUNCE_MS = 12000;
 
 export default function GroupsListScreen() {
   const router = useRouter();
+  const { from } = useLocalSearchParams<{ from?: string }>();
   const isFocused = useIsFocused();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
   const { applyEventAdmin } = useRolePreviewContext();
-  const lastResumeRefetchAt = useRef<number>(0);
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
   const [groups, setGroups] = useState<ChatGroup[]>([]);
+
+  const goBack = useCallback(() => {
+    navigateBackToFrom(router, from, '/(tabs)/profile');
+  }, [router, from]);
 
   useEffect(() => {
     if (__DEV__) console.log('[Groups] component did mount');
@@ -89,8 +95,6 @@ export default function GroupsListScreen() {
   const effectiveIsEventAdmin = applyEventAdmin(isEventAdmin);
 
   const fetchInProgressRef = useRef(false);
-  const autoRetryScheduledRef = useRef(false);
-  const mountedRef = useRef(false);
   const fetchGroups = useCallback(async (_adminOverride?: boolean) => {
     if (!user?.id || !currentEvent?.id) {
       if (__DEV__) console.log('[Groups] fetch skipped — no user or event');
@@ -153,7 +157,6 @@ export default function GroupsListScreen() {
         if (__DEV__) console.log('[Groups] Supabase fetchGroups returned data (count):', withCount?.length ?? 0);
         setGroups(withCount);
       });
-      autoRetryScheduledRef.current = false;
       setFetchError(null);
       setFetchErrorDetail(null);
     } catch (err: unknown) {
@@ -169,43 +172,21 @@ export default function GroupsListScreen() {
     }
   }, [user?.id, currentEvent?.id]);
 
-  useEffect(() => {
-    if (!user?.id || !currentEvent?.id) {
-      setGroups([]);
-      setLoading(false);
-      return;
-    }
-    if (mountedRef.current) return;
-    mountedRef.current = true;
-    setFetchError(null);
-    setLoading(true);
-    fetchAdmin()
-      .then((admin) => fetchGroups(admin))
-      .finally(() => setLoading(false));
-  }, [user?.id, currentEvent?.id, fetchAdmin, fetchGroups]);
-
   useFocusEffect(
     useCallback(() => {
       if (user?.id && currentEvent?.id) {
-        fetchInProgressRef.current = false;
         fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {});
       }
     }, [user?.id, currentEvent?.id, fetchAdmin, fetchGroups])
   );
 
-  // When app comes back from background: wait for root’s refresh, then load.
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state !== 'active' || !user?.id || !currentEvent?.id) return;
-      const now = Date.now();
-      if (now - lastResumeRefetchAt.current < RESUME_REFETCH_DEBOUNCE_MS) return;
-      lastResumeRefetchAt.current = now;
-      fetchInProgressRef.current = false;
-      refreshSessionIfNeeded()
-        .catch(() => {})
-        .finally(() => fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {}));
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (user?.id && currentEvent?.id) {
+        fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {});
+      }
     });
-    return () => sub.remove();
+    return unregister;
   }, [user?.id, currentEvent?.id, fetchAdmin, fetchGroups]);
 
   const screenLoadTimeoutMs = 30000;
@@ -219,14 +200,9 @@ export default function GroupsListScreen() {
     const t = setTimeout(() => {
       if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= screenLoadTimeoutMs) {
         addDebugLog('Groups', 'Load timed out', 'Request never completed — check network or Supabase');
-        fetchInProgressRef.current = false;
         setLoading(false);
         setFetchError('Error - page not loading');
         setFetchErrorDetail('Timed out');
-        if (!autoRetryScheduledRef.current && user?.id && currentEvent?.id) {
-          autoRetryScheduledRef.current = true;
-          setTimeout(() => fetchAdmin().then((admin) => fetchGroups(admin)).catch(() => {}), 2000);
-        }
       }
     }, screenLoadTimeoutMs);
     return () => clearTimeout(t);
@@ -257,7 +233,7 @@ export default function GroupsListScreen() {
   if (!currentEvent?.id || !user?.id) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <ProfileStackScreenHeader variant="back" title="Groups" onBack={() => router.back()} />
+        <ProfileStackScreenHeader variant="back" title="Groups" onBack={goBack} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Select an event to see your groups.</Text>
         </View>
@@ -268,9 +244,9 @@ export default function GroupsListScreen() {
   if (loading && groups.length === 0) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <ProfileStackScreenHeader variant="back" title="Groups" onBack={() => router.back()} />
+        <ProfileStackScreenHeader variant="back" title="Groups" onBack={goBack} />
         <View style={styles.placeholder}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
           <Text style={styles.placeholderText}>Loading groups…</Text>
         </View>
       </SafeAreaView>
@@ -279,7 +255,7 @@ export default function GroupsListScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ProfileStackScreenHeader variant="back" title="Groups" onBack={() => router.back()} />
+      <ProfileStackScreenHeader variant="back" title="Groups" onBack={goBack} />
       {currentEvent?.name ? (
         <View style={styles.eventHeader}>
           <Text style={styles.eventLabel}>Groups for</Text>
@@ -316,7 +292,7 @@ export default function GroupsListScreen() {
                 setLoading(false);
               }
             }}
-            style={[styles.createBtn, { marginTop: 12, alignSelf: 'center' }]}
+            style={[styles.createBtn, { marginTop: 12, alignSelf: 'center', backgroundColor: themeColor }]}
             activeOpacity={0.8}
           >
             <Text style={styles.createBtnText}>Try again</Text>
@@ -325,8 +301,8 @@ export default function GroupsListScreen() {
       ) : null}
       {effectiveIsEventAdmin && (
         <TouchableOpacity
-          style={styles.createBtn}
-          onPress={() => router.push('/(tabs)/profile/groups/new')}
+          style={[styles.createBtn, { backgroundColor: themeColor }]}
+          onPress={() => router.push(newGroupHref(from) as never)}
           activeOpacity={0.8}
         >
           <PlusCircle size={22} color={colors.textOnPrimary} />
@@ -340,37 +316,23 @@ export default function GroupsListScreen() {
         initialNumToRender={12}
         maxToRenderPerBatch={10}
         windowSize={5}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={themeColor} colors={[themeColor]} />}
         contentContainerStyle={[styles.list, groups.length === 0 && styles.listEmpty, { minHeight: Dimensions.get('window').height + 2 }]}
         ListEmptyComponent={
           <View style={styles.placeholder}>
             <Text style={styles.placeholderText}>
               {effectiveIsEventAdmin ? 'No groups yet. Create one to get started.' : 'You’re not in any groups yet.'}
             </Text>
-            {!fetchError && currentEvent?.name ? (
-              <>
-                <Text style={styles.emptyHint}>
-                  Groups are listed per event. If you created groups under a different event, switch to that event on Home, then open Groups again.
-                </Text>
-                <TouchableOpacity
-                  style={styles.switchEventBtn}
-                  onPress={() => router.push('/(tabs)/home')}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.switchEventBtnText}>Go to Home → switch event</Text>
-                </TouchableOpacity>
-              </>
-            ) : null}
           </View>
         }
         renderItem={({ item }) => (
           <TouchableOpacity
-            style={styles.row}
-            onPress={() => router.push(`/(tabs)/profile/groups/${item.id}` as any)}
+            style={[styles.row, { borderLeftColor: themeColor, borderLeftWidth: 3 }]}
+            onPress={() => router.push(groupChatHref(item.id, from) as never)}
             activeOpacity={0.7}
           >
-            <View style={styles.rowIcon}>
-              <Users size={24} color={colors.primary} />
+            <View style={[styles.rowIcon, { backgroundColor: themeFaded }]}>
+              <Users size={24} color={themeColor} />
             </View>
             <View style={styles.rowBody}>
               <Text style={styles.rowTitle} numberOfLines={1}>
@@ -389,7 +351,7 @@ export default function GroupsListScreen() {
           onPress={() => router.push('/(tabs)/profile/admin')}
           activeOpacity={0.7}
         >
-          <Text style={styles.manageLinkText}>Event admin → manage event & members</Text>
+          <Text style={[styles.manageLinkText, { color: themeColor }]}>Event admin → manage event & members</Text>
         </TouchableOpacity>
       )}
     </SafeAreaView>
@@ -435,7 +397,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  rowIcon: { marginRight: 14 },
+  rowIcon: { marginRight: 14, padding: 8, borderRadius: 10 },
   rowBody: { flex: 1 },
   rowTitle: { fontSize: 16, fontWeight: '600', color: colors.text },
   rowMeta: { fontSize: 13, color: colors.textMuted, marginTop: 2 },

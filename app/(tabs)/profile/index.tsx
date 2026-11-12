@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -11,26 +11,28 @@ import {
   Alert,
   Linking,
   Dimensions,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import Constants from 'expo-constants';
 import Toast from 'react-native-toast-message';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, usePathname } from 'expo-router';
-import { ExternalLink, LogOut, Calendar, Building2, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle, Trash2, Lock, BookOpen } from 'lucide-react-native';
+import { ExternalLink, LogOut, ChevronRight, Users, Edit3, Bell, Shield, MessageCircle, Trash2, Lock, BookOpen } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
+import { registerRefetchOnSessionRefreshed } from '../../../lib/onSessionRefreshed';
 import { addDebugLog } from '../../../lib/debugLog';
 import { colors } from '../../../constants/colors';
+import { useEventThemeColor } from '../../../lib/eventTheme';
 import Avatar from '../../../components/Avatar';
+import PortraitAvatarPhoto from '../../../components/PortraitAvatarPhoto';
+import ProfileHeroBackdrop from '../../../components/ProfileHeroBackdrop';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 import { RolePreviewMenuButton, RolePreviewPicker } from '../../../components/RolePreviewBanner';
 import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
 import { effectiveMyRoles } from '../../../lib/rolePreview';
+import { fetchUnreadDmCount } from '../../../lib/unreadDmMessages';
 
-const RESUME_REFETCH_DEBOUNCE_MS = 12000;
 
 function getAppVersionLabel(): string {
   const marketing = Constants.expoConfig?.version?.trim() ?? '';
@@ -47,7 +49,7 @@ export default function ProfileScreen() {
   const isFocused = useIsFocused();
   const { user, refreshUser, logout } = useAuthStore();
   const { currentEvent } = useEventStore();
-  const lastResumeRefetchAt = useRef<number>(0);
+  const themeColor = useEventThemeColor();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loggingOut, setLoggingOut] = useState(false);
@@ -58,61 +60,61 @@ export default function ProfileScreen() {
   const [isEventAdmin, setIsEventAdmin] = useState(false);
   const [myRoles, setMyRoles] = useState<string[]>(['attendee']);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [unreadChats, setUnreadChats] = useState(0);
   const [rolePreviewOpen, setRolePreviewOpen] = useState(false);
   const { applyEventAdmin, isPlatformAdmin, isPreviewing, previewRole } = useRolePreviewContext();
 
   const fetchPointsAndRole = useCallback(async (): Promise<boolean> => {
     if (!user?.id) return false;
     if (currentEvent?.id) {
-      // Run each query so one failure doesn't take down the whole stats block
+      // Fetch membership once (points and roles share the same row) and run the
+      // independent post count concurrently. This avoids serial requests and
+      // duplicate work on slower Expo Go Android connections.
+      const [memberResult, postsResult] = await Promise.allSettled([
+        supabase
+          .from('event_members')
+          .select('points, role, roles')
+          .eq('event_id', currentEvent.id)
+          .eq('user_id', user.id)
+          .maybeSingle(),
+        supabase
+          .from('posts')
+          .select('id', { count: 'exact', head: true })
+          .eq('event_id', currentEvent.id)
+          .eq('user_id', user.id)
+          .eq('is_deleted', false),
+      ]);
+
       let pointsOk = false;
-      let postsOk = false;
       let roleOk = false;
-      try {
-        const memberRes = await supabase.from('event_members').select('points').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle();
-        if (!memberRes.error) {
-          setPoints(memberRes.data?.points ?? 0);
-          pointsOk = true;
-        }
-      } catch (_) {}
-      try {
-        let postsCount = 0;
-        const postsRes = await supabase.from('posts').select('id', { count: 'exact', head: true }).eq('event_id', currentEvent.id).eq('user_id', user.id).eq('is_deleted', false);
-        if (!postsRes.error && postsRes.count != null) {
-          postsCount = postsRes.count;
-        } else {
-          // Fallback: some setups fail on count header; fetch ids and use length so posts always show
-          const { data: postIds } = await supabase.from('posts').select('id').eq('event_id', currentEvent.id).eq('user_id', user.id).eq('is_deleted', false).limit(500);
-          postsCount = postIds?.length ?? 0;
-        }
-        setPostsCount(postsCount);
-        postsOk = true;
-      } catch (e) {
-        if (__DEV__) console.warn('Profile posts count error:', e);
+      let postsOk = false;
+      if (memberResult.status === 'fulfilled' && !memberResult.value.error) {
+        const data = memberResult.value.data as {
+          points?: number;
+          role?: string;
+          roles?: string[];
+        } | null;
+        setPoints(data?.points ?? 0);
+        const role = data?.role ?? 'attendee';
+        const roles =
+          Array.isArray(data?.roles) && data.roles.length > 0
+            ? data.roles
+            : [role];
+        setIsEventAdmin(
+          role === 'admin' ||
+            role === 'super_admin' ||
+            roles.includes('admin') ||
+            roles.includes('super_admin') ||
+            user.is_platform_admin === true
+        );
+        setMyRoles(roles);
+        pointsOk = true;
+        roleOk = true;
       }
-      try {
-        const roleRes = await supabase.from('event_members').select('role, roles').eq('event_id', currentEvent.id).eq('user_id', user.id).maybeSingle();
-        if (!roleRes.error) {
-          const data = roleRes.data as { role?: string; roles?: string[] } | null;
-          if (data) {
-            const role = data.role ?? 'attendee';
-            const roles = Array.isArray(data.roles) && data.roles.length > 0 ? data.roles : role ? [role] : ['attendee'];
-            setIsEventAdmin(
-              role === 'admin' ||
-                role === 'super_admin' ||
-                roles.includes('admin') ||
-                roles.includes('super_admin') ||
-                user?.is_platform_admin === true
-            );
-            setMyRoles(roles);
-          } else {
-            // Platform admin viewing an event they're not a member of: still give admin access
-            setIsEventAdmin(!!user?.is_platform_admin);
-            setMyRoles(['attendee']);
-          }
-          roleOk = true;
-        }
-      } catch (_) {}
+      if (postsResult.status === 'fulfilled' && !postsResult.value.error) {
+        setPostsCount(postsResult.value.count ?? 0);
+        postsOk = true;
+      }
       if (!pointsOk) setPoints(0);
       if (!postsOk) setPostsCount(0);
       if (!roleOk) {
@@ -132,8 +134,6 @@ export default function ProfileScreen() {
   const displayRoles = effectiveMyRoles(myRoles, isPlatformAdmin, previewRole);
 
   const loadInProgressRef = useRef(false);
-  const autoRetryScheduledRef = useRef(false);
-  const mountedRef = useRef(false);
   const loadStats = useCallback(async () => {
     if (!user?.id) {
       if (__DEV__) console.log('[Profile] loadStats skipped — no user');
@@ -153,7 +153,6 @@ export default function ProfileScreen() {
     try {
       const ok = await withRetryAndRefresh(() => fetchPointsAndRole());
       if (ok) {
-        autoRetryScheduledRef.current = false;
         setFetchError(null);
         setFetchErrorDetail(null);
       } else {
@@ -174,40 +173,40 @@ export default function ProfileScreen() {
   }, [user?.id, fetchPointsAndRole]);
 
 
-  useEffect(() => {
-    if (!user?.id) {
-      setLoading(false);
+  const fetchUnreadBadges = useCallback(async () => {
+    if (!user?.id || !currentEvent?.id) {
+      setUnreadNotifications(0);
+      setUnreadChats(0);
       return;
     }
-    if (mountedRef.current) return;
-    mountedRef.current = true;
-    setFetchError(null);
-    setLoading(true);
-    loadStats().finally(() => setLoading(false));
-  }, [user?.id, currentEvent?.id, loadStats]);
+    const [notifRes, chatCount] = await Promise.all([
+      supabase
+        .from('notifications')
+        .select('id', { count: 'exact', head: true })
+        .eq('user_id', user.id)
+        .eq('is_read', false)
+        .eq('event_id', currentEvent.id)
+        .neq('type', 'message'),
+      fetchUnreadDmCount(currentEvent.id, user.id).catch(() => 0),
+    ]);
+    if (!notifRes.error) setUnreadNotifications(notifRes.count ?? 0);
+    setUnreadChats(chatCount);
+  }, [user?.id, currentEvent?.id]);
 
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
-        loadInProgressRef.current = false;
         loadStats().catch(() => {});
+        void fetchUnreadBadges();
       }
-    }, [user?.id, loadStats])
+    }, [user?.id, loadStats, fetchUnreadBadges])
   );
 
-  // When app comes back from background: wait for root’s refresh, then load (so token is valid and data loads).
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state !== 'active' || !user?.id) return;
-      const now = Date.now();
-      if (now - lastResumeRefetchAt.current < RESUME_REFETCH_DEBOUNCE_MS) return;
-      lastResumeRefetchAt.current = now;
-      loadInProgressRef.current = false;
-      refreshSessionIfNeeded()
-        .catch(() => {})
-        .finally(() => loadStats().catch(() => {}));
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (user?.id) loadStats().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [user?.id, loadStats]);
 
   const screenLoadTimeoutMs = 30000; // show error after 30s, then auto-retry once
@@ -221,16 +220,9 @@ export default function ProfileScreen() {
     const t = setTimeout(() => {
       if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= screenLoadTimeoutMs) {
         addDebugLog('Profile', 'Load timed out', 'Request never completed — check network or Supabase');
-        loadInProgressRef.current = false;
         setLoading(false);
         setFetchError('Error - page not loading');
         setFetchErrorDetail('Timed out');
-        if (!autoRetryScheduledRef.current && user?.id) {
-          autoRetryScheduledRef.current = true;
-          setTimeout(() => {
-            loadStats().catch(() => {});
-          }, 2000);
-        }
       }
     }, screenLoadTimeoutMs);
     return () => clearTimeout(t);
@@ -291,46 +283,59 @@ export default function ProfileScreen() {
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            colors={[colors.primary]}
+            colors={[themeColor]}
           />
         }
       >
-        <View style={styles.header}>
-          <TouchableOpacity
-            onPress={() => router.push('/profile/edit')}
-            style={styles.avatarTouchable}
-            activeOpacity={0.8}
-          >
-            <Avatar uri={user.avatar_url} name={user.full_name} size={88} />
-            <Text style={styles.avatarHint}>Tap to add or change photo</Text>
-          </TouchableOpacity>
-          <Text style={styles.name}>{user.full_name}</Text>
-          <Text style={styles.email}>{user.email}</Text>
-          {(user.title || user.company) && (
-            <Text style={styles.subtitle}>
-              {[user.title, user.company].filter(Boolean).join(' · ')}
-            </Text>
-          )}
-          {user.bio ? (
-            <Text style={styles.bio}>{user.bio}</Text>
+        <View style={styles.hero}>
+          {user.avatar_url ? (
+            <View style={styles.heroBackdrop} pointerEvents="none">
+              <ProfileHeroBackdrop avatarUrl={user.avatar_url} />
+            </View>
           ) : null}
-          {user.linkedin_url ? (
-            <TouchableOpacity
-              style={styles.linkedinBtn}
-              onPress={() => {
-                const url = user.linkedin_url!;
-                const toOpen = url.startsWith('http') ? url : `https://${url}`;
-                Linking.openURL(toOpen).catch(() =>
-                  Alert.alert('Error', 'Could not open LinkedIn.')
-                );
-              }}
-              activeOpacity={0.7}
-            >
-              <ExternalLink size={18} color={colors.primary} />
-              <Text style={styles.linkedinText}>LinkedIn profile</Text>
-            </TouchableOpacity>
-          ) : null}
+          <View style={styles.heroForeground}>
+            <View style={styles.heroAvatarShadow}>
+              <TouchableOpacity
+                onPress={() => router.push(`/profile/edit?from=${encodeURIComponent('/(tabs)/profile')}` as never)}
+                style={styles.heroAvatarWrap}
+                activeOpacity={0.85}
+              >
+                {user.avatar_url ? (
+                  <PortraitAvatarPhoto uri={user.avatar_url} transition={150} />
+                ) : (
+                  <Avatar uri={null} name={user.full_name} size={112} />
+                )}
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.heroName}>{user.full_name}</Text>
+          </View>
         </View>
+
+        <View style={styles.body}>
+        <Text style={styles.email}>{user.email}</Text>
+        {(user.title || user.company) ? (
+          <Text style={styles.subtitle}>
+            {[user.title, user.company].filter(Boolean).join(' · ')}
+          </Text>
+        ) : null}
+        {user.bio ? <Text style={styles.bio}>{user.bio}</Text> : null}
+
+        {user.linkedin_url ? (
+          <TouchableOpacity
+            style={styles.linkedinBtn}
+            onPress={() => {
+              const url = user.linkedin_url!;
+              const toOpen = url.startsWith('http') ? url : `https://${url}`;
+              Linking.openURL(toOpen).catch(() =>
+                Alert.alert('Error', 'Could not open LinkedIn.')
+              );
+            }}
+            activeOpacity={0.7}
+          >
+            <ExternalLink size={18} color={themeColor} />
+            <Text style={[styles.linkedinText, { color: themeColor }]}>View LinkedIn profile</Text>
+          </TouchableOpacity>
+        ) : null}
 
         {currentEvent && (
           <>
@@ -357,24 +362,24 @@ export default function ProfileScreen() {
                       await refreshSessionIfNeeded();
                       await loadStats();
                     }}
-                    style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: colors.primary, borderRadius: 8 }}
+                    style={{ paddingHorizontal: 16, paddingVertical: 8, backgroundColor: themeColor, borderRadius: 8 }}
                     activeOpacity={0.8}
                   >
                     <Text style={{ color: '#fff', fontWeight: '600' }}>Try again</Text>
                   </TouchableOpacity>
                 </View>
               ) : loading ? (
-                <ActivityIndicator size="small" color={colors.primary} />
+                <ActivityIndicator size="small" color={themeColor} />
               ) : (
                 <>
                   {points !== null && (
                     <View style={styles.stat}>
-                      <Text style={styles.statValue}>{points}</Text>
+                      <Text style={[styles.statValue, { color: themeColor }]}>{points}</Text>
                       <Text style={styles.statLabel}>points</Text>
                     </View>
                   )}
                   <View style={styles.stat}>
-                    <Text style={styles.statValue}>{postsCount}</Text>
+                    <Text style={[styles.statValue, { color: themeColor }]}>{postsCount}</Text>
                     <Text style={styles.statLabel}>posts</Text>
                   </View>
                 </>
@@ -401,7 +406,7 @@ export default function ProfileScreen() {
         <View style={styles.menu}>
           <TouchableOpacity
             style={styles.menuRow}
-            onPress={() => router.push('/profile/edit')}
+            onPress={() => router.push(`/profile/edit?from=${encodeURIComponent('/(tabs)/profile')}` as never)}
             activeOpacity={0.7}
           >
             <Edit3 size={22} color={colors.textSecondary} />
@@ -410,7 +415,9 @@ export default function ProfileScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.menuRow}
-            onPress={() => router.push('/profile/change-password' as any)}
+            onPress={() =>
+              router.push(`/(tabs)/profile/change-password?from=${encodeURIComponent('/(tabs)/profile')}` as never)
+            }
             activeOpacity={0.7}
           >
             <Lock size={22} color={colors.textSecondary} />
@@ -434,7 +441,7 @@ export default function ProfileScreen() {
             <Bell size={22} color={colors.textSecondary} />
             <Text style={styles.menuText}>Notifications</Text>
             {unreadNotifications > 0 && (
-              <View style={styles.notifBadge}>
+              <View style={[styles.notifBadge, { backgroundColor: themeColor }]}>
                 <Text style={styles.notifBadgeText}>{unreadNotifications > 99 ? '99+' : unreadNotifications}</Text>
               </View>
             )}
@@ -451,11 +458,20 @@ export default function ProfileScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={styles.menuRow}
-            onPress={() => router.push('/(tabs)/profile/groups/index' as any)}
+            onPress={() =>
+              router.push(
+                `/(tabs)/profile/messages?from=${encodeURIComponent('/(tabs)/profile')}` as never
+              )
+            }
             activeOpacity={0.7}
           >
             <MessageCircle size={22} color={colors.textSecondary} />
-            <Text style={styles.menuText}>Groups</Text>
+            <Text style={styles.menuText}>Chat</Text>
+            {unreadChats > 0 && (
+              <View style={[styles.notifBadge, { backgroundColor: themeColor }]}>
+                <Text style={styles.notifBadgeText}>{unreadChats > 99 ? '99+' : unreadChats}</Text>
+              </View>
+            )}
             <ChevronRight size={20} color={colors.textMuted} />
           </TouchableOpacity>
           <TouchableOpacity
@@ -470,11 +486,16 @@ export default function ProfileScreen() {
           {effectiveIsEventAdmin && (
             <TouchableOpacity
               style={styles.menuRow}
-              onPress={() => router.push('/(tabs)/profile/groups/new')}
+              onPress={() => {
+                const messagesFrom = `/(tabs)/profile/messages?from=${encodeURIComponent('/(tabs)/profile')}`;
+                router.push(
+                  `/(tabs)/profile/groups/new?from=${encodeURIComponent(messagesFrom)}` as never
+                );
+              }}
               activeOpacity={0.7}
             >
-              <MessageCircle size={22} color={colors.primary} />
-              <Text style={[styles.menuText, { color: colors.primary, fontWeight: '600' }]}>Create group</Text>
+              <MessageCircle size={22} color={themeColor} />
+              <Text style={[styles.menuText, { color: themeColor, fontWeight: '600' }]}>Create group</Text>
               <ChevronRight size={20} color={colors.textMuted} />
             </TouchableOpacity>
           )}
@@ -484,7 +505,7 @@ export default function ProfileScreen() {
               onPress={() => router.push('/profile/admin')}
               activeOpacity={0.7}
             >
-              <Shield size={22} color={effectiveIsEventAdmin && currentEvent ? colors.primary : colors.textSecondary} />
+              <Shield size={22} color={effectiveIsEventAdmin && currentEvent ? themeColor : colors.textSecondary} />
               <Text style={styles.menuText}>Event admin</Text>
               <ChevronRight size={20} color={colors.textMuted} />
             </TouchableOpacity>
@@ -518,6 +539,7 @@ export default function ProfileScreen() {
             {versionLabel}
           </Text>
         ) : null}
+        </View>
       </ScrollView>
       <RolePreviewPicker visible={rolePreviewOpen} onClose={() => setRolePreviewOpen(false)} />
     </SafeAreaView>
@@ -531,31 +553,67 @@ const styles = StyleSheet.create({
   },
   content: {
     flexGrow: 1,
-    padding: 24,
     paddingBottom: 48,
   },
-  header: {
+  body: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  hero: {
+    width: '100%',
+    alignSelf: 'stretch',
+    minHeight: 268,
+    backgroundColor: colors.surfaceHover ?? '#eef1f5',
+    paddingTop: 20,
+    paddingBottom: 28,
     alignItems: 'center',
-    marginBottom: 24,
+    justifyContent: 'flex-end',
+    position: 'relative',
   },
-  avatarTouchable: {
+  heroBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    overflow: 'hidden',
+  },
+  heroForeground: {
     alignItems: 'center',
+    width: '100%',
+    paddingBottom: 4,
+    paddingHorizontal: 20,
   },
-  avatarHint: {
-    fontSize: 13,
-    color: colors.textMuted,
-    marginTop: 8,
+  heroAvatarShadow: {
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    backgroundColor: colors.background,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.18,
+    shadowRadius: 10,
+    elevation: 6,
   },
-  name: {
-    fontSize: 22,
+  heroAvatarWrap: {
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    borderWidth: 3,
+    borderColor: colors.background,
+    overflow: 'hidden',
+    backgroundColor: colors.surfaceHover,
+  },
+  heroName: {
+    fontSize: 26,
     fontWeight: '700',
     color: colors.text,
-    marginTop: 12,
-    marginBottom: 4,
+    marginTop: 18,
+    marginBottom: 2,
+    paddingHorizontal: 12,
+    letterSpacing: -0.3,
+    textAlign: 'center',
   },
   email: {
     fontSize: 14,
     color: colors.textSecondary,
+    textAlign: 'center',
     marginBottom: 4,
   },
   subtitle: {
@@ -569,7 +627,7 @@ const styles = StyleSheet.create({
     color: colors.textSecondary,
     textAlign: 'center',
     lineHeight: 20,
-    alignSelf: 'stretch',
+    marginBottom: 8,
   },
   linkedinBtn: {
     flexDirection: 'row',
@@ -581,7 +639,6 @@ const styles = StyleSheet.create({
   },
   linkedinText: {
     fontSize: 15,
-    color: colors.primary,
     fontWeight: '600',
   },
   stats: {
@@ -601,7 +658,6 @@ const styles = StyleSheet.create({
   statValue: {
     fontSize: 24,
     fontWeight: '700',
-    color: colors.primary,
   },
   statLabel: {
     fontSize: 12,
@@ -643,7 +699,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   notifBadge: {
-    backgroundColor: colors.primary,
     minWidth: 22,
     height: 22,
     borderRadius: 11,
@@ -733,10 +788,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.border,
   },
-  roleOptionActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
+  roleOptionActive: {},
   roleOptionText: {
     flex: 1,
     fontSize: 16,
@@ -751,7 +803,7 @@ const styles = StyleSheet.create({
     color: colors.textOnPrimary,
     fontWeight: '700',
   },
-  roleModalSave: { backgroundColor: colors.primary },
+  roleModalSave: {},
   roleModalSaveText: { color: '#fff', fontWeight: '600' },
   roleModalClose: {
     marginTop: 16,

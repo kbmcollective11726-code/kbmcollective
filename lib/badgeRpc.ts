@@ -29,6 +29,12 @@ export function parseBadgeTokenFromQrData(data: string): string | null {
       const pathMatch = s.match(/[?&]t=([^&#]+)/);
       if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1]);
     }
+    // Expo Router cold start often passes "/badge?t=…" without a scheme.
+    if (/(^|\/)badge(\?|$|\/)/i.test(s) && s.includes('?')) {
+      const params = new URLSearchParams(s.slice(s.indexOf('?') + 1));
+      const t = params.get('t') || params.get('token');
+      if (t?.trim()) return t.trim();
+    }
   } catch {
     /* ignore */
   }

@@ -10,18 +10,23 @@ type Props = {
   /** compact = list cards; full = meeting detail card */
   variant?: 'compact' | 'full';
   label?: string;
+  /** Where profile back should return (e.g. /(tabs)/expo). */
+  from?: string;
 };
 
 export default function MeetingRepresentatives({
   representatives,
   variant = 'compact',
   label = 'Representatives',
+  from = '/(tabs)/expo',
 }: Props) {
   const router = useRouter();
   if (representatives.length === 0) return null;
 
   const openProfile = (userId: string) => {
-    router.push(`/(tabs)/feed/user/${userId}` as any);
+    router.push(
+      `/(tabs)/feed/user/${userId}?from=${encodeURIComponent(from)}` as never
+    );
   };
 
   if (variant === 'compact') {

@@ -21,7 +21,7 @@ async function getSound(): Promise<Audio.Sound | null> {
       });
       const { sound } = await Audio.Sound.createAsync(
         require('../assets/sounds/in-app-notification.wav'),
-        { shouldPlay: false, volume: 0.5, isLooping: false }
+        { shouldPlay: false, volume: 0.5, isLooping: false },
       );
       loadedSound = sound;
       return sound;

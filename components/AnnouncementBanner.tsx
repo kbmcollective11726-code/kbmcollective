@@ -17,7 +17,10 @@ import { Megaphone, Calendar, X } from 'lucide-react-native';
 import { useAuthStore } from '../stores/authStore';
 import { useEventStore } from '../stores/eventStore';
 import { supabase } from '../lib/supabase';
+import { subscribeUserNotifications } from '../lib/notificationsRealtime';
+import { registerRefetchOnSessionRefreshed } from '../lib/onSessionRefreshed';
 import { colors } from '../constants/colors';
+import { useEventThemeColor } from '../lib/eventTheme';
 
 type BannerNotification = {
   id: string;
@@ -28,6 +31,9 @@ type BannerNotification = {
 
 /** schedule_change = agenda edits + session reminders ("Event starting soon"); meeting = B2B; announcement = admin sends */
 const BANNER_TYPES = ['announcement', 'schedule_change', 'meeting'] as const;
+
+/** The alert stays in Notifications; only the banner hides. */
+const BANNER_AUTO_HIDE_MS = 15_000;
 
 function rowMatchesEvent(row: { event_id?: string | null }, currentEventId: string | undefined) {
   if (!currentEventId) return true;
@@ -41,6 +47,7 @@ export default function AnnouncementBanner() {
   const insets = useSafeAreaInsets();
   const { user } = useAuthStore();
   const currentEvent = useEventStore((s) => s.currentEvent);
+  const themeColor = useEventThemeColor();
   const [notification, setNotification] = useState<BannerNotification | null>(null);
   const slideAnim = useRef(new Animated.Value(-120)).current;
   const dismissedIdsRef = useRef<Set<string>>(new Set());
@@ -86,6 +93,12 @@ export default function AnnouncementBanner() {
     }).start(() => setNotification(null));
   }, [notification?.id, slideAnim]);
 
+  useEffect(() => {
+    if (!notification?.id) return;
+    const timer = setTimeout(dismiss, BANNER_AUTO_HIDE_MS);
+    return () => clearTimeout(timer);
+  }, [notification?.id, dismiss]);
+
   const fetchRecentBannerRows = useCallback(
     async (sinceIso: string) => {
       if (!user?.id || !currentEvent?.id) return;
@@ -105,46 +118,23 @@ export default function AnnouncementBanner() {
     [user?.id, currentEvent?.id, tryShowFromRow]
   );
 
-  // Realtime: show banner when a qualifying row is inserted while the app is connected.
+  // Realtime: shared notifications bus (one channel for the user).
   useEffect(() => {
     if (!user?.id) return;
-
-    const channel = supabase
-      .channel(`announcement-banner-${user.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${user.id}`,
-        },
-        (payload) => {
-          const row = payload.new as {
-            id: string;
-            type: string;
-            title?: string | null;
-            body?: string | null;
-            event_id?: string | null;
-          };
-          tryShowFromRow(row);
-        }
-      )
-      .subscribe((status) => {
-        if (__DEV__ && status === 'SUBSCRIBED') {
-          console.log('[AnnouncementBanner] Realtime subscribed');
-        }
-        if (__DEV__ && status === 'CHANNEL_ERROR') {
-          console.warn('[AnnouncementBanner] Realtime channel error — banner may rely on resume catch-up');
-        }
-      });
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return subscribeUserNotifications(user.id, {
+      onInsert: (row) => {
+        tryShowFromRow(row as {
+          id: string;
+          type: string;
+          title?: string | null;
+          body?: string | null;
+          event_id?: string | null;
+        });
+      },
+    });
   }, [user?.id, tryShowFromRow]);
 
-  // Android / background: INSERT often happens while the WebSocket is down; catch up when app opens or resumes.
+  // Android / background: INSERT often happens while the WebSocket is down; catch up after a meaningful resume.
   useEffect(() => {
     if (!user?.id || !currentEvent?.id) return;
 
@@ -163,12 +153,17 @@ export default function AnnouncementBanner() {
       if (next === 'background' || next === 'inactive') {
         backgroundedAtRef.current = Date.now();
       }
-      if (next === 'active') {
-        runCatchUp(backgroundedAtRef.current - 5000);
-      }
     });
 
-    return () => sub.remove();
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      const since = (backgroundedAtRef.current ?? Date.now()) - 5000;
+      runCatchUp(since);
+    });
+
+    return () => {
+      sub.remove();
+      unregister();
+    };
   }, [user?.id, currentEvent?.id, fetchRecentBannerRows]);
 
   const handlePress = () => {
@@ -198,6 +193,7 @@ export default function AnnouncementBanner() {
           top: insets.top + 8,
           paddingTop: 12,
           paddingBottom: 12,
+          backgroundColor: themeColor,
         },
         { transform: [{ translateY: slideAnim }] },
       ]}

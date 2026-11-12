@@ -33,9 +33,10 @@ export default function ProfileStackLayout() {
       />
       <Stack.Screen name="announcements" options={{ title: 'Announcements', headerShown: false, headerBackTitle: 'Back' }} />
       <Stack.Screen name="people" options={{ title: 'Community', headerShown: false }} />
+      <Stack.Screen name="messages" options={{ title: 'Chat', headerShown: false, headerBackTitle: 'Back' }} />
       <Stack.Screen name="chat/[userId]" options={{ title: 'Chat', headerBackTitle: 'Back' }} />
       <Stack.Screen name="groups/index" options={{ title: 'Groups', headerShown: false, headerBackTitle: 'Back' }} />
-      <Stack.Screen name="groups/new" options={{ title: 'New group', headerBackTitle: 'Back' }} />
+      <Stack.Screen name="groups/new" options={{ title: 'New group', headerShown: false, headerBackTitle: 'Back' }} />
       <Stack.Screen name="groups/[groupId]" options={{ title: 'Group', headerShown: false, headerBackTitle: 'Back' }} />
       <Stack.Screen name="admin" options={{ title: 'Event admin', headerShown: false }} />
       <Stack.Screen name="admin-all-events" options={{ title: 'All events', headerBackTitle: 'Back' }} />

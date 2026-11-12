@@ -41,12 +41,14 @@ export interface Event {
   menu_show_live_wall?: boolean;
   /** In-app hamburger: show Solution Providers (default true). */
   menu_show_solution_providers?: boolean;
-  /** In-app hamburger: show Scan badge link (default true). */
+  /** In-app hamburger: show Scan badge link (platform-controlled; default off). */
   menu_show_scan_badge?: boolean;
   /** In-app hamburger: show Agenda link (default true). */
   menu_show_agenda?: boolean;
   /** In-app hamburger: show Notes for admins / vendor reps (default true). */
   menu_show_notes?: boolean;
+  /** Vendor notes box on badge scans and the 1:1 Meetings page (default true). */
+  menu_show_scan_notes?: boolean;
   menu_show_session_check_in?: boolean;
   /** Platform allows event admins to use Agenda in the app (they control menu_show_agenda). */
   platform_menu_show_agenda?: boolean;
@@ -55,7 +57,14 @@ export interface Event {
   platform_menu_show_solution_providers?: boolean;
   platform_menu_show_live_wall?: boolean;
   platform_menu_show_notes?: boolean;
+  platform_menu_show_scan_notes?: boolean;
   platform_menu_show_session_check_in?: boolean;
+  /** Platform: duplicate bottom tabs in hamburger (default off). */
+  platform_hamburger_show_info?: boolean;
+  platform_hamburger_show_feed?: boolean;
+  platform_hamburger_show_agenda?: boolean;
+  platform_hamburger_show_community?: boolean;
+  platform_hamburger_show_rank?: boolean;
   /** When true, vendors see 1:1 / unscheduled meeting check-in on badge scan (default false). */
   vendor_scan_show_meeting_checkin?: boolean;
   /** When true (default), vendors/admins see the pre-meeting attendee brief + "have we met before" history. */
@@ -128,12 +137,16 @@ export interface EventRegistrationForm {
   id: string;
   event_id: string;
   name: string;
+  /** Public URL segment for /register/:eventId/:audience/:slug */
+  slug?: string | null;
   audience: MatchmakingAudience;
   description: string | null;
   is_active: boolean;
   sort_order: number;
   /** Ordered section labels for Registration Details display. */
   section_order?: string[] | null;
+  /** Standard registration form (no matchmaking). */
+  is_standard?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -144,6 +157,8 @@ export interface EventRegistrationQuestion {
   prompt: string;
   is_base_question?: boolean;
   is_hidden?: boolean;
+  /** Shown on participant profiles in Meeting Selections. Independent of is_hidden. */
+  show_on_profile?: boolean;
   used_in_matching?: boolean;
   section_label: string | null;
   field_key: string | null;
@@ -151,6 +166,8 @@ export interface EventRegistrationQuestion {
   placeholder: string | null;
   question_type: MatchmakingQuestionType;
   is_required: boolean;
+  condition_question_id?: string | null;
+  condition_value?: string | null;
   sort_order: number;
   created_at: string;
   updated_at: string;
@@ -181,13 +198,23 @@ export interface EventRegistrationSubmission {
   profile_complete?: boolean;
   registration_status?: 'pending_review' | 'approved' | 'rejected';
   matching_opt_in?: boolean;
+  /** Theme tags from open-text goals (optional AI). Used in intelligent match scoring. */
+  match_themes?: string[] | null;
+  match_themes_updated_at?: string | null;
+  /** When false, vendor/delegate cannot be scheduled (package without meetings). */
+  meetings_enabled?: boolean;
+  /** Optional per-registrant max meetings; null uses event default. */
+  max_meetings?: number | null;
   meeting_availability?: unknown;
+  /** Max overlapping meetings in one time slot (diaries). Default 1. */
+  concurrent_meetings_per_slot?: number;
   rejected_at?: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export type MeetingInterestLevel = 'low' | 'medium' | 'high';
+export type MeetingRequestResponseStatus = 'pending' | 'accepted' | 'declined';
 
 export interface EventMeetingInterestRequest {
   id: string;
@@ -198,9 +225,42 @@ export interface EventMeetingInterestRequest {
   target_person_name: string | null;
   reason: string | null;
   interest_level: MeetingInterestLevel | null;
+  response_status: MeetingRequestResponseStatus;
+  responded_at: string | null;
   priority: number;
   created_at: string;
   updated_at: string;
+}
+
+export interface ReceivedMeetingRequest {
+  id: string;
+  event_id: string;
+  submission_id: string;
+  target_submission_id: string;
+  sender_first_name: string | null;
+  sender_last_name: string | null;
+  sender_company_name: string | null;
+  sender_job_title: string | null;
+  reason: string | null;
+  interest_level: MeetingInterestLevel | null;
+  response_status: MeetingRequestResponseStatus;
+  responded_at: string | null;
+  created_at: string;
+}
+
+export interface ParticipantMatchmakingMeeting {
+  id: string;
+  counterpart_submission_id: string;
+  counterpart_first_name: string | null;
+  counterpart_last_name: string | null;
+  counterpart_company_name: string | null;
+  counterpart_job_title: string | null;
+  start_time: string;
+  end_time: string;
+  location: string | null;
+  slot_label: string | null;
+  status: 'scheduled' | 'cancelled' | 'completed';
+  published_to_app_at: string | null;
 }
 
 export interface EventRegistrationAnswer {
@@ -234,14 +294,52 @@ export interface EventMatchScheduledMeeting {
   review_id: string | null;
   submission_a_id: string;
   submission_b_id: string;
+  time_slot_id?: string | null;
+  location_id?: string | null;
   start_time: string;
   end_time: string;
   location: string | null;
+  notes?: string | null;
   status: 'scheduled' | 'cancelled' | 'completed';
   published_to_app_at?: string | null;
   app_booking_id?: string | null;
   created_by: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+export interface EventMatchmakingTimeSlot {
+  id: string;
+  event_id: string;
+  start_time: string;
+  end_time: string;
+  label: string | null;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventMatchmakingLocation {
+  id: string;
+  event_id: string;
+  name: string;
+  capacity: number;
+  sort_order: number;
+  is_active: boolean;
+  /** Optional home vendor for this table. */
+  vendor_submission_id?: string | null;
+  /** Linked Solution Provider booth (matchmaking bridge). */
+  vendor_booth_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface EventMatchmakingAvailability {
+  event_id: string;
+  submission_id: string;
+  time_slot_id: string;
+  is_available: boolean;
   updated_at: string;
 }
 
@@ -321,6 +419,8 @@ export interface VendorBooth {
   contact_user_id: string | null;
   website: string | null;
   is_active: boolean;
+  /** Matchmaking vendor registration that owns this booth (when auto-created). */
+  registration_submission_id?: string | null;
   created_at: string;
 }
 

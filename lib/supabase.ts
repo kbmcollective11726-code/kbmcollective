@@ -1,7 +1,9 @@
 import 'react-native-url-polyfill/auto';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
+import { Platform } from 'react-native';
+import { authStorage } from './authStorage';
+import { isTransientRequestFailure as isTransientFailureShared } from './requestFailure';
 
 // Expo Go: read from Constants.expoConfig.extra (set by app.config.js). Else process.env (builds).
 const extra = (Constants.expoConfig as { extra?: { SUPABASE_URL?: string; SUPABASE_ANON_KEY?: string } } | null)?.extra;
@@ -43,8 +45,7 @@ export async function testSupabaseConnection(): Promise<{ ok: boolean; message: 
   }
 }
 
-// Per-request timeout so connections that hang after app resume abort and can retry (test at 2s often succeeds).
-const FETCH_ABORT_MS = 15000;
+const FETCH_ABORT_MS = Platform.OS === 'android' ? 22_000 : 15_000;
 /** GoTrue (`/auth/v1/`) can be slower than REST; 15s cuts off password updates / token refresh on some networks. */
 const AUTH_FETCH_ABORT_MS = 90000;
 
@@ -55,10 +56,11 @@ export function abortAllRequests(): void {
   globalController = new AbortController();
 }
 
-// Custom fetch: if server returns non-JSON (e.g. error page), return a JSON error so we don't get "JSON Parse error".
-// PostgREST returns 204 No Content with empty body for UPDATE/DELETE without .select() — treat that as valid.
-// We no longer sign out on 401 in the global fetch — that caused one failing request (e.g. Notifications)
-// to sign the user out and break all other pages. withRetryAndRefresh handles refresh+retry per request.
+// Custom fetch: abort hung requests. Do NOT buffer/parse the body here — reading
+// res.text() has stalled on Android OkHttp in Expo and left pages on "Loading…".
+// We no longer sign out on 401 in the global fetch — that caused one failing request
+// (e.g. Notifications) to sign the user out and break all other pages.
+// withRetryAndRefresh handles refresh+retry per request.
 
 function requestUrlString(input: RequestInfo | URL): string {
   if (typeof input === 'string') return input;
@@ -81,37 +83,16 @@ const safeFetch: typeof fetch = async (input, init) => {
     signal.addEventListener('abort', onAbort);
   }
   try {
-    const res = await fetch(input, { ...init, signal: controller.signal });
-    clearTimeout(timeoutId);
-    if (signal) signal.removeEventListener('abort', onAbort);
-    const text = await res.text();
-
-  if (res.status === 204 || text.trim() === '') {
-    return new Response('{}', {
-      status: res.status,
-      statusText: res.statusText,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  }
-  try {
-    JSON.parse(text);
-  } catch {
-    const errBody = JSON.stringify({
-      error: 'invalid_response',
-      error_description: 'Server returned invalid response. Restart Expo with "npx expo start --clear" and use Wi-Fi.',
-    });
-    return new Response(errBody, { status: 502, headers: { 'Content-Type': 'application/json' } });
-  }
-  return new Response(text, { status: res.status, statusText: res.statusText, headers: res.headers });
+    return await fetch(input, { ...init, signal: controller.signal });
   } catch (e) {
-    clearTimeout(timeoutId);
-    if (signal) signal.removeEventListener('abort', onAbort);
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes('abort') || msg.toLowerCase().includes('timeout')) {
       throw new Error('Request timed out');
     }
     throw e;
   } finally {
+    clearTimeout(timeoutId);
+    if (signal) signal.removeEventListener('abort', onAbort);
     globalSignal.removeEventListener('abort', onGlobalAbort);
   }
 };
@@ -119,25 +100,27 @@ const safeFetch: typeof fetch = async (input, init) => {
 // autoRefreshToken and persistSession ensure session stays valid after app background/foreground.
 export const supabase = createClient(url, key, {
   auth: {
-    storage: AsyncStorage,
+    storage: authStorage,
     autoRefreshToken: true,
     persistSession: true,
     detectSessionInUrl: false,
   },
   global: {
     fetch: safeFetch,
+    // Both Android (OkHttp) and iOS (CFNetwork) occasionally receive the
+    // response headers but stall while decoding compressed PostgREST bodies in
+    // Expo Go. Empty/HEAD responses are unaffected. Requesting an uncompressed
+    // body keeps standard fetch while avoiding that decoder path.
+    headers: {
+      'Accept-Encoding': 'identity',
+    },
   },
 });
 
-/** Auth-only client using native fetch to avoid edge hangs in recovery/setSession flows. */
-export const supabaseAuthNative = createClient(url, key, {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
-  },
-});
+// Keep one GoTrue instance responsible for persisted sessions and token
+// refreshes. Multiple clients sharing the same auth storage key can contend for
+// the auth lock in Expo Go and prevent otherwise healthy REST requests starting.
+export const supabaseAuthNative = supabase;
 
 const AUTH_USER_MS = 70_000;
 
@@ -244,8 +227,9 @@ export function startForegroundRefresh(): void {
   const now = Date.now();
   if (now - foregroundRefreshStartedAt < FOREGROUND_REFRESH_DEBOUNCE_MS) return;
   foregroundRefreshStartedAt = now;
-  isRefreshing = false;
-  refreshQueue = [];
+  // Always resolve any waiters — clearing the queue without resolve left Android
+  // pages stuck on "Loading…" after lock-screen / tab resume at events.
+  resolveRefreshQueue();
   foregroundRefreshPromise = refreshSessionIfNeeded().then(() => {}, () => {});
 }
 
@@ -265,9 +249,11 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Longer timeouts so requests succeed after app resume (slow network reconnection). We retry once on failure.
-const REQUEST_TIMEOUT_MS = 15000;
-const REFRESH_TIMEOUT_MS = 8000;
+// Keep these aligned with the transport timeout. Auth refreshes have been
+// observed taking around 30 seconds while the hosted project wakes up.
+// Android venue Wi‑Fi: fail faster so users see Retry instead of endless Loading.
+const REQUEST_TIMEOUT_MS = Platform.OS === 'android' ? 25_000 : 60_000;
+const REFRESH_TIMEOUT_MS = Platform.OS === 'android' ? 25_000 : 60_000;
 
 function withRequestTimeout<T>(p: Promise<T>, ms: number = REQUEST_TIMEOUT_MS): Promise<T> {
   return Promise.race([
@@ -294,7 +280,13 @@ let refreshQueue: Array<() => void> = [];
 
 function waitForRefresh(): Promise<void> {
   if (!isRefreshing) return Promise.resolve();
-  return new Promise((resolve) => refreshQueue.push(resolve));
+  return Promise.race([
+    new Promise<void>((resolve) => {
+      refreshQueue.push(resolve);
+    }),
+    // Never block page loads forever if a refresh waiter was dropped (Android resume).
+    new Promise<void>((resolve) => setTimeout(resolve, 8_000)),
+  ]);
 }
 
 function resolveRefreshQueue(): void {
@@ -303,46 +295,75 @@ function resolveRefreshQueue(): void {
   queue.forEach((resolve) => resolve());
 }
 
+function isAuthenticationFailure(err: unknown): boolean {
+  const value = err as {
+    status?: number;
+    code?: string;
+    name?: string;
+    message?: string;
+  } | null;
+  const text = `${value?.name ?? ''} ${value?.message ?? ''}`.toLowerCase();
+  return (
+    value?.status === 401 ||
+    value?.code === 'PGRST301' ||
+    value?.code === 'PGRST302' ||
+    text.includes('jwt expired') ||
+    text.includes('invalid jwt') ||
+    text.includes('auth session missing') ||
+    text.includes('not authenticated')
+  );
+}
+
+export function isTransientRequestFailure(err: unknown): boolean {
+  return isTransientFailureShared(err);
+}
+
 export async function withRetryAndRefresh<T>(fn: () => Promise<T>): Promise<T> {
   await waitForRefresh();
   try {
     return await withRequestTimeout(fn());
   } catch (firstErr) {
-    if (__DEV__) console.warn('[Supabase] First request failed, refreshing session…', getErrorMessage(firstErr));
-    if (!isRefreshing) {
-      isRefreshing = true;
-      try {
-        await withRequestTimeout(refreshSessionIfNeeded(), REFRESH_TIMEOUT_MS);
-        if (__DEV__) console.log('[Supabase] Session refreshed');
-      } catch (_) {
-        if (__DEV__) console.warn('[Supabase] Session refresh failed');
-      } finally {
-        resolveRefreshQueue();
+    const authFailure = isAuthenticationFailure(firstErr);
+    const transientFailure = isTransientRequestFailure(firstErr);
+
+    // Query-shape, RLS, validation, and other deterministic database failures
+    // cannot be repaired by refreshing the token.
+    if (!authFailure && !transientFailure) {
+      if (__DEV__) {
+        console.log('[Supabase] Non-retryable request failure:', getErrorMessage(firstErr));
+      }
+      throw firstErr;
+    }
+
+    if (authFailure) {
+      if (__DEV__) console.log('[Supabase] Authentication failed, refreshing session…');
+      if (!isRefreshing) {
+        isRefreshing = true;
+        try {
+          await withRequestTimeout(refreshSessionIfNeeded(), REFRESH_TIMEOUT_MS);
+          if (__DEV__) console.log('[Supabase] Session refreshed');
+        } catch (refreshErr) {
+          if (__DEV__) console.log('[Supabase] Session refresh failed:', getErrorMessage(refreshErr));
+        } finally {
+          resolveRefreshQueue();
+        }
+      } else {
+        await waitForRefresh();
       }
     } else {
-      await waitForRefresh();
+      if (__DEV__) console.log('[Supabase] Transient request failure, retrying once…', getErrorMessage(firstErr));
+      await delay(750);
     }
+
     try {
       return await withRequestTimeout(fn());
-    } catch (secondErr) {
-      await delay(1000);
-      try {
-        return await withRequestTimeout(fn());
-      } catch (finalErr) {
-        const msg = getErrorMessage(finalErr);
-        if (__DEV__) console.warn('[Supabase] All retries failed:', msg);
-        throw new Error(msg || 'Error - page not loading');
-      }
+    } catch (retryErr) {
+      const msg = getErrorMessage(retryErr);
+      if (__DEV__) console.warn('[Supabase] Retry failed:', msg);
+      throw new Error(msg || 'Error - page not loading');
     }
   }
 }
 
-/** Same as supabase but uses default fetch. Use for Android Storage uploads so custom fetch cannot break the request. */
-export const supabaseStorage = createClient(url, key, {
-  auth: {
-    storage: AsyncStorage,
-    autoRefreshToken: true,
-    persistSession: true,
-    detectSessionInUrl: false,
-  },
-});
+/** Compatibility alias; all operations share one authenticated client. */
+export const supabaseStorage = supabase;

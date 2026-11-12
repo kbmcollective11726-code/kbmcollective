@@ -113,7 +113,7 @@ function BadgeFace({
         {showEventName ? <div className={styles.badgeTitle}>{event?.name ?? 'Event'}</div> : null}
         <div className={styles.name}>{m.full_name}</div>
         {m.title?.trim() ? <div className={styles.memberTitle}>{m.title.trim()}</div> : null}
-        <div className={styles.company}>{m.company?.trim() || '—'}</div>
+        {m.company?.trim() ? <div className={styles.company}>{m.company.trim()}</div> : null}
         <div className={styles.qrWrap}>
           {m.token && qrMap[m.user_id] ? (
             <img src={qrMap[m.user_id]} alt="" width={148} height={148} />
@@ -148,7 +148,7 @@ function BadgeBack({
         {showEventName ? <div className={styles.badgeTitle}>{event?.name ?? 'Event'}</div> : null}
         <div className={styles.backAttendeeName}>{m.full_name}</div>
         {dates ? <div className={styles.backDates}>{dates}</div> : null}
-        <div className={styles.company}>{event?.venue?.trim() || '—'}</div>
+        {event?.venue?.trim() ? <div className={styles.company}>{event.venue.trim()}</div> : null}
         <div className={styles.backBody}>Scan the QR on the front with KBM Connect to network.</div>
         <div className={styles.footer}>
           <div>{footerLine || '\u00a0'}</div>

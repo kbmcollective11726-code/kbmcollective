@@ -3,86 +3,83 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>KBM Connect — password reset</title>
-  <link rel="icon" href="/logo.png" type="image/png" />
-  <link rel="apple-touch-icon" href="/logo.png" />
-  <meta name="theme-color" content="#0a0a0a" />
+  <title>KBM Connect — Reset password</title>
+  <meta name="theme-color" content="#0f172a" />
   <style>
-    body { font-family: system-ui, -apple-system, sans-serif; padding: 24px; max-width: 520px; margin: 0 auto; line-height: 1.5; color: #111; }
-    h1 { font-size: 1.25rem; }
-    .muted { color: #555; font-size: 0.95rem; }
+    html, body { margin: 0; padding: 0; min-height: 100%; background: #0f172a; }
+    .wrap {
+      font-family: system-ui, -apple-system, sans-serif;
+      padding: 32px 20px 48px;
+      color: #f8fafc;
+      max-width: 400px;
+      margin: 0 auto;
+    }
+    h1 { font-size: 22px; margin: 0 0 8px; text-align: center; }
+    .lead { font-size: 15px; color: #94a3b8; text-align: center; margin: 0 0 24px; line-height: 1.5; }
+    #status { font-size: 17px; margin: 0 0 8px; text-align: center; }
+    #detail { font-size: 15px; color: #94a3b8; margin: 0; text-align: center; line-height: 1.5; }
+    #reset-form { display: none; }
+    label { display: block; font-size: 14px; color: #cbd5e1; margin-bottom: 6px; }
+    input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+      border: 1px solid #334155;
+      border-radius: 10px;
+      background: #1e293b;
+      color: #f8fafc;
+      font-size: 16px;
+    }
+    button[type="submit"] {
+      width: 100%;
+      padding: 14px 16px;
+      margin-top: 8px;
+      border: none;
+      border-radius: 10px;
+      background: #1e4f8a;
+      color: #fff;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button[type="submit"]:disabled { opacity: 0.6; cursor: wait; }
+    #form-error { color: #f87171; font-size: 14px; margin: 12px 0 0; text-align: center; min-height: 1.2em; }
+    #success-view { display: none; text-align: center; }
+    #success-view h1 { color: #4ade80; }
+    .spinner { text-align: center; padding: 24px 0; }
   </style>
 </head>
 <body>
-  <h1>Opening KBM Connect…</h1>
-  <p id="status" class="muted">Redirecting you to the app to finish resetting your password.</p>
-  <p id="fallback" class="muted" style="display:none; margin-top:16px;">
-    If the app doesn’t open, install <strong>KBM Connect</strong> on this device, then open the reset link from your email again.
-    You can also use <strong>Profile → Change password</strong> while signed in.
-  </p>
-  <script>
-    (function () {
-      var statusEl = document.getElementById('status');
-      var fallbackEl = document.getElementById('fallback');
-      var hash = window.location.hash || '';
-      var search = window.location.search || '';
-      /** Supabase: implicit (hash) or PKCE (?code=). Avoid matching ?error_code= as "code=". */
-      function hasAuthPayload(h, s) {
-        var combined = (h || '') + '&' + (s || '');
-        if (combined.indexOf('access_token') !== -1) return true;
-        if (combined.indexOf('type=recovery') !== -1) return true;
-        if (/(?:^|[?&#])code=/.test(combined)) return true;
-        return false;
-      }
-      function parseParam(key, h, s) {
-        try {
-          var fromHash = new URLSearchParams(h.replace(/^#/, ''));
-          if (fromHash.get(key)) return fromHash.get(key);
-          var fromSearch = new URLSearchParams(s.replace(/^\?/, ''));
-          return fromSearch.get(key) || '';
-        } catch (e) {
-          return '';
-        }
-      }
-      var err = parseParam('error', hash, search) || parseParam('error_code', hash, search);
-      var errDesc = parseParam('error_description', hash, search);
+  <div class="wrap">
+    <div id="loading-view" class="spinner">
+      <p id="status">Verifying your reset link…</p>
+      <p id="detail">Please wait.</p>
+    </div>
 
-      if (err || errDesc) {
-        if (statusEl) {
-          statusEl.textContent =
-            errDesc || err || 'This reset link is no longer valid.';
-        }
-        if (fallbackEl) fallbackEl.style.display = 'block';
-        return;
-      }
+    <div id="reset-form">
+      <h1>Set your new password</h1>
+      <p class="lead">Choose a password with at least 8 characters. You will sign in to KBM Connect with this password.</p>
+      <form id="password-form">
+        <label for="password">New password</label>
+        <input id="password" type="password" autocomplete="new-password" minlength="8" required placeholder="At least 8 characters" />
+        <label for="confirm">Confirm password</label>
+        <input id="confirm" type="password" autocomplete="new-password" minlength="8" required placeholder="Type it again" />
+        <button type="submit" id="submit-btn">Save password</button>
+        <p id="form-error" role="alert"></p>
+      </form>
+    </div>
 
-      var hasTokens = hasAuthPayload(hash, search);
+    <div id="success-view">
+      <h1>Password saved</h1>
+      <p class="lead">Open <strong>KBM Connect</strong> and sign in with your email and new password.</p>
+    </div>
 
-      if (!hasTokens) {
-        if (statusEl) {
-          statusEl.textContent =
-            'This link is missing login data (expired, already used, or opened by a mail scanner before you tapped it). Request a new reset from the KBM Connect app, then open the link once from your mail app. If you use Outlook / corporate email, try forwarding the message to Gmail or use “view original link”.';
-        }
-        if (fallbackEl) fallbackEl.style.display = 'block';
-        return;
-      }
-
-      // Prefer query params for custom-scheme handoff (more reliable than URL fragments on some devices).
-      var target = 'collectivelive://reset-password';
-      var hashQuery = hash ? hash.replace(/^#/, '') : '';
-      var searchQuery = search ? search.replace(/^\?/, '') : '';
-      var query = hashQuery || searchQuery;
-      if (query) target += '?' + query;
-
-      window.location.replace(target);
-      setTimeout(function () {
-        if (fallbackEl) fallbackEl.style.display = 'block';
-        if (statusEl) {
-          statusEl.textContent =
-            'We tried to open the app. If nothing happened, use the options below.';
-        }
-      }, 3500);
-    })();
-  </script>
+    <div id="error-view" style="display:none">
+      <p id="error-status" style="font-size:17px;text-align:center;margin:0 0 8px"></p>
+      <p id="error-detail" style="font-size:15px;color:#94a3b8;text-align:center;margin:0;line-height:1.5"></p>
+    </div>
+  </div>
+  <script src="/auth-recovery.js"></script>
 </body>
 </html>

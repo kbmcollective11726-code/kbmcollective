@@ -10,8 +10,19 @@ export function getPublicPortalBaseUrl(): string {
   return DEFAULT_CONNECT_BASE;
 }
 
-export function publicRegisterUrl(eventId: string, audience: 'delegate' | 'vendor' | 'speaker'): string {
-  return `${getPublicPortalBaseUrl()}/register/${eventId}/${audience}`;
+export function publicRegisterUrl(
+  eventId: string,
+  audience: 'delegate' | 'vendor' | 'speaker',
+  formSlug?: string | null,
+): string {
+  const base = `${getPublicPortalBaseUrl()}/register/${eventId}/${audience}`;
+  const slug = (formSlug ?? '').trim();
+  return slug ? `${base}/${encodeURIComponent(slug)}` : base;
+}
+
+/** Public event website (Standard registration). */
+export function publicEventSiteUrl(slug: string): string {
+  return `${getPublicPortalBaseUrl()}/e/${encodeURIComponent(slug.trim())}`;
 }
 
 export function publicPortalLoginUrl(eventId: string, role: 'delegate' | 'vendor'): string {

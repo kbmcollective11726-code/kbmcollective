@@ -2,27 +2,23 @@
 // Set RESEND_API_KEY + SECURITY_ALERT_FROM_EMAIL in Edge Function secrets.
 // Optional PLATFORM_ALERT_EMAILS=comma,separated,override@example.com
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey, x-cron-secret",
-};
-
-function json(body: object, status: number) {
+function json(body: object, status: number, headers: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
   });
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -32,26 +28,26 @@ Deno.serve(async (req: Request) => {
   const fromEmail = Deno.env.get("SECURITY_ALERT_FROM_EMAIL") ?? "KBM Connect <alerts@kbmcollective.org>";
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Server configuration error" }, 500);
+    return json({ error: "Server configuration error" }, 500, ch);
   }
 
   const headerSecret = req.headers.get("x-cron-secret");
   if (!cronSecret || headerSecret !== cronSecret) {
-    return json({ error: "Unauthorized" }, 401);
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   let body: { subject?: string; html?: string; text?: string };
   try {
     body = await req.json();
   } catch {
-    return json({ error: "Invalid JSON body" }, 400);
+    return json({ error: "Invalid JSON body" }, 400, ch);
   }
 
   const subject = typeof body.subject === "string" ? body.subject.trim() : "";
   const html = typeof body.html === "string" ? body.html : "";
   const text = typeof body.text === "string" ? body.text : "";
   if (!subject || (!html && !text)) {
-    return json({ error: "subject and html or text required" }, 400);
+    return json({ error: "subject and html or text required" }, 400, ch);
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
@@ -69,11 +65,11 @@ Deno.serve(async (req: Request) => {
   }
 
   if (recipients.length === 0) {
-    return json({ ok: true, emailed: 0, reason: "no_recipients" }, 200);
+    return json({ ok: true, emailed: 0, reason: "no_recipients" }, 200, ch);
   }
 
   if (!resendKey) {
-    return json({ ok: true, emailed: 0, reason: "RESEND_API_KEY not configured" }, 200);
+    return json({ ok: true, emailed: 0, reason: "RESEND_API_KEY not configured" }, 200, ch);
   }
 
   let sent = 0;
@@ -96,5 +92,5 @@ Deno.serve(async (req: Request) => {
     else console.error("Resend error", to, await res.text());
   }
 
-  return json({ ok: true, emailed: sent }, 200);
+  return json({ ok: true, emailed: sent }, 200, ch);
 });

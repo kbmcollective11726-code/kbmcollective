@@ -19,6 +19,7 @@ import { awardPoints } from '../lib/points';
 import { createNotificationAndPush } from '../lib/notifications';
 import type { Post, Comment } from '../lib/types';
 import { colors } from '../constants/colors';
+import { useEventThemeColor } from '../lib/eventTheme';
 import Avatar from './Avatar';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -44,6 +45,7 @@ export default function CommentSheet({
   onCommentAdded,
   embedded = false,
 }: CommentSheetProps) {
+  const themeColor = useEventThemeColor();
   const [comments, setComments] = useState<Comment[]>([]);
   const [loading, setLoading] = useState(true);
   const [input, setInput] = useState('');
@@ -295,7 +297,7 @@ export default function CommentSheet({
         editable={!sending}
       />
       <TouchableOpacity
-        style={[styles.sendBtn, (!input.trim() || sending) && styles.sendBtnDisabled]}
+        style={[styles.sendBtn, { backgroundColor: themeColor }, (!input.trim() || sending) && styles.sendBtnDisabled]}
         onPress={handleSend}
         disabled={!input.trim() || sending}
       >
@@ -324,7 +326,7 @@ export default function CommentSheet({
             ListHeaderComponent={postListHeader}
             ListEmptyComponent={
               loading ? (
-                <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
+                <ActivityIndicator size="large" color={themeColor} style={styles.loader} />
               ) : (
                 listEmptyText
               )
@@ -338,7 +340,7 @@ export default function CommentSheet({
   }
 
   const commentListModal = loading ? (
-    <ActivityIndicator size="large" color={colors.primary} style={styles.loader} />
+    <ActivityIndicator size="large" color={themeColor} style={styles.loader} />
   ) : (
     <FlatList
       data={comments}

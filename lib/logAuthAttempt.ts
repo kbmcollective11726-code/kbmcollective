@@ -10,15 +10,23 @@ export function logAuthAttempt(params: {
   errorMessage?: string;
   userId?: string;
   anonKey: string;
+  /** Required for success logs (user access token). */
+  accessToken?: string;
 }): void {
   const email = params.email.trim().toLowerCase();
   if (!email || !supabaseUrl || !params.anonKey) return;
+  if (params.success && !params.accessToken) return;
+
+  const bearer =
+    params.success && params.accessToken
+      ? params.accessToken
+      : params.anonKey;
 
   void fetch(`${supabaseUrl}/functions/v1/log-auth-attempt`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${params.anonKey}`,
+      Authorization: `Bearer ${bearer}`,
       apikey: params.anonKey,
     },
     body: JSON.stringify({

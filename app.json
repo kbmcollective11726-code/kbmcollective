@@ -2,14 +2,14 @@
   "expo": {
     "name": "KBM Connect",
     "slug": "kbmconnect",
-    "version": "1.1.0",
-    "runtimeVersion": "1.1.0",
+    "version": "1.1.2",
+    "runtimeVersion": "1.1.2",
     "updates": {
       "url": "https://u.expo.dev/d4399477-1045-4301-b852-80e528aec992",
-      "checkAutomatically": "ON_LOAD",
+      "checkAutomatically": "NEVER",
       "fallbackToCacheTimeout": 0
     },
-    "orientation": "portrait",
+    "orientation": "default",
     "extra": {
       "router": {},
       "eas": {
@@ -21,7 +21,7 @@
     "userInterfaceStyle": "automatic",
     "backgroundColor": "#ffffff",
     "splash": {
-      "image": "./assets/icon.png",
+      "image": "./assets/adaptive-icon-safe.png",
       "resizeMode": "contain",
       "backgroundColor": "#000000"
     },
@@ -31,16 +31,42 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.kbmcollective.collectivelive",
-      "buildNumber": "41",
+      "buildNumber": "47",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
-        "NSCameraUsageDescription": "When you use Post a photo, KBM Connect uses the camera so you can take a new picture to share on the event activity feed or add to your profile. For example, you can capture a moment at a session and publish it as a post for other attendees.",
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait"
+        ],
+        "NSCameraUsageDescription": "KBM Connect uses the camera to take photos for the event feed or your profile, and to scan badge or session QR codes for check-in and networking. For example, you can photograph a session moment to post, or scan an attendee badge to connect.",
         "NSPhotoLibraryUsageDescription": "When you use Post a photo, KBM Connect accesses your photo library so you can choose an existing picture to share on the event activity feed or add to your profile. For example, you can select a photo you already took and publish it to the feed. This access is also used for the event photo book.",
         "NSPhotoLibraryAddUsageDescription": "KBM Connect saves images to your photo library when you choose to—for example, saving a picture from the event photo book to your Camera Roll after you tap save or export."
+      },
+      "privacyManifests": {
+        "NSPrivacyTracking": false,
+        "NSPrivacyTrackingDomains": [],
+        "NSPrivacyCollectedDataTypes": [],
+        "NSPrivacyAccessedAPITypes": [
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryUserDefaults",
+            "NSPrivacyAccessedAPITypeReasons": ["CA92.1"]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryFileTimestamp",
+            "NSPrivacyAccessedAPITypeReasons": ["C617.1", "0A2A.1", "3B52.1"]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategoryDiskSpace",
+            "NSPrivacyAccessedAPITypeReasons": ["E174.1", "85F4.1"]
+          },
+          {
+            "NSPrivacyAccessedAPIType": "NSPrivacyAccessedAPICategorySystemBootTime",
+            "NSPrivacyAccessedAPITypeReasons": ["35F9.1"]
+          }
+        ]
       }
     },
     "android": {
-      "versionCode": 13,
+      "versionCode": 21,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon-safe.png",
         "backgroundColor": "#000000"
@@ -60,13 +86,9 @@
         "android.permission.READ_MEDIA_VISUAL_USER_SELECTED",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.SYSTEM_ALERT_WINDOW"
       ]
-    },
-    "androidStatusBar": {
-      "translucent": false,
-      "backgroundColor": "#ffffff",
-      "barStyle": "dark-content"
     },
     "web": {
       "bundler": "metro",
@@ -85,10 +107,18 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "KBM Connect uses the camera to take photos for the event feed or your profile, and to scan badge or session QR codes for check-in and networking. For example, you can photograph a session moment to post, or scan an attendee badge to connect.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "When you use Post a photo, KBM Connect accesses your photo library so you can choose an existing picture to share on the event activity feed or add to your profile. For example, you can select a photo you already took and publish it to the feed. This access is also used for the event photo book.",
-          "cameraPermission": "When you use Post a photo, KBM Connect uses the camera so you can take a new picture to share on the event activity feed or add to your profile. For example, you can capture a moment at a session and publish it as a post for other attendees.",
+          "cameraPermission": "KBM Connect uses the camera to take photos for the event feed or your profile, and to scan badge or session QR codes for check-in and networking. For example, you can photograph a session moment to post, or scan an attendee badge to connect.",
           "microphonePermission": false
         }
       ],
@@ -103,11 +133,15 @@
         "expo-build-properties",
         {
           "android": {
-            "compileSdkVersion": 35,
-            "targetSdkVersion": 35
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36,
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "extraProguardRules": "-keep class com.swmansion.reanimated.** { *; }\n-keep class com.facebook.react.turbomodule.** { *; }\n-keep class expo.modules.** { *; }\n-keep class expo.modules.updates.** { *; }\n-keep class expo.modules.notifications.** { *; }\n-keep class com.reactnativecommunity.asyncstorage.** { *; }\n-keep class io.sentry.** { *; }"
           }
         }
-      ]
+      ],
+      "./plugins/withAndroidPlayCompliance.js"
     ],
     "experiments": {
       "typedRoutes": true

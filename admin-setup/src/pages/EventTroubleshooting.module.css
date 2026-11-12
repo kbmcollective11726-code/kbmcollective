@@ -1,0 +1,173 @@
+.page {
+  max-width: 1080px;
+  width: 100%;
+}
+
+.back {
+  margin: 0 0 12px;
+}
+
+.back a {
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.hero {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 28px;
+  padding: 24px 28px;
+  background: var(--color-primary);
+  color: #fff;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+}
+
+.hero h1 {
+  margin: 0 0 8px;
+  color: #fff;
+  font-size: 2rem;
+  letter-spacing: -0.02em;
+}
+
+.lead {
+  margin: 0;
+  max-width: 40rem;
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 15px;
+}
+
+.download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px 18px;
+  background: var(--color-accent);
+  color: var(--color-primary);
+  border-radius: var(--radius);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.download:hover {
+  background: var(--color-accent-hover);
+  color: var(--color-primary);
+  text-decoration: none;
+}
+
+.page > h2,
+.issue h2,
+.send h2 {
+  margin: 0 0 12px;
+  font-size: 1.45rem;
+}
+
+.intro {
+  margin: -4px 0 14px;
+  color: var(--color-text-secondary);
+  font-size: 15px;
+}
+
+.startGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 28px;
+}
+
+.startCard,
+.issue,
+.send {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.startCard {
+  padding: 12px 12px 16px;
+}
+
+.startCard img,
+.issue img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius-sm);
+  background: var(--color-background);
+}
+
+.startCard h3 {
+  margin: 10px 0 6px;
+  font-size: 1.05rem;
+}
+
+.startCard p,
+.issue li,
+.send p {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.issues {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.issue {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 18px;
+  align-items: center;
+  padding: 16px;
+  border-top: 3px solid var(--color-accent);
+}
+
+.issue ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.issue li + li {
+  margin-top: 8px;
+}
+
+.send {
+  margin-top: 14px;
+  padding: 18px 20px;
+  border-left: 4px solid var(--color-accent);
+}
+
+@media (max-width: 980px) {
+  .startGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .startGrid,
+  .issue {
+    grid-template-columns: 1fr;
+  }
+
+  .hero {
+    padding: 20px;
+  }
+}

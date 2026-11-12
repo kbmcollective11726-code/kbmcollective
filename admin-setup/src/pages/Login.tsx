@@ -1,11 +1,14 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { supabase, isConfigured } from '../lib/supabase';
 import { logAuthAttempt } from '../lib/logAuthAttempt';
+import { getLoginRateLimitError, recordLoginRateLimitAttempt } from '../lib/loginRateLimit';
+import { ACCOUNT_DEACTIVATED_MESSAGE, isAccountActive } from '../lib/accountActive';
+import { userNeedsCadminEmailOtp } from '../lib/cadminAdminAccess';
+import { clearPlatformAdminEmailOtp } from '../lib/platformAdminEmailOtp';
+import { markAwaitingPlatformAdminEmailOtp } from './LoginEmailCode';
 import styles from './Login.module.css';
 
 export default function Login() {
-  const navigate = useNavigate();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -22,11 +25,22 @@ export default function Login() {
     setLoading(true);
     const anonKey = (import.meta.env.VITE_SUPABASE_ANON_KEY as string)?.trim() ?? '';
     try {
+      const rateLimitError = await getLoginRateLimitError(trimmedEmail);
+      if (rateLimitError) {
+        setError(rateLimitError);
+        setLoading(false);
+        return;
+      }
       const { data, error: err } = await supabase.auth.signInWithPassword({
         email: trimmedEmail,
         password,
       });
       if (err) {
+        recordLoginRateLimitAttempt({
+          email: trimmedEmail,
+          success: false,
+          source: 'cadmin',
+        });
         logAuthAttempt({
           email: trimmedEmail,
           success: false,
@@ -38,6 +52,11 @@ export default function Login() {
       }
       const user = data?.user;
       if (!user?.id) {
+        recordLoginRateLimitAttempt({
+          email: trimmedEmail,
+          success: false,
+          source: 'cadmin',
+        });
         logAuthAttempt({
           email: trimmedEmail,
           success: false,
@@ -49,39 +68,58 @@ export default function Login() {
         setLoading(false);
         return;
       }
+      const { data: profile } = await supabase
+        .from('users')
+        .select('is_platform_admin, is_active')
+        .eq('id', user.id)
+        .single();
+      if (!isAccountActive((profile as { is_active?: boolean | null } | null)?.is_active)) {
+        await supabase.auth.signOut();
+        recordLoginRateLimitAttempt({
+          email: trimmedEmail,
+          success: false,
+          source: 'cadmin',
+        });
+        logAuthAttempt({
+          email: trimmedEmail,
+          success: false,
+          source: 'cadmin',
+          errorMessage: 'account_deactivated',
+          userId: user.id,
+          anonKey,
+        });
+        setError(ACCOUNT_DEACTIVATED_MESSAGE);
+        setLoading(false);
+        return;
+      }
+      recordLoginRateLimitAttempt({
+        email: trimmedEmail,
+        success: true,
+        source: 'cadmin',
+        accessToken: data.session?.access_token,
+      });
       logAuthAttempt({
         email: trimmedEmail,
         success: true,
         source: 'cadmin',
         userId: user.id,
         anonKey,
+        accessToken: data.session?.access_token,
       });
-      const { data: profile } = await supabase
-        .from('users')
-        .select('is_platform_admin')
-        .eq('id', user.id)
-        .single();
-      const isPlatformAdmin = (profile as { is_platform_admin?: boolean } | null)?.is_platform_admin === true;
-      const { data: memberRows } = await supabase
-        .from('event_members')
-        .select('event_id, role, roles')
-        .eq('user_id', user.id);
-      const hasEventAdminRole = (memberRows ?? []).some(
-        (r: { role?: string; roles?: string[] | null }) =>
-          r.role === 'admin' ||
-          r.role === 'super_admin' ||
-          (Array.isArray(r.roles) && (r.roles.includes('admin') || r.roles.includes('super_admin')))
-      );
-      if (isPlatformAdmin || hasEventAdminRole) {
-        navigate('/', { replace: true });
+      const access = await userNeedsCadminEmailOtp(user.id);
+      if (access.needsOtp) {
+        clearPlatformAdminEmailOtp();
+        markAwaitingPlatformAdminEmailOtp();
+        // Keep the button in "Signing in…" until App swaps to the email-code gate.
+        // Do not setLoading(false) — that briefly re-showed the password form.
         return;
       }
       await supabase.auth.signOut();
       setError('Access restricted. Only event admins and platform admins can sign in. If you need access, ask your event organizer.');
+      setLoading(false);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Login failed';
       setError(msg);
-    } finally {
       setLoading(false);
     }
   };

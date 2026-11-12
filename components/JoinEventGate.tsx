@@ -29,6 +29,7 @@ import { LogOut, ChevronLeft } from 'lucide-react-native';
 import { theme } from '../constants/theme';
 import type { Event } from '../lib/types';
 import { isEventAccessible } from '../lib/eventAccess';
+import { PLATFORM_ADMIN_ALL_EVENTS_HREF } from '../lib/platformAdminNav';
 
 const HERO_GRADIENT = [colors.primary, colors.primaryDark] as const;
 
@@ -298,6 +299,15 @@ export default function JoinEventGate() {
           {memberships.length > 0 ? (
             <TouchableOpacity style={styles.linkBtn} onPress={onRefresh}>
               <Text style={styles.linkBtnText}>I already joined – refresh my event</Text>
+            </TouchableOpacity>
+          ) : null}
+
+          {user?.is_platform_admin ? (
+            <TouchableOpacity
+              style={styles.linkBtn}
+              onPress={() => router.replace(PLATFORM_ADMIN_ALL_EVENTS_HREF)}
+            >
+              <Text style={styles.linkBtnText}>Browse all events</Text>
             </TouchableOpacity>
           ) : null}
         </ScrollView>

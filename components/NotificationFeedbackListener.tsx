@@ -1,12 +1,10 @@
 import { useEffect, useRef } from 'react';
 import { useAuthStore } from '../stores/authStore';
-import { supabase } from '../lib/supabase';
+import { subscribeUserNotifications } from '../lib/notificationsRealtime';
 import { playInAppNotificationFeedback } from '../lib/inAppNotificationFeedback';
 
 /**
- * Single Realtime subscription: when a notification row is inserted for this user,
- * play haptic + in-app sound. Mounted once from root layout (avoids duplicate feedback
- * from HeaderNotificationBell / HamburgerMenu / AnnouncementBanner).
+ * Uses the shared notifications Realtime bus. Mounted once from root layout.
  */
 export default function NotificationFeedbackListener() {
   const user = useAuthStore((s) => s.user);
@@ -23,31 +21,16 @@ export default function NotificationFeedbackListener() {
       }
     };
 
-    const channel = supabase
-      .channel(`in-app-notification-feedback-${user.id}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'notifications',
-          filter: `user_id=eq.${user.id}`,
-        },
-        (payload) => {
-          const row = payload.new as { id?: string } | null;
-          const id = row?.id;
-          if (!id) return;
-          prune();
-          if (seenIdsRef.current.has(id)) return;
-          seenIdsRef.current.set(id, Date.now());
-          void playInAppNotificationFeedback();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
+    return subscribeUserNotifications(user.id, {
+      onInsert: (row) => {
+        const id = row?.id;
+        if (!id || typeof id !== 'string') return;
+        prune();
+        if (seenIdsRef.current.has(id)) return;
+        seenIdsRef.current.set(id, Date.now());
+        void playInAppNotificationFeedback();
+      },
+    });
   }, [user?.id]);
 
   return null;

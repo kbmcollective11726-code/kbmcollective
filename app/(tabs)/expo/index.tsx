@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { Store, MapPin, ChevronRight, Calendar, Users, Star, History } from 'lucide-react-native';
 import {
   isB2BSlotPastWallClock,
@@ -27,6 +27,7 @@ import { useRolePreviewContext } from '../../../hooks/useRolePreviewContext';
 import { effectiveIsEventAdmin as computeEffectiveEventAdmin, effectiveIsVendorRep as computeEffectiveVendorRep } from '../../../lib/rolePreview';
 import { supabase, supabaseStorage } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme';
 import { scheduleMeetingReminders, cancelAllMeetingReminders } from '../../../lib/meetingReminders';
 import Avatar from '../../../components/Avatar';
 import MeetingRepresentatives from '../../../components/MeetingRepresentatives';
@@ -35,6 +36,14 @@ import { fetchRepresentativesByBoothIds, fetchVendorRepBoothIds, type BoothRepre
 import { formatB2BSlotRangeWallClock } from '../../../lib/b2bEventTime';
 import { fetchVendorPriorInteractionFlags, type VendorPriorInteractionFlag } from '../../../lib/vendorAttendeeBrief';
 import VendorAttendeeBriefModal from '../../../components/VendorAttendeeBriefModal';
+import { areVendorScanNotesOn } from '../../../lib/effectiveEventMenu';
+import {
+  loadCachedExpoPage,
+  saveCachedExpoPage,
+  type CachedExpoBooth,
+  type CachedExpoPage,
+} from '../../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../../stores/connectivityStore';
 
 export type RepMeetingAttendee = {
   id: string;
@@ -88,6 +97,9 @@ export default function ExpoScreen() {
   const effectiveIsEventAdmin = computeEffectiveEventAdmin(isEventAdmin, isPlatformAdmin, previewRole);
   const eventTz = currentEvent?.reminder_timezone;
   const vendorBriefEnabled = currentEvent?.vendor_brief_enabled !== false;
+  const vendorNotesOn = areVendorScanNotesOn(currentEvent);
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
 
   const fetchRepBoothIds = useCallback(
     (eventId: string, uid: string, client: typeof supabase) => fetchVendorRepBoothIds(eventId, uid, client),
@@ -149,9 +161,30 @@ export default function ExpoScreen() {
       return;
     }
     setError(null);
+    const eventId = currentEvent.id;
+    const userId = user?.id;
     const client = Platform.OS === 'android' ? supabaseStorage : supabase;
+
+    const applyCachedExpo = async (): Promise<boolean> => {
+      if (!userId) return false;
+      const cached = await loadCachedExpoPage(eventId, userId);
+      if (!cached) return false;
+      setBooths(cached.booths as BoothWithMeeting[]);
+      setRepAttendees(cached.repAttendees);
+      setIsVendorRep(cached.isVendorRep);
+      setRatedMeetingSlotIds(new Set(cached.ratedMeetingSlotIds));
+      setRepBadgeTokensByAttendee({});
+      setRepNotesByAttendee({});
+      setError(null);
+      useConnectivityStore.getState().setShowingCachedData(true);
+      return true;
+    };
+
     try {
       let list: BoothWithMeeting[] = [];
+      let nextRepAttendees: RepMeetingAttendee[] = [];
+      let nextIsVendorRep = false;
+      let nextRatedIds: string[] = [];
 
       if (user?.id) {
         const [roleDataRes, myBookingsRes, repBoothIds] = await Promise.all([
@@ -176,6 +209,7 @@ export default function ExpoScreen() {
         const isVendorRep = computeEffectiveVendorRep(repBoothIds.length > 0, isPlatformAdmin, previewRole);
 
         if (isVendorRep) {
+          nextIsVendorRep = true;
           setIsVendorRep(true);
           const { data: slotsData } = await client
             .from('meeting_slots')
@@ -187,6 +221,7 @@ export default function ExpoScreen() {
             setBooths([]);
             setRepAttendees([]);
             list = [];
+            nextRepAttendees = [];
           } else {
             const { data: bookingsData } = await client
               .from('meeting_bookings')
@@ -208,6 +243,7 @@ export default function ExpoScreen() {
               setBooths([]);
               setRepAttendees([]);
               list = [];
+              nextRepAttendees = [];
             } else {
               const { data: usersData } = await client
                 .from('users')
@@ -254,6 +290,7 @@ export default function ExpoScreen() {
               });
               setBooths([]);
               setRepAttendees(attendees);
+              nextRepAttendees = attendees;
               await Promise.all([
                 loadVendorRepBadgeTokens(currentEvent.id, attendeeIds, client),
                 user?.id
@@ -269,6 +306,7 @@ export default function ExpoScreen() {
             list = [];
           }
         } else {
+          nextIsVendorRep = false;
           setIsVendorRep(false);
           setRepAttendees([]);
           setRepBadgeTokensByAttendee({});
@@ -294,6 +332,16 @@ export default function ExpoScreen() {
           const meetingBoothIds = [...boothIdToSlot.keys()];
           if (meetingBoothIds.length === 0) {
             setBooths([]);
+            setRatedMeetingSlotIds(new Set());
+            if (userId) {
+              await saveCachedExpoPage(eventId, userId, {
+                booths: [],
+                repAttendees: [],
+                isVendorRep: false,
+                ratedMeetingSlotIds: [],
+              });
+            }
+            useConnectivityStore.getState().reportSuccess();
             setLoading(false);
             setRefreshing(false);
             return;
@@ -357,8 +405,10 @@ export default function ExpoScreen() {
                 )
                 .filter(Boolean)
             );
+            nextRatedIds = [...ratedIds];
             setRatedMeetingSlotIds(ratedIds);
           } else {
+            nextRatedIds = [];
             setRatedMeetingSlotIds(new Set());
           }
         } else {
@@ -370,6 +420,7 @@ export default function ExpoScreen() {
             .order('vendor_name');
           if (e) throw e;
           list = (boothData ?? []) as BoothWithMeeting[];
+          nextRatedIds = [];
           setRatedMeetingSlotIds(new Set());
           }
         }
@@ -398,14 +449,27 @@ export default function ExpoScreen() {
       }
 
       setBooths(list);
+      if (userId) {
+        await saveCachedExpoPage(eventId, userId, {
+          booths: list as CachedExpoBooth[],
+          repAttendees: nextRepAttendees,
+          isVendorRep: nextIsVendorRep,
+          ratedMeetingSlotIds: nextRatedIds,
+        });
+      }
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       console.error('Expo fetch error:', err);
-      setBooths([]);
-      setRepAttendees([]);
-      setRepBadgeTokensByAttendee({});
-      setRepNotesByAttendee({});
-      setIsVendorRep(false);
-      setError(err instanceof Error ? err.message : 'Could not load booths.');
+      useConnectivityStore.getState().reportFailure(err);
+      const restored = await applyCachedExpo();
+      if (!restored) {
+        setBooths([]);
+        setRepAttendees([]);
+        setRepBadgeTokensByAttendee({});
+        setRepNotesByAttendee({});
+        setIsVendorRep(false);
+        setError(err instanceof Error ? err.message : 'Could not load booths.');
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -413,12 +477,14 @@ export default function ExpoScreen() {
   }, [
     currentEvent?.id,
     currentEvent?.reminder_timezone,
+    currentEvent?.vendor_brief_enabled,
     user?.id,
     isPlatformAdmin,
     previewRole,
     fetchRepBoothIds,
     loadVendorRepBadgeTokens,
     loadVendorRepNotes,
+    eventTz,
   ]);
 
   // Like Info: load on mount and on focus. No timeout so first try can complete.
@@ -526,7 +592,7 @@ export default function ExpoScreen() {
     return (
       <SafeAreaView style={s.container} edges={[]}>
         <View style={s.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
           <Text style={s.loadingText}>{isVendorRep ? 'Loading…' : 'Loading booths…'}</Text>
         </View>
       </SafeAreaView>
@@ -564,17 +630,17 @@ export default function ExpoScreen() {
       | { kind: 'meeting'; id: string; meeting: RepMeetingRow };
     const repListRows: RepListRow[] = [
       ...(upcomingMeetings.length > 0 ? [{ kind: 'section', id: 'section-upcoming', label: 'Upcoming' } as const] : []),
-      ...upcomingMeetings.map((meeting) => ({
+      ...upcomingMeetings.map((meeting) => (({
         kind: 'meeting',
         id: `meeting-${meeting.bookingId}`,
-        meeting,
-      }) as const),
+        meeting
+      }) as const)),
       ...(pastMeetings.length > 0 ? [{ kind: 'section', id: 'section-past', label: 'Past' } as const] : []),
-      ...pastMeetings.map((meeting) => ({
+      ...pastMeetings.map((meeting) => (({
         kind: 'meeting',
         id: `meeting-${meeting.bookingId}`,
-        meeting,
-      }) as const),
+        meeting
+      }) as const)),
     ];
     const totalMeetings = allMeetings.length;
 
@@ -597,7 +663,7 @@ export default function ExpoScreen() {
             keyExtractor={(item) => item.id}
             contentContainerStyle={s.listContent}
             refreshControl={
-              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+              <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
             }
             ListHeaderComponent={
               <View style={s.repHeader}>
@@ -634,24 +700,24 @@ export default function ExpoScreen() {
                 >
                   <Avatar uri={attendee.avatar_url} name={attendee.full_name} size={48} />
                   <View style={s.attendeeBody}>
-                    <Text style={s.attendeeTime}>{formatB2BSlotRangeWallClock(start, end)}</Text>
+                    <Text style={[s.attendeeTime, { color: themeColor }]}>{formatB2BSlotRangeWallClock(start, end)}</Text>
                     <Text style={s.attendeeName} numberOfLines={1}>{attendee.full_name || 'Unknown'}</Text>
                     {metBefore ? (
-                      <View style={s.metBeforeChip}>
-                        <History size={12} color={colors.primary} />
-                        <Text style={s.metBeforeChipText} numberOfLines={1}>
+                      <View style={[s.metBeforeChip, { backgroundColor: themeFaded }]}>
+                        <History size={12} color={themeColor} />
+                        <Text style={[s.metBeforeChipText, { color: themeColor }]} numberOfLines={1}>
                           Prior interaction{flag?.last_event_name ? ` · ${flag.last_event_name}` : ''}
                         </Text>
                       </View>
                     ) : null}
                     {attendee.company ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.company}</Text> : null}
                     {attendee.title ? <Text style={s.attendeeMeta} numberOfLines={1}>{attendee.title}</Text> : null}
-                    {savedNote ? (
+                    {vendorNotesOn && savedNote ? (
                       <Text style={s.savedNotePreview} numberOfLines={2}>
                         {savedNote}
                       </Text>
                     ) : null}
-                    {attendeeToken ? (
+                    {vendorNotesOn && attendeeToken ? (
                       <TouchableOpacity
                         style={s.notesLink}
                         onPress={(e) => {
@@ -659,7 +725,7 @@ export default function ExpoScreen() {
                           openLeadNotes();
                         }}
                       >
-                        <Text style={s.notesLinkText}>{savedNote ? 'Edit notes' : 'Add notes'}</Text>
+                        <Text style={[s.notesLinkText, { color: themeColor }]}>{savedNote ? 'Edit notes' : 'Add notes'}</Text>
                       </TouchableOpacity>
                     ) : null}
                   </View>
@@ -678,7 +744,7 @@ export default function ExpoScreen() {
           subjectTitle={repAttendees.find((a) => a.id === briefSubjectId)?.title ?? null}
           subjectCompany={repAttendees.find((a) => a.id === briefSubjectId)?.company ?? null}
           meetings={briefMeetings}
-          enableNotes
+          enableNotes={vendorNotesOn}
           showPriorInteractions={vendorBriefEnabled}
           initialNote={briefSubjectId ? repNotesByAttendee[briefSubjectId] ?? '' : ''}
           onNoteSaved={(note) => {
@@ -718,7 +784,7 @@ export default function ExpoScreen() {
           {effectiveIsEventAdmin ? (
             <>
               <Text style={s.emptySubtext}>Add vendor booths from Event admin, then assign attendees to meetings here.</Text>
-              <TouchableOpacity style={s.adminCta} onPress={() => router.push('/profile/admin-vendor-booths')}>
+              <TouchableOpacity style={[s.adminCta, { backgroundColor: themeColor }]} onPress={() => router.push('/profile/admin-vendor-booths')}>
                 <Text style={s.adminCtaText}>Go to Vendor booths (Admin)</Text>
               </TouchableOpacity>
             </>
@@ -735,7 +801,7 @@ export default function ExpoScreen() {
           maxToRenderPerBatch={10}
           windowSize={5}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
           }
           renderItem={({ item, index }) => {
             const currentIsPast = isBoothMeetingPast(item);
@@ -751,7 +817,9 @@ export default function ExpoScreen() {
                 <TouchableOpacity
                   style={s.card}
                   activeOpacity={0.7}
-                  onPress={() => router.push(`/expo/${item.id}` as any)}
+                  onPress={() =>
+                    router.push(`/(tabs)/expo/${item.id}?from=${encodeURIComponent('/(tabs)/expo')}` as never)
+                  }
                 >
               <View style={s.cardInner}>
                 <View style={s.cardRow}>
@@ -778,12 +846,12 @@ export default function ExpoScreen() {
                 {item.meetingStart && item.meetingEnd ? (
                   <View style={s.meetingBlock}>
                     <View style={s.meetingRow}>
-                      <Calendar size={16} color={colors.primary} />
+                      <Calendar size={16} color={themeColor} />
                       <Text style={s.meetingTime}>{formatB2BSlotRangeWallClock(item.meetingStart, item.meetingEnd)}</Text>
                     </View>
                     {item.booth_location ? (
                       <View style={s.meetingRow}>
-                        <MapPin size={16} color={colors.primary} />
+                        <MapPin size={16} color={themeColor} />
                         <Text style={s.meetingLocation}>{item.booth_location}</Text>
                       </View>
                     ) : null}
@@ -792,21 +860,21 @@ export default function ExpoScreen() {
                     ) : null}
                     {item.meetingStart && item.meetingEnd && isB2BSlotPastWallClock(item.meetingStart, item.meetingEnd, eventTz) && item.meetingSlotId ? (
                       ratedMeetingSlotIds.has(item.meetingSlotId) ? (
-                        <View style={s.ratedMeetingRow}>
-                          <Star size={18} color={colors.primary} />
-                          <Text style={s.rateMeetingBtnText}>Already rated</Text>
+                        <View style={[s.ratedMeetingRow, { backgroundColor: themeFaded }]}>
+                          <Star size={18} color={themeColor} />
+                          <Text style={[s.rateMeetingBtnText, { color: themeColor }]}>Already rated</Text>
                         </View>
                       ) : (
                         <TouchableOpacity
-                          style={s.rateMeetingBtn}
+                          style={[s.rateMeetingBtn, { backgroundColor: themeFaded }]}
                           onPress={() => {
                             const fromEnc = encodeURIComponent('/(tabs)/expo');
                             router.push(`/expo/${item.id}?from=${fromEnc}&rate_slot_id=${encodeURIComponent(item.meetingSlotId!)}` as any);
                           }}
                           activeOpacity={0.7}
                         >
-                          <Star size={18} color={colors.primary} />
-                          <Text style={s.rateMeetingBtnText}>Rate this meeting</Text>
+                          <Star size={18} color={themeColor} />
+                          <Text style={[s.rateMeetingBtnText, { color: themeColor }]}>Rate this meeting</Text>
                         </TouchableOpacity>
                       )
                     ) : null}

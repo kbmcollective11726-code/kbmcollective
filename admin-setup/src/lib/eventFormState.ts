@@ -159,7 +159,7 @@ export function eventInsertRowFromForm(f: EventFormFields) {
     menu_show_1on1: f.menuShow1on1,
     menu_show_live_wall: f.menuShowLiveWall,
     menu_show_solution_providers: f.menuShowSolutionProviders,
-    menu_show_scan_badge: f.menuShowScanBadge,
+    // Scan badge is platform-only (Event admin tiles); never write from event form.
     menu_show_notes: f.menuShowNotes,
     menu_show_agenda: f.menuShowAgenda,
     menu_show_session_check_in: f.menuShowSessionCheckIn,
@@ -210,7 +210,7 @@ export function eventUpdateRowFromForm(
           menu_show_1on1: f.menuShow1on1,
           ...(options?.omitMenuLiveWall ? {} : { menu_show_live_wall: f.menuShowLiveWall }),
           menu_show_solution_providers: f.menuShowSolutionProviders,
-          menu_show_scan_badge: f.menuShowScanBadge,
+          // Scan badge is platform-only (Event admin tiles); never write from event form.
           ...(options?.omitMenuShowNotes ? {} : { menu_show_notes: f.menuShowNotes }),
           menu_show_agenda: f.menuShowAgenda,
         }),

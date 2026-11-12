@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link, useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { compressImageToJpegBlob, uploadEventImage } from '../lib/uploadEventImage';
+import { uploadEventImage } from '../lib/uploadEventImage';
 import type {
   Event,
   EventRegistrationForm,
@@ -10,13 +10,34 @@ import type {
   MatchmakingAudience,
 } from '../lib/types';
 import { ensureRegistrationAccount } from '../lib/registrationAccount';
+import {
+  findRegistrationHeadshotUrl,
+  isProfilePhotoRegistrationPrompt,
+  isUsableProfilePhotoUrl,
+  syncUserAvatarFromUrl,
+} from '../lib/registrationHeadshot';
+import { syncSubmissionSolutionCategories } from '../lib/syncSolutionCategories';
 import { publicPortalLoginUrl } from '../lib/publicPortalUrl';
 import { formatEventDateRange } from '../lib/registrantPortal';
 import {
   isStage1RegistrationQuestion,
+  normalizeRegistrationPrompt,
   REGISTRATION_HEADER_FIELD_PROMPTS,
   TERMS_ACCEPTANCE_PROMPT,
 } from '../lib/registrationDefaultVisibility';
+import { filterRegistrationDetailsQuestions } from '../lib/portalRegistrationDetailsQuestions';
+import {
+  contactFieldsComplete,
+  identityFromAnswers,
+  identityFromSubmission,
+  requiredQuestionsComplete,
+} from '../lib/registrationIdentitySync';
+import type { RegistrationFlowMode } from '../lib/registrantPortal';
+import { isLegacyImportedFormName } from '../lib/legacyImportedFormName';
+import { isSolutionCategoryInterestPrompt } from '../lib/specRegistrationQuestions';
+import { groupQuestionsBySection } from '../lib/registrationSectionLabels';
+import { mergeSectionOrder } from '../lib/registrationSectionOrder';
+import { isRegistrationQuestionVisible } from '../lib/registrationQuestionConditions';
 import PortalEventSummary from '../components/PortalEventSummary';
 import PortalGuestNav from '../components/PortalGuestNav';
 import PortalPublicShell from '../components/PortalPublicShell';
@@ -34,9 +55,23 @@ type VendorRepresentative = {
 };
 const KBM_ATTENDEE_FORM_NAME = 'KBM Attendee Registration';
 const KBM_VENDOR_FORM_NAME = 'KBM Vendor Registration';
+
+/** Public title for a track form — uses renamed name when set. */
+function displayRegistrationFormTitle(
+  form: EventRegistrationForm | null,
+  audience: MatchmakingAudience | 'speaker' | undefined,
+): string {
+  const custom = (form?.name ?? '').trim();
+  if (custom && custom !== KBM_ATTENDEE_FORM_NAME && custom !== KBM_VENDOR_FORM_NAME) {
+    return custom;
+  }
+  if (audience === 'vendor' || form?.audience === 'vendor') return 'Vendor Registration';
+  if (audience === 'speaker' || form?.audience === 'user') return 'Speaker Registration';
+  return 'Delegate Registration';
+}
+
 const COMPANY_DESCRIPTION_PROMPT = 'Company Description';
-const COMPANY_DESCRIPTION_MIN = 80;
-const COMPANY_DESCRIPTION_MAX = 600;
+const COMPANY_DESCRIPTION_MAX = 2000;
 const ADDITIONAL_INFO_PROMPT = 'Additional Information PDF URL';
 const MINORITY_OWNED_PROMPT = 'Are you a minority owned organization?';
 const MINORITY_SPECIFY_PROMPT = 'Specify your minority owned business';
@@ -76,16 +111,20 @@ const validAudience = (value: string | undefined): value is MatchmakingAudience 
 const resolveAudience = (value: string | undefined): MatchmakingAudience =>
   value === 'speaker' ? 'user' : value === 'delegate' ? 'attendee' : value === 'attendee' || value === 'vendor' || value === 'user' ? value : 'attendee';
 
-const fileToDataUrl = async (file: File) =>
-  await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? ''));
-    reader.onerror = () => reject(new Error('Could not read file'));
-    reader.readAsDataURL(file);
-  });
-
 export default function RegistrationPortal() {
-  const { eventId, audience } = useParams<{ eventId: string; audience: string }>();
+  const params = useParams<{
+    eventId?: string;
+    audience?: string;
+    formSlug?: string;
+    slug?: string;
+  }>();
+  /** /e/:slug/register — Standard registration; never reads Matchmaking settings. */
+  const siteSlug = (params.slug ?? '').trim();
+  const standardMode = Boolean(siteSlug);
+  const [siteEventId, setSiteEventId] = useState('');
+  const eventId = params.eventId ?? (siteEventId || undefined);
+  const audience = standardMode ? 'delegate' : params.audience;
+  const formSlug = params.formSlug;
   const [eventInfo, setEventInfo] = useState<PublicEventInfo | null>(null);
   const [form, setForm] = useState<EventRegistrationForm | null>(null);
   const [questions, setQuestions] = useState<EventRegistrationQuestion[]>([]);
@@ -95,7 +134,9 @@ export default function RegistrationPortal() {
   const [success, setSuccess] = useState('');
   const [saving, setSaving] = useState(false);
   const [registrationOpen, setRegistrationOpen] = useState(true);
+  const [registrationFlowMode, setRegistrationFlowMode] = useState<RegistrationFlowMode>('two_step');
   const [uploadingQuestionId, setUploadingQuestionId] = useState('');
+  const [solutionCategories, setSolutionCategories] = useState<string[]>([]);
 
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
@@ -110,8 +151,102 @@ export default function RegistrationPortal() {
   ]);
   const [vendorVirtualFallback, setVendorVirtualFallback] = useState('');
   const [meetingTargets, setMeetingTargets] = useState<Array<{ company: string; person: string; reason: string }>>([{ company: '', person: '', reason: '' }]);
+  /** Image files chosen before sign-in (headshot/logo) — uploaded after account creation on submit. */
+  const pendingImageFilesRef = useRef<
+    Record<string, { file: File; folder: 'registration-headshots' | 'vendor-logos' }>
+  >({});
+  const statusRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
+    if (!success && !error) return;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    statusRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [success, error]);
+
+  useEffect(() => {
+    if (!standardMode) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: siteData, error: siteErr } = await supabase.rpc('get_public_event_site', { p_slug: siteSlug });
+        if (siteErr) throw siteErr;
+        const site = siteData as {
+          status?: string;
+          event?: { id?: string; name?: string };
+          registration_open?: boolean;
+          form_id?: string | null;
+        } | null;
+        if (!site?.event?.id) {
+          throw new Error("We couldn't find this registration page. Check the link with the event organizer.");
+        }
+        if (site.status === 'off') {
+          throw new Error(`Registration for ${site.event.name ?? 'this event'} isn't open yet. Check back soon.`);
+        }
+        if (site.status === 'inactive') {
+          throw new Error(`Registration for ${site.event.name ?? 'this event'} is no longer available.`);
+        }
+        if (cancelled) return;
+        setSiteEventId(site.event.id);
+        setRegistrationFlowMode('one_step');
+        setRegistrationOpen(Boolean(site.registration_open));
+
+        const { data: eventRow } = await supabase
+          .from('events')
+          .select(
+            'id, name, description, location, venue, start_date, end_date, banner_url, logo_url, badge_banner_url, portal_banner_url, welcome_title, welcome_subtitle, welcome_message',
+          )
+          .eq('id', site.event.id)
+          .maybeSingle();
+        if (!cancelled) setEventInfo((eventRow as PublicEventInfo | null) ?? null);
+
+        if (!site.registration_open || !site.form_id) {
+          throw new Error('Registration is currently closed for this event. Please contact the event organizer.');
+        }
+        const { data: formRow, error: formErr } = await supabase
+          .from('event_registration_forms')
+          .select('*')
+          .eq('id', site.form_id)
+          .maybeSingle();
+        if (formErr) throw formErr;
+        if (!formRow) throw new Error('Registration form not found. Please contact the event organizer.');
+        if (cancelled) return;
+        setForm(formRow as EventRegistrationForm);
+
+        const { data: questionRows, error: questionErr } = await supabase
+          .from('event_registration_questions')
+          .select('*')
+          .eq('form_id', site.form_id)
+          .order('sort_order', { ascending: true })
+          .order('created_at', { ascending: true });
+        if (questionErr) throw questionErr;
+        const qList = (questionRows as EventRegistrationQuestion[]) ?? [];
+        if (cancelled) return;
+        setQuestions(qList);
+        if (qList.length > 0) {
+          const { data: optionRows, error: optionErr } = await supabase
+            .from('event_registration_question_options')
+            .select('*')
+            .in(
+              'question_id',
+              qList.map((q) => q.id),
+            )
+            .order('sort_order', { ascending: true });
+          if (optionErr) throw optionErr;
+          if (!cancelled) setOptions((optionRows as EventRegistrationQuestionOption[]) ?? []);
+        }
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Could not load registration form');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [standardMode, siteSlug]);
+
+  useEffect(() => {
+    if (standardMode) return;
     if (!eventId || !validAudience(audience)) {
       setError('Invalid registration link.');
       setLoading(false);
@@ -131,12 +266,19 @@ export default function RegistrationPortal() {
 
         const { data: settingsRow, error: settingsErr } = await supabase
           .from('event_matchmaking_settings')
-          .select('registration_open')
+          .select('registration_open, registration_flow_mode')
           .eq('event_id', eventId)
           .maybeSingle();
         if (settingsErr) throw settingsErr;
         const isOpen = Boolean((settingsRow as { registration_open?: boolean } | null)?.registration_open);
         if (!cancelled) setRegistrationOpen(isOpen);
+        if (!cancelled) {
+          setRegistrationFlowMode(
+            (settingsRow as { registration_flow_mode?: string } | null)?.registration_flow_mode === 'one_step'
+              ? 'one_step'
+              : 'two_step',
+          );
+        }
         if (!isOpen) {
           throw new Error('Registration is currently closed for this event. Please contact the event admin.');
         }
@@ -148,18 +290,33 @@ export default function RegistrationPortal() {
           .eq('event_id', eventId)
           .eq('audience', dbAudience)
           .eq('is_active', true)
+          .eq('is_standard', false)
           .order('sort_order', { ascending: true });
         if (formErr) throw formErr;
-        const matchingForms = (formRows as EventRegistrationForm[]) ?? [];
-        const canonicalName = dbAudience === 'attendee' ? KBM_ATTENDEE_FORM_NAME : dbAudience === 'vendor' ? KBM_VENDOR_FORM_NAME : 'Speaker Registration';
-        const formRow =
-          matchingForms.find((f) => canonicalName && f.name === canonicalName) ??
-          matchingForms.find((f) => !/meet\s*max/i.test(f.name)) ??
-          matchingForms[0] ??
-          null;
+        const matchingForms = ((formRows as EventRegistrationForm[]) ?? []).slice().sort((a, b) => {
+          if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+          return (a.name ?? '').localeCompare(b.name ?? '');
+        });
+        const wantedSlug = (formSlug ?? '').trim().toLowerCase();
+        const canonicalName =
+          dbAudience === 'attendee'
+            ? KBM_ATTENDEE_FORM_NAME
+            : dbAudience === 'vendor'
+              ? KBM_VENDOR_FORM_NAME
+              : 'Speaker Registration';
+        const formRow = wantedSlug
+          ? matchingForms.find((f) => (f.slug ?? '').trim().toLowerCase() === wantedSlug) ??
+            matchingForms.find((f) => f.id.toLowerCase() === wantedSlug) ??
+            null
+          : matchingForms.find((f) => canonicalName && f.name === canonicalName) ??
+            matchingForms.find((f) => !isLegacyImportedFormName(f.name)) ??
+            matchingForms[0] ??
+            null;
         if (!formRow) {
           throw new Error(
-            `Registration is not available for ${audience} yet. Ask the event admin to turn on "Registration open" and keep the ${audience} form active in Matchmaking setup.`
+            wantedSlug
+              ? `Registration form "${formSlug}" was not found for this event. Check the link with the event admin.`
+              : `Registration is not available for ${audience} yet. Ask the event admin to turn on "Registration open" and keep the ${audience} form active in Matchmaking setup.`,
           );
         }
         const selectedForm = formRow as EventRegistrationForm;
@@ -198,7 +355,38 @@ export default function RegistrationPortal() {
     return () => {
       cancelled = true;
     };
-  }, [eventId, audience]);
+  }, [standardMode, eventId, audience, formSlug]);
+
+  useEffect(() => {
+    if (!form?.id) {
+      setSolutionCategories([]);
+      return;
+    }
+    setSolutionCategories([]);
+    let cancelled = false;
+    (async () => {
+      const { data, error } = await supabase
+        .from('event_solution_categories')
+        .select('category_name')
+        .eq('form_id', form.id)
+        .eq('is_hidden', false)
+        .order('display_order', { ascending: true })
+        .order('category_name', { ascending: true });
+      if (cancelled) return;
+      if (error) {
+        setSolutionCategories([]);
+        return;
+      }
+      setSolutionCategories(
+        (data ?? [])
+          .map((row) => String((row as { category_name?: string }).category_name ?? '').trim())
+          .filter(Boolean),
+      );
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [form?.id]);
 
   const optionsByQuestion = useMemo(() => {
     const map = new Map<string, EventRegistrationQuestionOption[]>();
@@ -210,49 +398,121 @@ export default function RegistrationPortal() {
     return map;
   }, [options]);
 
-  const questionsForDisplay = useMemo(() => {
+  const sectionGroups = useMemo(() => {
     const dbAudience = resolveAudience(audience);
     const seenPrompts = new Set<string>();
-    return questions.filter((q) => {
+    const base =
+      registrationFlowMode === 'one_step'
+        ? [
+            ...filterRegistrationDetailsQuestions(dbAudience, questions),
+            ...questions.filter(
+              (q) =>
+                !q.is_hidden &&
+                q.prompt.trim().toLowerCase() === TERMS_ACCEPTANCE_PROMPT.trim().toLowerCase(),
+            ),
+          ]
+        : questions.filter((q) => {
+            if (q.is_hidden) return false;
+            if (!isStage1RegistrationQuestion(dbAudience, q.prompt)) return false;
+            return true;
+          });
+    const filtered = base.filter((q) => {
       if (q.is_hidden) return false;
-      if (!isStage1RegistrationQuestion(dbAudience, q.prompt)) return false;
       const promptNorm = q.prompt.trim().toLowerCase();
       if (REGISTRATION_HEADER_FIELD_PROMPTS.has(promptNorm)) return false;
       if (dbAudience === 'vendor' && VENDOR_DEPRECATED_OPERATIONS_PROMPTS.has(promptNorm)) return false;
       if (dbAudience === 'vendor' && promptNorm === 'company logo url') return false;
+      if (!isRegistrationQuestionVisible(q, answers)) return false;
       if (seenPrompts.has(promptNorm)) return false;
       seenPrompts.add(promptNorm);
       return true;
     });
+    // Follow Matchmaking form section_order exactly (Logistics last by default).
+    const sectionOrder =
+      form != null
+        ? mergeSectionOrder(
+            { audience: form.audience, section_order: form.section_order },
+            questions,
+          )
+        : undefined;
+    return groupQuestionsBySection(dbAudience, filtered, {
+      sectionOrder: sectionOrder && sectionOrder.length > 0 ? sectionOrder : undefined,
+    });
+  }, [answers, audience, form, questions, registrationFlowMode]);
+
+  const questionsForDisplay = useMemo(
+    () => sectionGroups.flatMap((group) => group.questions),
+    [sectionGroups],
+  );
+
+  const cellPhoneQuestion = useMemo(() => {
+    const dbAudience = resolveAudience(audience);
+    if (dbAudience !== 'attendee' && dbAudience !== 'vendor') return undefined;
+    return questions.find((q) => q.prompt.trim().toLowerCase() === 'cell phone');
   }, [audience, questions]);
 
-  const cellPhoneQuestion = useMemo(
+  /** Registration header fields in Matchmaking sort_order (admin ↑↓). */
+  const registrationHeaderQuestions = useMemo(
     () =>
-      resolveAudience(audience) === 'attendee'
-        ? questions.find((q) => q.prompt.trim().toLowerCase() === 'cell phone')
-        : undefined,
-    [audience, questions]
+      questions
+        .filter(
+          (q) =>
+            !q.is_hidden && REGISTRATION_HEADER_FIELD_PROMPTS.has(normalizeRegistrationPrompt(q.prompt)),
+        )
+        .sort((a, b) => a.sort_order - b.sort_order || a.prompt.localeCompare(b.prompt)),
+    [questions],
   );
 
   const setAnswer = (questionId: string, value: string | string[] | boolean) => {
-    setAnswers((prev) => ({ ...prev, [questionId]: value }));
+    setAnswers((prev) => {
+      const next = { ...prev, [questionId]: value };
+      for (const question of questions) {
+        if (question.condition_question_id && !isRegistrationQuestionVisible(question, next)) {
+          delete next[question.id];
+        }
+      }
+      return next;
+    });
   };
 
   const onUploadQuestionImage = async (questionId: string, file: File | null) => {
     if (!file || !eventId) return;
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose a JPEG or PNG image.');
+      return;
+    }
+    const question = questions.find((q) => q.id === questionId);
+    const isProfilePhoto = question ? isProfilePhotoRegistrationPrompt(question.prompt) : false;
+    const folder = isProfilePhoto ? 'registration-headshots' : 'vendor-logos';
     setUploadingQuestionId(questionId);
     setError('');
     try {
-      const url = await uploadEventImage(file, eventId, 'vendor-logos');
+      const url = await uploadEventImage(file, eventId, folder);
+      delete pendingImageFilesRef.current[questionId];
       setAnswer(questionId, url);
-    } catch (e) {
-      try {
-        // Public registrants might not be signed in; keep flow working by storing a data URL.
-        const jpegBlob = await compressImageToJpegBlob(file, { maxWidth: 1200, quality: 0.82 });
-        const dataUrl = await fileToDataUrl(new File([jpegBlob], `${Date.now()}-upload.jpg`, { type: 'image/jpeg' }));
-        setAnswer(questionId, dataUrl);
-      } catch {
-        setError(e instanceof Error ? e.message : 'Could not upload image');
+      if (isProfilePhoto) {
+        const { data: authData } = await supabase.auth.getUser();
+        const formEmail = email.trim().toLowerCase();
+        const sessionEmail = authData.user?.email?.trim().toLowerCase() ?? '';
+        if (authData.user?.id && formEmail && sessionEmail === formEmail) {
+          await syncUserAvatarFromUrl(authData.user.id, url);
+        }
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '';
+      const needsAuth =
+        /sign in required/i.test(message) ||
+        message.toLowerCase().includes('jwt') ||
+        message.toLowerCase().includes('not authenticated');
+      if (needsAuth) {
+        // Public registration often picks images before the account exists — keep for submit.
+        pendingImageFilesRef.current[questionId] = { file, folder };
+        const previewUrl = URL.createObjectURL(file);
+        setAnswer(questionId, previewUrl);
+      } else if (isProfilePhoto) {
+        setError(message || 'Could not upload your headshot. Please try again.');
+      } else {
+        setError(message || 'Could not upload your company logo. Please try again.');
       }
     } finally {
       setUploadingQuestionId('');
@@ -261,25 +521,36 @@ export default function RegistrationPortal() {
 
   const onUploadAttachment = async (questionId: string, file: File | null) => {
     if (!file || !eventId) return;
+    const allowed = new Set([
+      'image/jpeg',
+      'image/png',
+      'application/pdf',
+    ]);
+    const type = (file.type || '').toLowerCase();
+    if (!allowed.has(type)) {
+      setError('Attachments must be JPEG, PNG, or PDF.');
+      return;
+    }
+    if (file.size > 6 * 1024 * 1024) {
+      setError('Attachments must be 6MB or smaller.');
+      return;
+    }
     setUploadingQuestionId(questionId);
     setError('');
     try {
       const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_');
-      const storagePath = `${eventId}/vendor-attachments/${Date.now()}_${safeName}`;
+      const ext =
+        type === 'application/pdf' ? 'pdf' : type === 'image/png' ? 'png' : 'jpg';
+      const storagePath = `${eventId}/vendor-attachments/${Date.now()}_${safeName.replace(/\.[^.]+$/, '')}.${ext}`;
       const { data, error: uploadErr } = await supabase.storage.from('event-photos').upload(storagePath, file, {
-        contentType: file.type || 'application/octet-stream',
+        contentType: type,
         upsert: false,
       });
       if (uploadErr) throw uploadErr;
       const { data: pub } = supabase.storage.from('event-photos').getPublicUrl(data.path);
       setAnswer(questionId, pub.publicUrl || data.path);
     } catch (e) {
-      try {
-        const dataUrl = await fileToDataUrl(file);
-        setAnswer(questionId, dataUrl);
-      } catch {
-        setError(e instanceof Error ? e.message : 'Could not upload attachment');
-      }
+      setError(e instanceof Error ? e.message : 'Could not upload attachment');
     } finally {
       setUploadingQuestionId('');
     }
@@ -340,7 +611,13 @@ export default function RegistrationPortal() {
         return String(value ?? '').trim() === '';
       });
     if (missingQuestions.length > 0) {
-      const labels = missingQuestions.map((q) => q.prompt).slice(0, 6);
+      const labels = missingQuestions.map((q) => {
+        const promptNorm = q.prompt.trim().toLowerCase();
+        if (promptNorm === 'company logo url' || promptNorm === 'company logo image') {
+          return 'Company Logo Image';
+        }
+        return q.prompt;
+      }).slice(0, 6);
       const extra = missingQuestions.length > 6 ? ` (+${missingQuestions.length - 6} more)` : '';
       setError(`Please answer required questions before submitting: ${labels.join(', ')}${extra}.`);
       return;
@@ -349,8 +626,8 @@ export default function RegistrationPortal() {
     if (descQuestion) {
       const raw = answers[descQuestion.id];
       const desc = typeof raw === 'string' ? raw.trim() : '';
-      if (desc.length > 0 && (desc.length < COMPANY_DESCRIPTION_MIN || desc.length > COMPANY_DESCRIPTION_MAX)) {
-        setError(`Company Description must be ${COMPANY_DESCRIPTION_MIN}-${COMPANY_DESCRIPTION_MAX} characters.`);
+      if (desc.length > COMPANY_DESCRIPTION_MAX) {
+        setError(`Company Description must be ${COMPANY_DESCRIPTION_MAX} characters or fewer.`);
         return;
       }
     }
@@ -372,13 +649,18 @@ export default function RegistrationPortal() {
       let authUserId: string | null = null;
 
       if (status === 'submitted' && emailValue) {
-        const { data: existingSubmission } = await supabase
+        let existingQuery = supabase
           .from('event_registration_submissions')
           .select('id')
           .eq('event_id', eventId)
           .eq('status', 'submitted')
-          .ilike('email', emailValue)
-          .maybeSingle();
+          .ilike('email', emailValue);
+        if (standardMode) existingQuery = existingQuery.eq('form_id', form.id);
+        const { data: existingSubmission } = await existingQuery.limit(1).maybeSingle();
+        if (existingSubmission && standardMode) {
+          setError('You already registered for this event. Open the KBM Connect app and sign in with this email.');
+          return;
+        }
         if (existingSubmission) {
           setError(
             `You already registered for this event. Please use Login${dbAudience === 'vendor' ? ' (vendor portal)' : dbAudience === 'attendee' ? ' (delegate portal)' : ''} to access your registration.`,
@@ -396,14 +678,36 @@ export default function RegistrationPortal() {
           setError(accountResult.error);
           return;
         }
-        const { data: sessionAfterAuth } = await supabase.auth.getSession();
-        const sessionUser = sessionAfterAuth.session?.user;
-        authUserId =
-          sessionUser?.email?.toLowerCase() === emailValue.toLowerCase() ? sessionUser.id : null;
+        authUserId = accountResult.userId;
       } else {
         const { data: authData } = await supabase.auth.getUser();
         authUserId = authData.user?.id ?? null;
       }
+
+      // Upload any images that were picked before the account existed (headshot + company logo).
+      const nextAnswers: AnswerMap = { ...answers };
+      for (const [questionId, pending] of Object.entries(pendingImageFilesRef.current)) {
+        try {
+          const url = await uploadEventImage(pending.file, eventId, pending.folder);
+          nextAnswers[questionId] = url;
+          if (answers[questionId]?.toString().startsWith('blob:')) {
+            try {
+              URL.revokeObjectURL(String(answers[questionId]));
+            } catch {
+              /* ignore */
+            }
+          }
+          delete pendingImageFilesRef.current[questionId];
+        } catch (uploadErr) {
+          const kind = pending.folder === 'vendor-logos' ? 'company logo' : 'headshot';
+          throw new Error(
+            uploadErr instanceof Error
+              ? uploadErr.message
+              : `Could not upload your ${kind}. Please try again.`,
+          );
+        }
+      }
+      if (nextAnswers !== answers) setAnswers(nextAnswers);
 
       const submissionPayload = {
         event_id: eventId,
@@ -417,6 +721,23 @@ export default function RegistrationPortal() {
         status,
         submitted_at: status === 'submitted' ? new Date().toISOString() : null,
       };
+      const identity = identityFromAnswers(
+        questionsForDisplay,
+        nextAnswers,
+        identityFromSubmission({
+          first_name: firstName,
+          last_name: lastName,
+          email,
+          company_name: companyName,
+          job_title: jobTitle,
+        }),
+      );
+      const profileComplete =
+        registrationFlowMode === 'one_step' &&
+        status === 'submitted' &&
+        contactFieldsComplete(identity) &&
+        requiredQuestionsComplete(questionsForDisplay, nextAnswers);
+
       const submissionId = crypto.randomUUID();
       const { error: subErr } = await supabase
         .from('event_registration_submissions')
@@ -424,17 +745,18 @@ export default function RegistrationPortal() {
           id: submissionId,
           ...submissionPayload,
           user_id: authUserId,
-          profile_complete: false,
+          profile_complete: !standardMode && profileComplete,
           registration_status: status === 'submitted' ? 'pending_review' : 'pending_review',
-          matching_opt_in: false,
+          matching_opt_in: !standardMode && Boolean(profileComplete && status === 'submitted'),
         })
       if (subErr) throw subErr;
 
       const answerRows = questions
         .map((q) => {
-          const value = answers[q.id];
+          const value = nextAnswers[q.id];
           const promptNorm = q.prompt.trim().toLowerCase();
           if (value === undefined || value === '' || (Array.isArray(value) && value.length === 0)) return null;
+          if (typeof value === 'string' && value.startsWith('blob:')) return null;
           if (promptNorm === LOGISTICS_ATTENDING_PROMPT.toLowerCase()) {
             const virtualQuestion = questions.find((x) => x.prompt.trim().toLowerCase() === LOGISTICS_VIRTUAL_PROMPT.toLowerCase());
             const payload = {
@@ -451,7 +773,7 @@ export default function RegistrationPortal() {
                       r.email.trim()
                   )
                   : [],
-              virtual: virtualQuestion ? answers[virtualQuestion.id] ?? null : vendorVirtualFallback || null,
+              virtual: virtualQuestion ? nextAnswers[virtualQuestion.id] ?? null : vendorVirtualFallback || null,
             };
             return { submission_id: submissionId, question_id: q.id, answer_json: payload };
           }
@@ -471,7 +793,7 @@ export default function RegistrationPortal() {
                       r.email.trim()
                   )
                   : [],
-              virtual: virtualQuestion ? answers[virtualQuestion.id] ?? null : vendorVirtualFallback || null,
+              virtual: virtualQuestion ? nextAnswers[virtualQuestion.id] ?? null : vendorVirtualFallback || null,
             };
             return { submission_id: submissionId, question_id: q.id, answer_json: payload };
           }
@@ -484,6 +806,39 @@ export default function RegistrationPortal() {
       if (answerRows.length > 0) {
         const { error: ansErr } = await supabase.from('event_registration_answers').insert(answerRows);
         if (ansErr) throw ansErr;
+      }
+
+      // The submission trigger may create a vendor booth before answer rows exist.
+      // Run the same sync after answers are saved so first-time registrations
+      // immediately include the company description, logo, and website.
+      if (dbAudience === 'vendor' && authUserId) {
+        try {
+          const { error: boothSyncErr } = await supabase.rpc('ensure_matchmaking_vendor_booth', {
+            p_submission_id: submissionId,
+          });
+          if (boothSyncErr && import.meta.env.DEV) {
+            console.warn('Initial Solution Provider booth sync skipped:', boothSyncErr.message);
+          }
+        } catch (boothSyncError) {
+          if (import.meta.env.DEV) {
+            console.warn('Initial Solution Provider booth sync failed:', boothSyncError);
+          }
+        }
+      }
+
+      try {
+        await syncSubmissionSolutionCategories(submissionId);
+      } catch {
+        /* Category sync is best-effort; registration still succeeds. */
+      }
+
+      const headshotUrl = findRegistrationHeadshotUrl(questionsForDisplay, nextAnswers);
+      if (authUserId && headshotUrl) {
+        try {
+          await syncUserAvatarFromUrl(authUserId, headshotUrl);
+        } catch {
+          /* Profile photo sync is best-effort; registration still succeeds. */
+        }
       }
 
       const requestRows = meetingTargets
@@ -515,9 +870,15 @@ export default function RegistrationPortal() {
       const portalRole = dbAudience === 'vendor' ? 'vendor' : 'delegate';
       const portalNote =
         (dbAudience === 'attendee' || dbAudience === 'vendor') && status === 'submitted' && eventId
-          ? ` When your organizer opens the next registration stage, sign in at ${publicPortalLoginUrl(eventId, portalRole)}.`
+          ? ` ${registrationFlowMode === 'one_step' ? `Sign in anytime at ${publicPortalLoginUrl(eventId, portalRole)}.` : `When your organizer opens the next registration stage, sign in at ${publicPortalLoginUrl(eventId, portalRole)}.`}`
           : '';
-      setSuccess(status === 'submitted' ? `Thank you. Your registration is submitted.${loginMessage}${portalNote}` : 'Draft saved.');
+      if (standardMode && status === 'submitted') {
+        setSuccess(
+          `You're registered! We sent a confirmation to ${emailValue}. Download the KBM Connect app and sign in with this email and the password you just created.`,
+        );
+      } else {
+        setSuccess(status === 'submitted' ? `Thank you. Your registration is submitted.${loginMessage}${portalNote}` : 'Draft saved.');
+      }
       if (status === 'submitted') {
         setAnswers({});
         setMeetingTargets([{ company: '', person: '', reason: '' }]);
@@ -543,14 +904,35 @@ export default function RegistrationPortal() {
   };
 
   if (loading) return <div className={portalStyles.page}>Loading registration…</div>;
-  if (!form || !validAudience(audience)) return <div className={portalStyles.page}>Form unavailable.</div>;
+  if (!form || !validAudience(audience)) {
+    return (
+      <div className={portalStyles.page}>
+        <p className={portalStyles.error}>{error || 'Form unavailable.'}</p>
+        {standardMode ? (
+          <p className={portalStyles.hint}>
+            <Link to={`/e/${encodeURIComponent(siteSlug)}`}>Back to the event website</Link>
+          </p>
+        ) : eventId && validAudience(audience) ? (
+          <p className={portalStyles.hint}>
+            If registration was just opened, refresh this page. Otherwise ask the event admin to turn on
+            Registration open in Matchmaking setup and keep the {audience} form active.
+          </p>
+        ) : null}
+      </div>
+    );
+  }
 
   const dateRange = formatEventDateRange(eventInfo?.start_date, eventInfo?.end_date);
   const locationLine = [eventInfo?.venue, eventInfo?.location].filter(Boolean).join(' — ');
   const heroMessage = eventInfo?.welcome_message || eventInfo?.description || '';
   const dbAudience = resolveAudience(audience);
-  const audienceTitle = dbAudience === 'vendor' ? 'Vendor registration' : dbAudience === 'attendee' ? 'Delegate registration' : 'Speaker registration';
-  const pageHeading = `${eventInfo?.name ?? 'Event'} ${dbAudience === 'vendor' ? 'Vendor' : dbAudience === 'attendee' ? 'Delegate' : 'Speaker'} Registration`.replace(/\s+/g, ' ').trim();
+  const formTitle = displayRegistrationFormTitle(form, audience);
+  const audienceTitle = formTitle;
+  const pageHeading = form
+    ? formTitle
+    : `${eventInfo?.name ?? 'Event'} ${dbAudience === 'vendor' ? 'Vendor' : dbAudience === 'attendee' ? 'Delegate' : 'Speaker'} Registration`
+        .replace(/\s+/g, ' ')
+        .trim();
   const isJobTitleRequired = dbAudience === 'attendee' || dbAudience === 'user';
   const loginHref =
     dbAudience === 'vendor' && eventId
@@ -566,8 +948,22 @@ export default function RegistrationPortal() {
   return (
     <PortalPublicShell
       event={eventInfo}
-      nav={eventId && (dbAudience === 'attendee' || dbAudience === 'vendor') ? (
-        <PortalGuestNav eventId={eventId} role={guestRole} activeTab="welcome" />
+      nav={standardMode ? (
+        <nav className={portalStyles.navBar}>
+          {siteSlug ? (
+            <Link to={`/e/${encodeURIComponent(siteSlug)}`} className={portalStyles.navLink}>
+              ← Event website
+            </Link>
+          ) : null}
+          <span className={portalStyles.navLinkActive}>Register</span>
+        </nav>
+      ) : eventId && (dbAudience === 'attendee' || dbAudience === 'vendor') ? (
+        <PortalGuestNav
+          eventId={eventId}
+          role={guestRole}
+          activeTab="welcome"
+          formSlug={form?.slug ?? formSlug ?? null}
+        />
       ) : (
         <nav className={portalStyles.navBar}>
           <span className={portalStyles.navLinkActive}>Welcome</span>
@@ -588,60 +984,139 @@ export default function RegistrationPortal() {
               locationLine={locationLine || null}
             />
           ) : null}
-          <h2 className={portalStyles.welcomeHeading}>{eventInfo?.welcome_title || 'Welcome'}</h2>
+          <h2 className={portalStyles.welcomeHeading}>{formTitle}</h2>
+          {eventInfo?.name ? (
+            <p className={portalStyles.hint} style={{ marginTop: 4 }}>
+              {eventInfo.name}
+            </p>
+          ) : null}
           {heroMessage ? <div className={portalStyles.contentBlock}>{heroMessage}</div> : null}
           {!heroMessage ? (
             <p className={portalStyles.hint}>Complete your registration details and submit your registration.</p>
           ) : null}
-          <p className={portalStyles.hint} style={{ marginTop: 20 }}>
-            Registration type: {audienceTitle}
-          </p>
+          {!standardMode ? (
+            <p className={portalStyles.hint} style={{ marginTop: 20 }}>
+              Track: {audienceTitle}
+            </p>
+          ) : null}
         </div>
 
         <div className={`${portalStyles.card} ${styles.formCard}`}>
         <h2>{pageHeading}</h2>
         <p className={styles.hint}>Complete the registration below, then submit to finish your registration.</p>
         <p className={styles.requiredHint}>* Required fields</p>
-        {error ? <p className={styles.error}>{error}</p> : null}
-        {success ? <p className={styles.success}>{success}</p> : null}
-
-        <div className={styles.grid2}>
-          <label>
-            First name <span className={styles.requiredStar}>*</span>
-            <input autoComplete="given-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
-          </label>
-          <label>
-            Last name <span className={styles.requiredStar}>*</span>
-            <input autoComplete="family-name" value={lastName} onChange={(e) => setLastName(e.target.value)} />
-          </label>
-          <label>
-            Email <span className={styles.requiredStar}>*</span>
-            <input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-          </label>
-          <label>
-            Company <span className={styles.requiredStar}>*</span>
-            <input autoComplete="organization" value={companyName} onChange={(e) => setCompanyName(e.target.value)} />
-          </label>
-          <label>
-            Job title {isJobTitleRequired ? <span className={styles.requiredStar}>*</span> : null}
-            <input autoComplete="organization-title" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} />
-          </label>
-          {cellPhoneQuestion ? (
-            <label>
-              Cell Phone {cellPhoneQuestion.is_required ? <span className={styles.requiredStar}>*</span> : null}
-              <input
-                type="tel"
-                autoComplete="tel"
-                value={typeof answers[cellPhoneQuestion.id] === 'string' ? answers[cellPhoneQuestion.id] as string : ''}
-                onChange={(e) => setAnswer(cellPhoneQuestion.id, e.target.value)}
-              />
-            </label>
+        <div ref={statusRef}>
+          {error ? (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
           ) : null}
+          {success ? (
+            <p className={styles.success} role="status">
+              {success}
+            </p>
+          ) : null}
+        </div>
+
+        <p className={styles.section}>Registration</p>
+        <div className={styles.grid2}>
+          {(registrationHeaderQuestions.length > 0
+            ? registrationHeaderQuestions
+            : [
+                { id: '__first_name', prompt: 'First Name', is_required: true },
+                { id: '__last_name', prompt: 'Last Name', is_required: true },
+                { id: '__email', prompt: 'E-Mail Address', is_required: true },
+                { id: '__company', prompt: 'Company Name', is_required: true },
+                { id: '__job', prompt: 'Job Title', is_required: isJobTitleRequired },
+              ]
+          ).map((q) => {
+            const promptNorm = normalizeRegistrationPrompt(q.prompt);
+            if (promptNorm === 'first name') {
+              return (
+                <label key={q.id}>
+                  <span className={styles.questionLabel}>
+                    First name <span className={styles.requiredStar}>*</span>
+                  </span>
+                  <input autoComplete="given-name" value={firstName} onChange={(e) => setFirstName(e.target.value)} />
+                </label>
+              );
+            }
+            if (promptNorm === 'last name') {
+              return (
+                <label key={q.id}>
+                  <span className={styles.questionLabel}>
+                    Last name <span className={styles.requiredStar}>*</span>
+                  </span>
+                  <input autoComplete="family-name" value={lastName} onChange={(e) => setLastName(e.target.value)} />
+                </label>
+              );
+            }
+            if (promptNorm === 'e-mail address' || promptNorm === 'email') {
+              return (
+                <label key={q.id}>
+                  <span className={styles.questionLabel}>
+                    Email <span className={styles.requiredStar}>*</span>
+                  </span>
+                  <input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+                </label>
+              );
+            }
+            if (promptNorm === 'company name') {
+              return (
+                <label key={q.id}>
+                  <span className={styles.questionLabel}>
+                    Company <span className={styles.requiredStar}>*</span>
+                  </span>
+                  <input
+                    autoComplete="organization"
+                    value={companyName}
+                    onChange={(e) => setCompanyName(e.target.value)}
+                  />
+                </label>
+              );
+            }
+            if (promptNorm === 'job title') {
+              return (
+                <label key={q.id}>
+                  <span className={styles.questionLabel}>
+                    Job title {isJobTitleRequired || q.is_required ? <span className={styles.requiredStar}>*</span> : null}
+                  </span>
+                  <input
+                    autoComplete="organization-title"
+                    value={jobTitle}
+                    onChange={(e) => setJobTitle(e.target.value)}
+                  />
+                </label>
+              );
+            }
+            if (promptNorm === 'cell phone' && cellPhoneQuestion) {
+              return (
+                <label key={q.id}>
+                  <span className={styles.questionLabel}>
+                    Cell Phone {cellPhoneQuestion.is_required ? <span className={styles.requiredStar}>*</span> : null}
+                  </span>
+                  <input
+                    type="tel"
+                    autoComplete="tel"
+                    value={
+                      typeof answers[cellPhoneQuestion.id] === 'string'
+                        ? (answers[cellPhoneQuestion.id] as string)
+                        : ''
+                    }
+                    onChange={(e) => setAnswer(cellPhoneQuestion.id, e.target.value)}
+                  />
+                </label>
+              );
+            }
+            return null;
+          })}
         </div>
 
         <div className={styles.grid2}>
           <label>
-            Password <span className={styles.requiredStar}>*</span>
+            <span className={styles.questionLabel}>
+              Password <span className={styles.requiredStar}>*</span>
+            </span>
             <input
               type="password"
               autoComplete="new-password"
@@ -652,7 +1127,9 @@ export default function RegistrationPortal() {
             />
           </label>
           <label>
-            Confirm password <span className={styles.requiredStar}>*</span>
+            <span className={styles.questionLabel}>
+              Confirm password <span className={styles.requiredStar}>*</span>
+            </span>
             <input
               type="password"
               autoComplete="new-password"
@@ -662,15 +1139,30 @@ export default function RegistrationPortal() {
             />
           </label>
         </div>
-        {dbAudience === 'attendee' || dbAudience === 'vendor' ? (
+        {standardMode ? (
+          <p className={styles.hint}>
+            Choose a password now — you will use it with this email to sign in to the KBM Connect app.
+          </p>
+        ) : dbAudience === 'attendee' || dbAudience === 'vendor' ? (
           <p className={styles.hint}>
             Choose a password now — you will use it to sign in to your {dbAudience === 'vendor' ? 'vendor' : 'delegate'}{' '}
             portal after registration (Login link at the top of this page).
           </p>
         ) : null}
 
-        <div className={styles.questionsGrid}>
-          {questionsForDisplay.map((q, idx) => {
+        <div className={portalStyles.registrationSections}>
+          {sectionGroups.map(({ sectionLabel, questions: sectionQuestions }) => {
+            const showSectionHeading =
+              sectionLabel !== 'General' &&
+              sectionLabel.toLowerCase() !== 'registration' &&
+              sectionLabel.toLowerCase() !== 'registration details';
+            return (
+              <section key={sectionLabel} className={portalStyles.registrationSection}>
+                {showSectionHeading ? (
+                  <h2 className={portalStyles.registrationSectionHeading}>{sectionLabel}</h2>
+                ) : null}
+                <div className={styles.questionsGrid}>
+                  {sectionQuestions.map((q) => {
             if (q.prompt.trim().toLowerCase() === MINORITY_SPECIFY_PROMPT.toLowerCase() && minorityValue !== 'Yes') return null;
             // The virtual follow-up is rendered under the logistics block to avoid duplicates.
             if (q.prompt.trim().toLowerCase() === LOGISTICS_VIRTUAL_PROMPT.toLowerCase()) return null;
@@ -680,34 +1172,25 @@ export default function RegistrationPortal() {
             const isAttendingField = promptNorm === LOGISTICS_ATTENDING_PROMPT.toLowerCase() || promptNorm === LEGACY_ATTENDING_PROMPT.toLowerCase();
             const isCompanyLogoField = promptNorm === 'company logo url' || promptNorm === 'company logo image';
             const isSpeakerHeadshotField = promptNorm === 'speaker headshot';
+            const isHeadshotField = isProfilePhotoRegistrationPrompt(q.prompt);
             const isAdditionalInfoField = promptNorm === ADDITIONAL_INFO_PROMPT.toLowerCase() || promptNorm === 'additional information attachment';
             const isTermsPrompt = promptNorm.includes('i have read and accept the terms and conditions');
             const isCompanyDescription = q.prompt.trim().toLowerCase() === COMPANY_DESCRIPTION_PROMPT.toLowerCase();
-            const isWideQuestion = q.question_type === 'multi_select' || isAttendingField;
+            const isWideQuestion = q.question_type === 'multi_select' || isAttendingField || isHeadshotField;
             const sl = (q.section_label || '').trim().toLowerCase();
             const isSolutionProviderCategory =
               q.question_type === 'multi_select' &&
               (sl === 'solution provider categories' || sl === 'solution providers categories');
             const textValue = typeof value === 'string' ? value : '';
             const charCount = isCompanyDescription ? textValue.length : 0;
-            const sectionLabel = (q.section_label ?? '').trim();
-            const prevSectionLabel = idx > 0 ? (questionsForDisplay[idx - 1]?.section_label ?? '').trim() : '';
-            const isOrphanedCategorySection =
-              q.question_type !== 'multi_select' &&
-              (sl === 'solution provider categories' ||
-                sl === 'solution providers categories' ||
-                sl === 'solution interests');
-            const showSectionLabel =
-              Boolean(sectionLabel && sectionLabel !== prevSectionLabel) &&
-              !(dbAudience === 'attendee' && sectionLabel.toLowerCase() === 'registration details') &&
-              !isTermsPrompt &&
-              !isOrphanedCategorySection;
             const labelText = isAttendingField
               ? LOGISTICS_ATTENDING_PROMPT
               : isCompanyLogoField
                 ? 'Company Logo Image'
                 : isSpeakerHeadshotField
                   ? 'Speaker Headshot'
+                : isHeadshotField
+                  ? 'Headshot / Photo'
                 : isAdditionalInfoField
                   ? 'Additional Information Attachment'
                   : isTermsPrompt
@@ -715,7 +1198,6 @@ export default function RegistrationPortal() {
                     : q.prompt;
             return (
               <div key={q.id} className={`${styles.question} ${isWideQuestion ? styles.questionWide : ''}`}>
-              {showSectionLabel ? <p className={styles.section}>{sectionLabel}</p> : null}
               <label>
                 <span className={isSolutionProviderCategory ? styles.questionLabelStrong : styles.questionLabel}>
                   {labelText} {q.is_required ? <span className={styles.requiredStar}>*</span> : ''}
@@ -733,7 +1215,7 @@ export default function RegistrationPortal() {
                     />
                     {isCompanyDescription ? (
                       <div className={styles.counterRow}>
-                        <span>{charCount}/{COMPANY_DESCRIPTION_MAX} (min {COMPANY_DESCRIPTION_MIN})</span>
+                        <span>{charCount}/{COMPANY_DESCRIPTION_MAX}</span>
                       </div>
                     ) : null}
                   </>
@@ -753,7 +1235,10 @@ export default function RegistrationPortal() {
                   </select>
                 ) : q.question_type === 'multi_select' ? (
                   <div className={styles.checks}>
-                    {list.map((opt) => {
+                    {(isSolutionCategoryInterestPrompt(q.prompt)
+                      ? solutionCategories.map((name) => ({ id: name, label: name, value: name }))
+                      : list.map((opt) => ({ id: opt.id, label: opt.label, value: opt.value }))
+                    ).map((opt) => {
                       const selected = Array.isArray(value) ? value.includes(opt.value) : false;
                       return (
                         <label key={opt.id} className={styles.checkItem}>
@@ -768,10 +1253,15 @@ export default function RegistrationPortal() {
                               );
                             }}
                           />
-                          {opt.label}
+                          <span>{opt.label}</span>
                         </label>
                       );
                     })}
+                    {isSolutionCategoryInterestPrompt(q.prompt) && solutionCategories.length === 0 ? (
+                      <p className={styles.hint}>
+                        Solution categories will appear here once your event admin adds them.
+                      </p>
+                    ) : null}
                   </div>
                 ) : q.question_type === 'boolean' ? (
                   <select
@@ -783,16 +1273,38 @@ export default function RegistrationPortal() {
                     <option value="true">Yes</option>
                     <option value="false">No</option>
                   </select>
-                ) : isCompanyLogoField || isSpeakerHeadshotField ? (
+                ) : isCompanyLogoField || isHeadshotField ? (
                   <div className={styles.uploadRow}>
                     <input
                       type="file"
-                      accept="image/*"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
                       disabled={uploadingQuestionId === q.id}
                       onChange={(e) => void onUploadQuestionImage(q.id, e.target.files?.[0] ?? null)}
                     />
-                    {textValue ? <a href={textValue} target="_blank" rel="noreferrer">{isSpeakerHeadshotField ? 'View uploaded headshot' : 'View uploaded logo'}</a> : null}
-                    <small className={styles.fieldHint}>Accepted formats: JPG, JPEG, PNG, GIF.</small>
+                    {textValue && isUsableProfilePhotoUrl(textValue) ? (
+                      <a href={textValue} target="_blank" rel="noreferrer">
+                        {isHeadshotField ? 'View uploaded photo' : 'View uploaded logo'}
+                      </a>
+                    ) : textValue && textValue.startsWith('blob:') ? (
+                      <span className={styles.fieldHint}>
+                        {isHeadshotField
+                          ? 'Photo selected — it uploads when you submit.'
+                          : 'Logo selected — it uploads when you submit.'}
+                      </span>
+                    ) : isHeadshotField ? (
+                      <span className={styles.fieldHint}>No photo uploaded yet. Choose a file to add or replace.</span>
+                    ) : textValue ? (
+                      <a href={textValue} target="_blank" rel="noreferrer">
+                        View uploaded logo
+                      </a>
+                    ) : (
+                      <span className={styles.fieldHint}>No logo uploaded yet. Choose a file to add.</span>
+                    )}
+                    <small className={styles.fieldHint}>
+                      {isHeadshotField
+                        ? 'Choose a clear photo of yourself (JPG/PNG). You can replace it anytime by picking a new file. This becomes your profile picture in the app.'
+                        : 'Accepted formats: JPG, JPEG, PNG, GIF. The logo uploads when you create your account and submit.'}
+                    </small>
                     {uploadingQuestionId === q.id ? <small>Uploading image…</small> : null}
                   </div>
                 ) : isAdditionalInfoField ? (
@@ -890,27 +1402,33 @@ export default function RegistrationPortal() {
                 </div>
               ) : null}
               {isAttendingField && value === 'No' ? (
-                <div className={styles.repBlock}>
-                  <h4>{LOGISTICS_VIRTUAL_PROMPT}</h4>
-                  {virtualQuestion ? (
-                    <select
-                      value={typeof answers[virtualQuestion.id] === 'string' ? String(answers[virtualQuestion.id]) : ''}
-                      onChange={(e) => setAnswer(virtualQuestion.id, e.target.value)}
-                    >
-                      <option value="">Select</option>
-                      <option value="Yes">Yes</option>
-                      <option value="No">No</option>
-                    </select>
-                  ) : (
-                    <select value={vendorVirtualFallback} onChange={(e) => setVendorVirtualFallback(e.target.value)}>
-                      <option value="">Select</option>
-                      <option value="Yes">Yes</option>
-                      <option value="No">No</option>
-                    </select>
-                  )}
+                <div className={styles.followUpField}>
+                  <label>
+                    <span className={styles.questionLabel}>{LOGISTICS_VIRTUAL_PROMPT}</span>
+                    {virtualQuestion ? (
+                      <select
+                        value={typeof answers[virtualQuestion.id] === 'string' ? String(answers[virtualQuestion.id]) : ''}
+                        onChange={(e) => setAnswer(virtualQuestion.id, e.target.value)}
+                      >
+                        <option value="">Select</option>
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                    ) : (
+                      <select value={vendorVirtualFallback} onChange={(e) => setVendorVirtualFallback(e.target.value)}>
+                        <option value="">Select</option>
+                        <option value="Yes">Yes</option>
+                        <option value="No">No</option>
+                      </select>
+                    )}
+                  </label>
                 </div>
               ) : null}
               </div>
+            );
+                  })}
+                </div>
+              </section>
             );
           })}
         </div>

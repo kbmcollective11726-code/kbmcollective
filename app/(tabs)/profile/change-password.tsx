@@ -11,23 +11,34 @@ import {
   Alert,
   ScrollView,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../../stores/authStore';
 import { supabase } from '../../../lib/supabase';
 import { updateSignedInUserPassword } from '../../../lib/signedInPasswordUpdate';
+import {
+  isAal2PasswordError,
+  needsMfaBeforeSensitiveUpdate,
+  verifyTotpToAal2,
+} from '../../../lib/mfaSession';
 import { colors } from '../../../constants/colors';
+import { navigateBackToFrom } from '../../../lib/navReturn';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 
 const VERIFY_TIMEOUT_MS = 30000;
 
 export default function ProfileChangePasswordScreen() {
   const router = useRouter();
+  const { from } = useLocalSearchParams<{ from?: string }>();
   const { refreshUser, user } = useAuthStore();
   const [currentPassword, setCurrentPassword] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [mfaCode, setMfaCode] = useState('');
+  const [needsMfa, setNeedsMfa] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const goBack = () => navigateBackToFrom(router, from, '/(tabs)/profile');
 
   const handleSubmit = async () => {
     const email = user?.email?.trim().toLowerCase();
@@ -100,8 +111,27 @@ export default function ProfileChangePasswordScreen() {
 
       useAuthStore.setState({ session: signResult.data.session });
 
+      // Fresh password sign-in is AAL1; MFA accounts must verify TOTP before updateUser(password).
+      if (needsMfa || (await needsMfaBeforeSensitiveUpdate())) {
+        const mfa = await verifyTotpToAal2(mfaCode);
+        if (!mfa.ok) {
+          setNeedsMfa(true);
+          Alert.alert('Authenticator required', mfa.message);
+          return;
+        }
+        setNeedsMfa(false);
+      }
+
       const result = await updateSignedInUserPassword(p, refreshUser);
       if (!result.ok) {
+        if (isAal2PasswordError(result.message)) {
+          setNeedsMfa(true);
+          Alert.alert(
+            'Authenticator required',
+            'This account has MFA enabled. Enter the 6-digit code from your authenticator app, then try again.',
+          );
+          return;
+        }
         Alert.alert(result.title, result.message);
         return;
       }
@@ -109,8 +139,9 @@ export default function ProfileChangePasswordScreen() {
       setCurrentPassword('');
       setPassword('');
       setConfirm('');
+      setMfaCode('');
       Alert.alert('Password updated', 'Your password has been changed. You’re still signed in on this device.', [
-        { text: 'OK', onPress: () => router.back() },
+        { text: 'OK', onPress: goBack },
       ]);
     } finally {
       setLoading(false);
@@ -119,7 +150,7 @@ export default function ProfileChangePasswordScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <ProfileStackScreenHeader variant="back" title="Change password" onBack={() => router.back()} />
+      <ProfileStackScreenHeader variant="back" title="Change password" onBack={goBack} />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboard}
@@ -143,6 +174,20 @@ export default function ProfileChangePasswordScreen() {
             editable={!loading}
             textContentType="password"
           />
+          {needsMfa ? (
+            <TextInput
+              style={styles.input}
+              placeholder="Authenticator code (6 digits)"
+              placeholderTextColor={colors.textSecondary}
+              value={mfaCode}
+              onChangeText={setMfaCode}
+              keyboardType="number-pad"
+              maxLength={6}
+              autoCapitalize="none"
+              autoCorrect={false}
+              editable={!loading}
+            />
+          ) : null}
           <TextInput
             style={styles.input}
             placeholder="New password (min 8 characters)"

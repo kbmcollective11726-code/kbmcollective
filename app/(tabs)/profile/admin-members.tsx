@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -143,7 +143,15 @@ export default function AdminMembersScreen() {
   };
 
   const primaryRole = (roles: string[]) =>
-    roles.includes('admin') ? 'admin' : roles.includes('vendor') ? 'vendor' : roles.includes('speaker') ? 'speaker' : roles[0] ?? 'attendee';
+    roles.includes('admin')
+      ? 'admin'
+      : roles.includes('vendor')
+        ? 'vendor'
+        : roles.includes('attendee')
+          ? 'attendee'
+          : roles.includes('speaker')
+            ? 'speaker'
+            : roles[0] ?? 'attendee';
 
   const doSaveRoles = async (member: Row, newRoles: string[]) => {
     if (!currentEvent?.id || !canChangeRoles) return;

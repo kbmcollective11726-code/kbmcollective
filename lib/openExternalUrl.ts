@@ -12,6 +12,9 @@ export async function openExternalUrl(raw: string | null | undefined): Promise<b
   const href = normalizeExternalUrl(raw ?? '');
   if (!href) return false;
   try {
+    // canOpenURL can return false for https on some iOS builds; still try openURL.
+    const can = await Linking.canOpenURL(href).catch(() => true);
+    if (!can) return false;
     await Linking.openURL(href);
     return true;
   } catch (e) {

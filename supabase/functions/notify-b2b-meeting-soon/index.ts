@@ -2,12 +2,15 @@
 // meeting_slots.start_time is wall-clock UTC (same as schedule_sessions); interpret in events.reminder_timezone.
 // Invoke via cron every 1–2 minutes (e.g. Supabase cron or external). Use x-cron-secret if set.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { DateTime } from "https://esm.sh/luxon@3.5.0";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
 const ANDROID_CHANNEL_ID = "collectivelive_notifications_v2";
 const REMIND_MINUTES = 5;
+/** Window opens at most 9 minutes before start. A marker older than this is from a previous time. */
+const STALE_REMINDER_BEFORE_MS = 12 * 60 * 1000;
 
 const EXPO_BANNER_FIELDS = {
   sound: "default",
@@ -16,12 +19,6 @@ const EXPO_BANNER_FIELDS = {
   badge: 1,
   vibrate: true,
 } as const;
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, x-cron-secret",
-};
 
 function countExpoOkTickets(rawText: string): number {
   try {
@@ -153,11 +150,12 @@ async function sendExpoBatch(
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -165,10 +163,10 @@ Deno.serve(async (req: Request) => {
   const cronSecret = Deno.env.get("CRON_SECRET");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
+    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500, ch);
   }
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
-    return json({ error: "Unauthorized" }, 401);
+  if (!cronSecret || req.headers.get("x-cron-secret") !== cronSecret) {
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   const defaultZone = (Deno.env.get("SESSION_REMINDER_TIMEZONE") ?? "America/New_York").trim() ||
@@ -193,7 +191,7 @@ Deno.serve(async (req: Request) => {
 
   if (slotsError) {
     console.error("Fetch meeting_slots error:", slotsError);
-    return json({ error: slotsError.message }, 500);
+    return json({ error: slotsError.message }, 500, ch);
   }
 
   const slotList = ((slotsRaw ?? []) as SlotRow[]).filter((s) => {
@@ -228,7 +226,7 @@ Deno.serve(async (req: Request) => {
       sent: 0,
       message: "No B2B meetings starting in reminder window (timezone-aware, ~3-9 min before start)",
       hint: `Set Edge secret SESSION_REMINDER_TIMEZONE or events.reminder_timezone (default ${defaultZone}).`,
-    }, 200);
+    }, 200, ch);
   }
 
   const slotIds = due.map((s) => s.id);
@@ -242,23 +240,62 @@ Deno.serve(async (req: Request) => {
 
   if (bookError) {
     console.error("Fetch meeting_bookings error:", bookError);
-    return json({ error: bookError.message }, 500);
+    return json({ error: bookError.message }, 500, ch);
   }
 
   const bookingList = (bookings ?? []) as BookingRow[];
   if (bookingList.length === 0) {
-    return json({ sent: 0, message: "No bookings for these slots" }, 200);
+    return json({ sent: 0, message: "No bookings for these slots" }, 200, ch);
   }
 
   const { data: alreadySent } = await supabase
     .from("b2b_meeting_reminder_sent")
-    .select("booking_id")
+    .select("booking_id, created_at")
     .in("booking_id", bookingList.map((b) => b.id));
 
-  const sentSet = new Set((alreadySent ?? []).map((r: { booking_id: string }) => r.booking_id));
+  const sentAtByBooking = new Map<string, string | null>();
+  for (const row of alreadySent ?? []) {
+    const r = row as { booking_id: string; created_at?: string | null };
+    sentAtByBooking.set(r.booking_id, r.created_at ?? null);
+  }
+
+  const dueById = new Map(due.map((s) => [s.id, s]));
+  const sentSet = new Set<string>();
+  const staleBookingIds: string[] = [];
+  for (const booking of bookingList) {
+    if (!sentAtByBooking.has(booking.id)) continue;
+    const slot = dueById.get(booking.slot_id);
+    const zone = (slot?.vendor_booths?.events?.reminder_timezone ?? "").trim() || defaultZone;
+    const startMs = slot ? slotStartInZoneMs(slot.start_time, zone) : null;
+    const sentMs = Date.parse(sentAtByBooking.get(booking.id) ?? "");
+    // Time was moved later. The old "starting soon" must not block the new start.
+    if (startMs != null && Number.isFinite(sentMs) && sentMs < startMs - STALE_REMINDER_BEFORE_MS) {
+      staleBookingIds.push(booking.id);
+      continue;
+    }
+    sentSet.add(booking.id);
+  }
+  if (staleBookingIds.length > 0) {
+    const { error: clearErr } = await supabase
+      .from("b2b_meeting_reminder_sent")
+      .delete()
+      .in("booking_id", staleBookingIds);
+    if (clearErr) {
+      console.warn("B2B reminder stale clear failed:", clearErr);
+      for (const id of staleBookingIds) sentSet.add(id);
+    } else {
+      console.warn(
+        JSON.stringify({
+          kind: "b2b_reminder_stale_cleared",
+          count: staleBookingIds.length,
+        }),
+      );
+    }
+  }
+
   const toProcess = bookingList.filter((b) => !sentSet.has(b.id));
   if (toProcess.length === 0) {
-    return json({ sent: 0, message: "Reminders already sent for these bookings" }, 200);
+    return json({ sent: 0, message: "Reminders already sent for these bookings" }, 200, ch);
   }
 
   const { data: booths, error: boothError } = await supabase
@@ -268,7 +305,7 @@ Deno.serve(async (req: Request) => {
 
   if (boothError) {
     console.error("Fetch vendor_booths error:", boothError);
-    return json({ error: boothError.message }, 500);
+    return json({ error: boothError.message }, 500, ch);
   }
 
   const boothRows = (booths ?? []) as BoothRow[];
@@ -287,7 +324,7 @@ Deno.serve(async (req: Request) => {
 
   if (repErr) {
     console.error("Fetch vendor_booth_reps error:", repErr);
-    return json({ error: repErr.message }, 500);
+    return json({ error: repErr.message }, 500, ch);
   }
 
   const repIdsByBooth = buildRepIdsByBooth(boothRows, (repRows ?? []) as { booth_id: string; user_id: string }[]);
@@ -304,7 +341,7 @@ Deno.serve(async (req: Request) => {
 
   if (usersError) {
     console.error("Fetch users error:", usersError);
-    return json({ error: usersError.message }, 500);
+    return json({ error: usersError.message }, 500, ch);
   }
 
   const tokenByUser = new Map<string, string>();
@@ -407,12 +444,12 @@ Deno.serve(async (req: Request) => {
     totalSent += await sendExpoBatch(pushMessages);
   }
 
-  return json({ sent: totalSent, bookings: toProcess.length }, 200);
+  return json({ sent: totalSent, bookings: toProcess.length }, 200, ch);
 });
 
-function json(body: object, status: number) {
+function json(body: object, status: number, headers: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
   });
 }

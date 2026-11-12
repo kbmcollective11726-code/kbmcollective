@@ -18,98 +18,27 @@ export async function awardPoints(
   description?: string
 ): Promise<{ awarded: boolean; points: number }> {
   try {
-    // Look up the point rule for this action in this event
-    const { data: rule, error: ruleError } = await supabase
-      .from('point_rules')
-      .select('points_value, max_per_day')
-      .eq('event_id', eventId)
-      .eq('action', action)
-      .maybeSingle();
-
-    if (ruleError || !rule) {
-      console.log(`No point rule found for action: ${action}`);
+    const { data, error } = await supabase.rpc('award_points_secure', {
+      p_user_id: userId,
+      p_event_id: eventId,
+      p_action: action,
+      p_reference_id: referenceId ?? null,
+      p_description: description ?? null,
+    });
+    if (error) {
+      if (__DEV__) console.warn('Failed to award points:', error.message);
       return { awarded: false, points: 0 };
     }
-
-    // Check daily limit if one exists
-    if (rule.max_per_day) {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      const { count, error: countError } = await supabase
-        .from('point_log')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId)
-        .eq('event_id', eventId)
-        .eq('action', action)
-        .gte('created_at', today.toISOString());
-
-      if (!countError && (count ?? 0) >= rule.max_per_day) {
-        console.log(`Daily limit reached for action: ${action}`);
-        return { awarded: false, points: 0 };
-      }
-    }
-
-    // Check for duplicate award on the same reference (prevent double-awarding)
-    if (referenceId) {
-      const { count: dupCount } = await supabase
-        .from('point_log')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', userId)
-        .eq('event_id', eventId)
-        .eq('action', action)
-        .eq('reference_id', referenceId);
-
-      if ((dupCount ?? 0) > 0) {
-        return { awarded: false, points: 0 };
-      }
-    }
-
-    // For post_photo: prevent duplicate points for same image (same image_hash by same user in same event)
-    if (action === 'post_photo' && referenceId) {
-      const { data: post } = await supabase
-        .from('posts')
-        .select('image_hash')
-        .eq('id', referenceId)
-        .single();
-
-      const imageHash = (post as { image_hash?: string | null } | null)?.image_hash;
-      if (imageHash) {
-        const { count: sameImageCount } = await supabase
-          .from('posts')
-          .select('*', { count: 'exact', head: true })
-          .eq('event_id', eventId)
-          .eq('user_id', userId)
-          .eq('image_hash', imageHash)
-          .neq('id', referenceId)
-          .eq('is_deleted', false);
-
-        if ((sameImageCount ?? 0) > 0) {
-          return { awarded: false, points: 0 };
-        }
-      }
-    }
-
-    // Award the points — the database trigger updates event_members.points
-    const { error: insertError } = await supabase
-      .from('point_log')
-      .insert({
-        user_id: userId,
-        event_id: eventId,
-        action,
-        points: rule.points_value,
-        reference_id: referenceId,
-        description: description || action.replace(/_/g, ' '),
-      });
-
-    if (insertError) {
-      console.error('Failed to award points:', insertError);
-      return { awarded: false, points: 0 };
-    }
-
-    return { awarded: true, points: rule.points_value };
+    const result = data as { awarded?: boolean; points?: number } | null;
+    return {
+      awarded: result?.awarded === true,
+      points: typeof result?.points === 'number' ? result.points : 0,
+    };
   } catch (err) {
-    console.error('Award points error:', err);
+    if (__DEV__) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn('Award points error:', message);
+    }
     return { awarded: false, points: 0 };
   }
 }
@@ -206,5 +135,14 @@ export async function initializePointRules(eventId: string): Promise<void> {
     event_id: eventId,
   }));
 
-  await supabase.from('point_rules').insert(rulesWithEventId);
+  // Prefer DB helper (idempotent). Fall back to upsert if the RPC is unavailable.
+  const { error: rpcError } = await supabase.rpc('seed_default_point_rules_for_event', {
+    p_event_id: eventId,
+  });
+  if (!rpcError) return;
+
+  await supabase.from('point_rules').upsert(rulesWithEventId, {
+    onConflict: 'event_id,action',
+    ignoreDuplicates: true,
+  });
 }

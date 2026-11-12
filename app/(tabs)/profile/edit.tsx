@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -21,6 +21,7 @@ import { supabase } from '../../../lib/supabase';
 import { awardPoints } from '../../../lib/points';
 import { uploadAvatar } from '../../../lib/image';
 import { colors } from '../../../constants/colors';
+import { useEventThemeColor } from '../../../lib/eventTheme';
 import Avatar from '../../../components/Avatar';
 import { pickImage } from '../../../lib/image';
 import { Link2, Check, Pencil } from 'lucide-react-native';
@@ -30,6 +31,7 @@ export default function EditProfileScreen() {
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user, updateProfile, refreshUser } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
 
   const goBack = useCallback(() => {
     const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
@@ -187,8 +189,8 @@ export default function EditProfileScreen() {
                     style={styles.changeBtn}
                     hitSlop={8}
                   >
-                    <Pencil size={16} color={colors.primary} />
-                    <Text style={styles.changeBtnText}>Change</Text>
+                    <Pencil size={16} color={themeColor} />
+                    <Text style={[styles.changeBtnText, { color: themeColor }]}>Change</Text>
                   </TouchableOpacity>
                 </View>
                 {showLinkedInInput && (
@@ -255,7 +257,7 @@ export default function EditProfileScreen() {
           />
 
           <TouchableOpacity
-            style={[styles.saveButton, saving && styles.saveButtonDisabled]}
+            style={[styles.saveButton, { backgroundColor: themeColor }, saving && styles.saveButtonDisabled]}
             onPress={handleSave}
             disabled={saving}
           >
@@ -369,7 +371,6 @@ const styles = StyleSheet.create({
   },
   changeBtnText: {
     fontSize: 14,
-    color: colors.primary,
     fontWeight: '600',
   },
   linkedInInput: {
@@ -384,7 +385,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
   },
   saveButton: {
-    backgroundColor: colors.primary,
     paddingVertical: 16,
     borderRadius: 12,
     alignItems: 'center',

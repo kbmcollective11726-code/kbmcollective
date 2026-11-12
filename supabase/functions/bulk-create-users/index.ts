@@ -3,32 +3,34 @@
 // - Normal mode: default_password required; creates Auth users; duplicate emails → link + optional profile update.
 // - link_only: no password; only existing public.users by email → update profile fields when provided, upsert event_members.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",
-};
-
-function json(body: object, status: number) {
+function json(body: object, status: number, headers: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
   });
 }
 
 const VALID_ROLES = ["attendee", "speaker", "vendor", "admin"] as const;
 
+function mapRoleAlias(raw: string): string {
+  const r = raw.trim().toLowerCase();
+  if (r === "delegate" || r === "attendee") return "attendee";
+  return r;
+}
+
 function normalizeRole(raw: string | undefined | null, fallback: string): string {
-  const r = String(raw ?? "").trim().toLowerCase();
+  const r = mapRoleAlias(String(raw ?? ""));
   return (VALID_ROLES as readonly string[]).includes(r) ? r : fallback;
 }
 
-/** Same priority as mobile admin-members (display / primary key). */
+/** Prefer registration/admin primary; speaker is an overlay when both apply. */
 function primaryRole(roles: string[]): string {
   if (roles.includes("admin")) return "admin";
   if (roles.includes("vendor")) return "vendor";
+  if (roles.includes("attendee")) return "attendee";
   if (roles.includes("speaker")) return "speaker";
   return roles[0] ?? "attendee";
 }
@@ -41,14 +43,14 @@ function rolesFromRow(
   if (Array.isArray(row.roles) && row.roles.length > 0) {
     const out: string[] = [];
     for (const x of row.roles) {
-      const t = String(x).trim().toLowerCase();
+      const t = mapRoleAlias(String(x));
       if ((VALID_ROLES as readonly string[]).includes(t) && !out.includes(t)) out.push(t);
     }
     if (out.length > 0) return out;
   }
   const raw = String(row.role ?? "").trim();
   if (!raw) return [normalizeRole("", fallback)];
-  const parts = raw.split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+  const parts = raw.split(",").map((s) => mapRoleAlias(s)).filter(Boolean);
   const valid = parts.filter((p) => (VALID_ROLES as readonly string[]).includes(p));
   const deduped = [...new Set(valid)];
   if (deduped.length > 0) return deduped;
@@ -91,30 +93,31 @@ type Body = {
 };
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !anonKey || !serviceRoleKey) {
-    return json({ error: "Server configuration error" }, 500);
+    return json({ error: "Server configuration error" }, 500, ch);
   }
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return json({ error: "Authorization required" }, 401);
+    return json({ error: "Authorization required" }, 401, ch);
   }
 
   let body: Body = {};
   try {
     body = (await req.json()) as Body;
   } catch {
-    return json({ error: "Invalid JSON body" }, 400);
+    return json({ error: "Invalid JSON body" }, 400, ch);
   }
 
   const eventId = typeof body.event_id === "string" ? body.event_id.trim() : null;
@@ -132,7 +135,9 @@ Deno.serve(async (req: Request) => {
         title: typeof row.title === "string" ? row.title.trim() : undefined,
         company: typeof row.company === "string" ? row.company.trim() : undefined,
         role: row.role,
-        roles: Array.isArray(row.roles) ? row.roles.map((x) => String(x).trim().toLowerCase()) : undefined,
+        roles: Array.isArray(row.roles)
+          ? row.roles.map((x) => mapRoleAlias(String(x)))
+          : undefined,
       };
     }).filter((r) => r.email.length > 0);
   } else if (Array.isArray(body.emails) && body.emails.length > 0) {
@@ -143,13 +148,13 @@ Deno.serve(async (req: Request) => {
   }
 
   if (rows.length === 0) {
-    return json({ error: "rows (or emails) is required and must not be empty" }, 400);
+    return json({ error: "rows (or emails) is required and must not be empty" }, 400, ch);
   }
   if (linkOnly && !eventId) {
-    return json({ error: "event_id is required for link-only import" }, 400);
+    return json({ error: "event_id is required for link-only import" }, 400, ch);
   }
   if (!linkOnly && defaultPassword.length < 8) {
-    return json({ error: "default_password must be at least 8 characters" }, 400);
+    return json({ error: "default_password must be at least 8 characters" }, 400, ch);
   }
 
   const userJwt = authHeader.slice(7);
@@ -158,27 +163,29 @@ Deno.serve(async (req: Request) => {
   });
   const { data: { user: caller } } = await callerClient.auth.getUser(userJwt);
   if (!caller?.id) {
-    return json({ error: "Invalid token" }, 401);
+    return json({ error: "Invalid token" }, 401, ch);
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
-  const { data: profile } = await admin.from("users").select("is_platform_admin").eq("id", caller.id).single();
-  const isPlatformAdmin = (profile as { is_platform_admin?: boolean } | null)?.is_platform_admin === true;
+  const { data: platformAdmin } = await callerClient.rpc("is_platform_admin");
+  const isPlatformAdmin = platformAdmin === true;
 
   if (eventId && !isPlatformAdmin) {
-    const { data: em } = await admin
-      .from("event_members")
-      .select("role")
-      .eq("event_id", eventId)
-      .eq("user_id", caller.id)
-      .maybeSingle();
-    const member = em as { role?: string } | null;
-    const isEventAdmin = member?.role === "admin" || member?.role === "super_admin";
-    if (!isEventAdmin) {
-      return json({ error: "Only platform admins or event admins can bulk-create users" }, 403);
+    const { data: eventAdmin } = await callerClient.rpc("is_event_admin", {
+      p_event_id: eventId,
+    });
+    if (eventAdmin !== true) {
+      return json({ error: "Only platform admins or event admins can bulk-create users" }, 403, ch);
     }
   } else if (!isPlatformAdmin) {
-    return json({ error: "Platform admin or event admin required" }, 403);
+    return json({ error: "Platform admin or event admin required" }, 403, ch);
+  }
+
+  /** Event admins may not mint event-admin roles; only platform admins can. */
+  function rolesAllowedForCaller(rolesList: string[]): string[] {
+    if (isPlatformAdmin) return rolesList;
+    const filtered = rolesList.filter((r) => r !== "admin");
+    return filtered.length > 0 ? filtered : ["attendee"];
   }
 
   const errors: string[] = [];
@@ -240,7 +247,7 @@ Deno.serve(async (req: Request) => {
         errors.push(`Invalid email: ${email}`);
         continue;
       }
-      const rolesList = rolesFromRow(row, "attendee");
+      const rolesList = rolesAllowedForCaller(rolesFromRow(row, "attendee"));
       const fullName = row.full_name && row.full_name.length > 0 ? row.full_name : undefined;
       const ok = await linkExistingUser(email, rolesList, row, fullName);
       if (ok) linked++;
@@ -250,7 +257,7 @@ Deno.serve(async (req: Request) => {
       linked,
       failed: errors.length,
       errors: errors.slice(0, 50),
-    }, 200);
+    }, 200, ch);
   }
 
   const toMember: { user_id: string; roles: string[] }[] = [];
@@ -261,7 +268,7 @@ Deno.serve(async (req: Request) => {
       errors.push(`Invalid email: ${email}`);
       continue;
     }
-    const rolesList = rolesFromRow(row, legacyRole);
+    const rolesList = rolesAllowedForCaller(rolesFromRow(row, legacyRole));
     const fullName = (row.full_name && row.full_name.length > 0) ? row.full_name : derivedNameFromEmail(email);
 
     try {
@@ -298,7 +305,7 @@ Deno.serve(async (req: Request) => {
 
   if (eventId && toMember.length > 0) {
     for (const m of toMember) {
-      await admin.from("event_members").upsert(
+      const { error: upErr } = await admin.from("event_members").upsert(
         {
           event_id: eventId,
           user_id: m.user_id,
@@ -307,6 +314,10 @@ Deno.serve(async (req: Request) => {
         },
         { onConflict: "event_id,user_id" },
       );
+      if (upErr) {
+        errors.push(`${m.user_id}: membership upsert failed: ${upErr.message}`);
+        created = Math.max(0, created - 1);
+      }
     }
   }
 
@@ -315,5 +326,5 @@ Deno.serve(async (req: Request) => {
     linked,
     failed: errors.length,
     errors: errors.slice(0, 50),
-  }, 200);
+  }, 200, ch);
 });

@@ -51,6 +51,119 @@ export async function compressImageToPngBlob(file: File, opts?: CompressJpegOpti
   }
 }
 
+function isNearWhitePixel(r: number, g: number, b: number, a: number): boolean {
+  if (a < 8) return true;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  // Bright low-chroma plate only — avoid eating light logo fills (e.g. eyes in letters).
+  return max >= 245 && max - min <= 18;
+}
+
+/**
+ * Sponsor logos often ship as JPG/PNG with an opaque white rectangle.
+ * Flood-fill near-white from the edges so the plate becomes transparent and
+ * blends on gray app strips and the dark live wall.
+ */
+export async function compressSponsorLogoToPngBlob(
+  file: File,
+  opts?: CompressJpegOptions,
+): Promise<Blob> {
+  const MAX_WIDTH = opts?.maxWidth ?? VENDOR_LOGO_MAX_WIDTH;
+  const bitmap = await createImageBitmap(file).catch(() => {
+    throw new Error('Could not read this image. Try JPG or PNG.');
+  });
+  try {
+    const w = bitmap.width;
+    const h = bitmap.height;
+    const scale = w > MAX_WIDTH ? MAX_WIDTH / w : 1;
+    const cw = Math.max(1, Math.round(w * scale));
+    const ch = Math.max(1, Math.round(h * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('Canvas not supported');
+    ctx.drawImage(bitmap, 0, 0, cw, ch);
+
+    const image = ctx.getImageData(0, 0, cw, ch);
+    const { data } = image;
+    const visited = new Uint8Array(cw * ch);
+    const stack: number[] = [];
+
+    const pushIfNearWhite = (x: number, y: number) => {
+      if (x < 0 || y < 0 || x >= cw || y >= ch) return;
+      const i = y * cw + x;
+      if (visited[i]) return;
+      const o = i * 4;
+      const r = data[o] ?? 0;
+      const g = data[o + 1] ?? 0;
+      const b = data[o + 2] ?? 0;
+      const a = data[o + 3] ?? 0;
+      if (!isNearWhitePixel(r, g, b, a)) return;
+      visited[i] = 1;
+      stack.push(i);
+    };
+
+    for (let x = 0; x < cw; x += 1) {
+      pushIfNearWhite(x, 0);
+      pushIfNearWhite(x, ch - 1);
+    }
+    for (let y = 0; y < ch; y += 1) {
+      pushIfNearWhite(0, y);
+      pushIfNearWhite(cw - 1, y);
+    }
+
+    while (stack.length) {
+      const i = stack.pop()!;
+      const o = i * 4;
+      data[o + 3] = 0;
+      const x = i % cw;
+      const y = (i / cw) | 0;
+      pushIfNearWhite(x + 1, y);
+      pushIfNearWhite(x - 1, y);
+      pushIfNearWhite(x, y + 1);
+      pushIfNearWhite(x, y - 1);
+    }
+
+    // Soften fringe pixels next to cleared background (JPG compression halo).
+    for (let y = 1; y < ch - 1; y += 1) {
+      for (let x = 1; x < cw - 1; x += 1) {
+        const i = y * cw + x;
+        const o = i * 4;
+        if ((data[o + 3] ?? 0) === 0) continue;
+        const r = data[o] ?? 0;
+        const g = data[o + 1] ?? 0;
+        const b = data[o + 2] ?? 0;
+        if (!isNearWhitePixel(r, g, b, 255)) continue;
+        let touchClear = false;
+        for (const [dx, dy] of [
+          [1, 0],
+          [-1, 0],
+          [0, 1],
+          [0, -1],
+        ] as const) {
+          const ni = (y + dy) * cw + (x + dx);
+          if ((data[ni * 4 + 3] ?? 0) === 0) {
+            touchClear = true;
+            break;
+          }
+        }
+        if (touchClear) data[o + 3] = 0;
+      }
+    }
+
+    ctx.putImageData(image, 0, 0);
+    return await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (blob) => (blob ? resolve(blob) : reject(new Error('Failed to encode image'))),
+        'image/png',
+      );
+    });
+  } finally {
+    bitmap.close();
+  }
+}
+
 /** Average color from corners/edges of the source artwork (for seamless letterbox fill). */
 function sampleBitmapEdgeColor(bitmap: ImageBitmap): string {
   const c = document.createElement('canvas');
@@ -230,7 +343,11 @@ async function tryR2PresignedUpload(
     presignRes = await fetch(fnUrl, {
       method: 'POST',
       headers: edgeFunctionHeaders(accessToken),
-      body: JSON.stringify({ key: r2Key, contentType }),
+      body: JSON.stringify({
+        key: r2Key,
+        contentType,
+        contentLength: arrayBuffer.byteLength,
+      }),
       signal: presignAc.signal,
     });
   } catch {
@@ -306,17 +423,23 @@ export type EventScopedImageFolder =
   | 'event-banner'
   | 'badge-banner'
   | 'portal-banner'
-  | 'sponsor-logos';
+  | 'sponsor-logos'
+  | 'registration-headshots';
 
 function buildStoragePath(eventId: string, userId: string, folder: EventScopedImageFolder): string {
   if (folder === 'event-banner') return `${eventId}/banner_${Date.now()}.jpg`;
   if (folder === 'badge-banner') return `${eventId}/badge_banner_${Date.now()}.jpg`;
   if (folder === 'portal-banner') return `${eventId}/portal_banner_${Date.now()}.jpg`;
+  if (folder === 'registration-headshots') return `${eventId}/registration-headshots/${userId}_${Date.now()}.jpg`;
   return `${eventId}/${folder}/${userId}_${Date.now()}.png`;
 }
 
 function isLogoFolder(folder: EventScopedImageFolder): boolean {
   return folder === 'vendor-logos' || folder === 'sponsor-logos';
+}
+
+function isHeadshotFolder(folder: EventScopedImageFolder): boolean {
+  return folder === 'registration-headshots';
 }
 
 function buildR2Key(storagePath: string): string {
@@ -337,6 +460,7 @@ export async function uploadEventImage(file: File, eventId: string, folder: Even
   const token = session.access_token;
 
   const logoFolder = isLogoFolder(folder);
+  const headshotFolder = isHeadshotFolder(folder);
   const imageBlob =
     folder === 'badge-banner' || folder === 'portal-banner'
       ? await compressBadgeBannerToJpegBlob(file, BANNER_JPEG_QUALITY)
@@ -345,8 +469,15 @@ export async function uploadEventImage(file: File, eventId: string, folder: Even
           maxWidth: BANNER_MAX_WIDTH,
           quality: BANNER_JPEG_QUALITY,
         })
+      : headshotFolder
+        ? await compressImageToJpegBlob(file, {
+            maxWidth: 1200,
+            quality: 0.85,
+          })
       : logoFolder
-        ? await compressImageToPngBlob(file, { maxWidth: VENDOR_LOGO_MAX_WIDTH })
+        ? folder === 'sponsor-logos'
+          ? await compressSponsorLogoToPngBlob(file, { maxWidth: VENDOR_LOGO_MAX_WIDTH })
+          : await compressImageToPngBlob(file, { maxWidth: VENDOR_LOGO_MAX_WIDTH })
         : await compressImageToJpegBlob(file, {
             maxWidth: VENDOR_LOGO_MAX_WIDTH,
             quality: VENDOR_LOGO_JPEG_QUALITY,

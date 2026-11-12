@@ -9,10 +9,11 @@ import {
   RefreshControl,
   ActivityIndicator,
   TextInput,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { MessageCircle, UserPlus, Search, Users, Mic, Store, Check, X } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../../stores/authStore';
@@ -22,8 +23,15 @@ import { supabase, withRetryAndRefresh } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import { createNotificationAndPush } from '../../lib/notifications';
+import { loadCachedCommunity, saveCachedCommunity } from '../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../stores/connectivityStore';
 import { colors } from '../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../lib/eventTheme';
 import Avatar from '../../components/Avatar';
+import { chatHref, userProfileHref } from '../../lib/navReturn';
+import PressScale from '../../components/ui/PressScale';
+import EmptyState from '../../components/ui/EmptyState';
+import SectionHeader from '../../components/ui/SectionHeader';
 
 // Module-level, SCOPED BY EVENT: avoids stale "Request sent" / "Accept" from a previous event when switching events
 const recentlySentByEvent: Record<string, Set<string>> = {}; // eventId -> Set of userIds
@@ -48,6 +56,11 @@ export default function CommunityScreen() {
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
+  const themeChipInactiveBg = themeColorWithAlpha(themeColor, '12');
+  const themeChipInactiveBorder = themeColorWithAlpha(themeColor, '30');
+  const themeSurfaceTint = themeColorWithAlpha(themeColor, '0c');
+  const themeSurfaceBorder = themeColorWithAlpha(themeColor, '22');
   const { fetchBlockedUsers, isInteractionBlocked } = useBlockStore();
   const [members, setMembers] = useState<CommunityMember[]>([]);
   const [loading, setLoading] = useState(true);
@@ -55,6 +68,7 @@ export default function CommunityScreen() {
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<string>('all');
   const optimisticRequestSent = useRef(new Set<string>());
@@ -184,12 +198,22 @@ export default function CommunityScreen() {
         });
 
       setMembers(list);
+      await saveCachedCommunity(currentEvent.id, user.id, list);
       });
       setFetchError(null);
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       if (__DEV__) console.warn('Community fetch error:', err);
-      setMembers([]);
-      setFetchError('Error - page not loading');
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedCommunity(currentEvent.id, user.id);
+      if (cached && cached.length > 0) {
+        setMembers(cached);
+        setFetchError(null);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setMembers([]);
+        setFetchError('Error - page not loading');
+      }
     } finally {
       fetchInProgressRef.current = false;
       setLoading(false);
@@ -199,22 +223,6 @@ export default function CommunityScreen() {
 
   const LOAD_TIMEOUT_MS = 45000; // pull-to-refresh only
 
-  // Like Info: run and wait. No timer so first try can complete.
-  useEffect(() => {
-    if (!currentEvent?.id || !user?.id) {
-      setMembers([]);
-      setLoading(false);
-      setFetchError(null);
-      return;
-    }
-    let cancelled = false;
-    fetchBlockedUsers(user.id).catch(() => {});
-    fetchMembers()
-      .catch(() => { if (!cancelled) setTimeout(() => fetchMembers().finally(() => {}), 2000); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [currentEvent?.id, user?.id, fetchBlockedUsers]);
-
   // Clear optimistic refs when switching events so we don't show stale "Request sent" from previous event
   useEffect(() => {
     optimisticRequestSent.current.clear();
@@ -223,7 +231,6 @@ export default function CommunityScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchInProgressRef.current = false;
       if (currentEvent?.id && user?.id) {
         fetchMembers().catch(() => {});
         fetchBlockedUsers(user.id).catch(() => {});
@@ -234,7 +241,6 @@ export default function CommunityScreen() {
   // Refetch when root layout refreshes session after app resume (notifyAfterSessionRefreshed).
   useEffect(() => {
     const unregister = registerRefetchOnSessionRefreshed(() => {
-      fetchInProgressRef.current = false;
       fetchMembersRef.current().catch(() => {});
     });
     return unregister;
@@ -313,10 +319,10 @@ export default function CommunityScreen() {
     };
   }, [currentEvent?.id, user?.id]);
 
-  // Polling fallback: refetch every 15s so recipient sees new requests without hammering the API
+  // Polling fallback: realtime covers most updates; keep a light refresh for missed events
   useEffect(() => {
     if (!currentEvent?.id || !user?.id) return;
-    const interval = setInterval(() => { fetchMembers().catch(() => {}); }, 15000);
+    const interval = setInterval(() => { fetchMembers().catch(() => {}); }, 60000);
     return () => clearInterval(interval);
   }, [currentEvent?.id, user?.id]);
 
@@ -436,6 +442,45 @@ export default function CommunityScreen() {
     }
   };
 
+  const handleCancelRequest = (otherUserId: string) => {
+    if (!user?.id || !currentEvent?.id) return;
+    Alert.alert('Cancel request?', 'They will no longer see your connection request. You can send a new one later.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Cancel request',
+        style: 'destructive',
+        onPress: async () => {
+          setCancellingId(otherUserId);
+          try {
+            const { error } = await supabase
+              .from('connection_requests')
+              .delete()
+              .eq('event_id', currentEvent.id)
+              .eq('requester_id', user.id)
+              .eq('requested_user_id', otherUserId)
+              .eq('status', 'pending');
+            if (error) throw error;
+            optimisticRequestSent.current.delete(otherUserId);
+            delete lastSentAt.current[otherUserId];
+            recentlySentByEvent[currentEvent.id]?.delete(otherUserId);
+            delete recentlySentAtByEvent[`${currentEvent.id}:${otherUserId}`];
+            setMembers((prev) =>
+              prev.map((p) =>
+                p.user_id === otherUserId ? { ...p, request_sent_by_me: false } : p
+              )
+            );
+            Toast.show({ type: 'success', text1: 'Request cancelled' });
+          } catch (err) {
+            console.error('Cancel connection request error:', err);
+            Toast.show({ type: 'error', text1: 'Could not cancel', text2: 'Please try again.' });
+          } finally {
+            setCancellingId(null);
+          }
+        },
+      },
+    ]);
+  };
+
   const handleAccept = async (otherUserId: string) => {
     if (!user?.id || !currentEvent?.id) return;
     if (isInteractionBlocked(otherUserId)) {
@@ -550,11 +595,11 @@ export default function CommunityScreen() {
       });
       return;
     }
-    router.push(`/profile/chat/${otherUserId}?from=${encodeURIComponent('/(tabs)/community')}` as any);
+    router.push(chatHref(otherUserId, '/(tabs)/community') as never);
   };
 
   const handleViewProfile = (otherUserId: string) => {
-    router.push(`/feed/user/${otherUserId}?from=${encodeURIComponent('/(tabs)/community')}` as any);
+    router.push(userProfileHref(otherUserId, '/(tabs)/community') as never);
   };
 
   if (!currentEvent) {
@@ -581,7 +626,7 @@ export default function CommunityScreen() {
             <View style={styles.placeholder}>
               {loading ? (
                 <>
-                  <ActivityIndicator size="large" color={colors.primary} />
+                  <ActivityIndicator size="large" color={themeColor} />
                   <Text style={styles.title}>Community</Text>
                   <Text style={styles.subtitle}>Loading community…</Text>
                 </>
@@ -595,7 +640,7 @@ export default function CommunityScreen() {
                       setLoading(true);
                       fetchMembers();
                     }}
-                    style={styles.retryBtn}
+                    style={[styles.retryBtn, { backgroundColor: themeColor }]}
                     activeOpacity={0.8}
                   >
                     <Text style={styles.retryBtnText}>Try again</Text>
@@ -605,7 +650,7 @@ export default function CommunityScreen() {
             </View>
           }
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
           }
         />
       </SafeAreaView>
@@ -613,102 +658,112 @@ export default function CommunityScreen() {
   }
 
   const renderItem = ({ item }: { item: CommunityMember }) => (
-    <TouchableOpacity
-      style={styles.row}
-      onPress={() => handleViewProfile(item.user_id)}
-      activeOpacity={0.7}
-    >
-      <Avatar uri={item.avatar_url} name={item.full_name} size={48} />
-      <View style={styles.info}>
-        <Text style={styles.name} numberOfLines={1}>
-          {item.full_name}
-        </Text>
-        {item.title ? (
-          <Text style={styles.titleLine} numberOfLines={2}>
-            {item.title}
+      <PressScale
+        onPress={() => handleViewProfile(item.user_id)}
+        style={[styles.row, { borderLeftColor: themeColor, borderLeftWidth: 3 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`View ${item.full_name}`}
+      >
+        <Avatar uri={item.avatar_url} name={item.full_name} size={48} />
+        <View style={styles.info}>
+          <Text style={styles.name} numberOfLines={2}>
+            {item.full_name}
           </Text>
-        ) : null}
-        {item.company ? (
-          <Text style={styles.companyLine} numberOfLines={2}>
-            {item.company}
-          </Text>
-        ) : null}
-      </View>
-      <View style={styles.actions}>
-        {item.is_connected ? (
-          <View style={styles.connectedActions}>
-            <TouchableOpacity
-              style={[styles.button, styles.buttonPrimary, styles.buttonMessageSolo]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleMessage(item.user_id);
-              }}
+          {item.title ? (
+            <Text style={styles.titleLine} numberOfLines={2}>
+              {item.title}
+            </Text>
+          ) : null}
+          {item.company ? (
+            <Text style={styles.companyLine} numberOfLines={2}>
+              {item.company}
+            </Text>
+          ) : null}
+        </View>
+        <View style={styles.actions}>
+          {item.is_connected ? (
+            <View style={styles.connectedActions}>
+              <PressScale
+                style={[styles.button, styles.buttonPrimary, styles.buttonMessageSolo, { backgroundColor: themeColor }]}
+                onPress={() => handleMessage(item.user_id)}
+                accessibilityRole="button"
+                accessibilityLabel={`Message ${item.full_name}`}
+              >
+                <MessageCircle size={18} color={colors.textOnPrimary} />
+                <Text style={styles.buttonPrimaryText}>Message</Text>
+              </PressScale>
+            </View>
+          ) : item.request_received_from_them ? (
+            <View style={styles.requestActions}>
+              <PressScale
+                style={[styles.button, styles.buttonAccept, { backgroundColor: themeColor }]}
+                onPress={() => handleAccept(item.user_id)}
+                disabled={acceptingId === item.user_id}
+                accessibilityRole="button"
+                accessibilityLabel={`Accept request from ${item.full_name}`}
+              >
+                {acceptingId === item.user_id ? (
+                  <ActivityIndicator size="small" color="#fff" />
+                ) : (
+                  <>
+                    <Check size={16} color="#fff" />
+                    <Text style={styles.buttonAcceptText}>Accept</Text>
+                  </>
+                )}
+              </PressScale>
+              <PressScale
+                style={[styles.button, styles.buttonDecline]}
+                onPress={() => handleDecline(item.user_id)}
+                disabled={acceptingId === item.user_id}
+                accessibilityRole="button"
+                accessibilityLabel={`Decline request from ${item.full_name}`}
+              >
+                <X size={16} color={colors.textSecondary} />
+                <Text style={styles.buttonDeclineText}>Decline</Text>
+              </PressScale>
+            </View>
+          ) : item.request_sent_by_me ? (
+            <PressScale
+              style={[styles.button, styles.buttonDecline]}
+              onPress={() => handleCancelRequest(item.user_id)}
+              disabled={cancellingId === item.user_id}
+              accessibilityRole="button"
+              accessibilityLabel={`Cancel connection request to ${item.full_name}`}
             >
-              <MessageCircle size={18} color={colors.textOnPrimary} />
-              <Text style={styles.buttonPrimaryText}>Message</Text>
-            </TouchableOpacity>
-          </View>
-        ) : item.request_received_from_them ? (
-          <View style={styles.requestActions}>
-            <TouchableOpacity
-              style={[styles.button, styles.buttonAccept]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleAccept(item.user_id);
-              }}
-              disabled={acceptingId === item.user_id}
-            >
-              {acceptingId === item.user_id ? (
-                <ActivityIndicator size="small" color="#fff" />
+              {cancellingId === item.user_id ? (
+                <ActivityIndicator size="small" color={colors.textSecondary} />
               ) : (
                 <>
-                  <Check size={16} color="#fff" />
-                  <Text style={styles.buttonAcceptText}>Accept</Text>
+                  <X size={16} color={colors.textSecondary} />
+                  <Text style={styles.buttonDeclineText}>Cancel</Text>
                 </>
               )}
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.button, styles.buttonDecline]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleDecline(item.user_id);
-              }}
-              disabled={acceptingId === item.user_id}
+            </PressScale>
+          ) : (
+            <PressScale
+              style={[styles.button, { backgroundColor: themeColor }]}
+              onPress={() => handleConnect(item.user_id)}
+              disabled={connectingId === item.user_id}
+              accessibilityRole="button"
+              accessibilityLabel={`Connect with ${item.full_name}`}
             >
-              <X size={16} color={colors.textSecondary} />
-              <Text style={styles.buttonDeclineText}>Decline</Text>
-            </TouchableOpacity>
-          </View>
-        ) : item.request_sent_by_me ? (
-          <View style={[styles.button, styles.buttonMuted]}>
-            <Text style={styles.buttonMutedText}>Request sent</Text>
-          </View>
-        ) : (
-          <TouchableOpacity
-            style={[styles.button, styles.buttonSecondary]}
-            onPress={(e) => {
-              e.stopPropagation();
-              handleConnect(item.user_id);
-            }}
-            disabled={connectingId === item.user_id}
-          >
-            {connectingId === item.user_id ? (
-              <ActivityIndicator size="small" color={colors.primary} />
-            ) : (
-              <>
-                <UserPlus size={18} color={colors.primary} />
-                <Text style={styles.buttonSecondaryText}>Connect</Text>
-              </>
-            )}
-          </TouchableOpacity>
-        )}
-      </View>
-    </TouchableOpacity>
+              {connectingId === item.user_id ? (
+                <ActivityIndicator size="small" color={colors.textOnPrimary} />
+              ) : (
+                <>
+                  <UserPlus size={18} color={colors.textOnPrimary} />
+                  <Text style={styles.buttonPrimaryText}>Connect</Text>
+                </>
+              )}
+            </PressScale>
+          )}
+        </View>
+      </PressScale>
   );
 
   return (
     <SafeAreaView style={styles.container} edges={[]}>
-      <View style={styles.eventHeader}>
+      <View style={[styles.eventHeader, { borderBottomColor: themeSurfaceBorder }]}>
         <Text style={styles.eventHeaderText} numberOfLines={1}>
           {currentEvent?.name ?? 'Community'}
         </Text>
@@ -716,8 +771,8 @@ export default function CommunityScreen() {
           Both users must have this event selected to see connection requests
         </Text>
       </View>
-      <View style={styles.searchBar}>
-        <Search size={18} color={colors.textMuted} />
+      <View style={[styles.searchBar, { backgroundColor: themeSurfaceTint, borderColor: themeSurfaceBorder }]}>
+        <Search size={18} color={themeColor} />
         <TextInput
           style={styles.searchInput}
           value={searchQuery}
@@ -736,11 +791,21 @@ export default function CommunityScreen() {
         ].map(({ key, label, icon: Icon }) => (
           <TouchableOpacity
             key={key}
-            style={[styles.filterChip, roleFilter === key && styles.filterChipActive]}
+            style={[
+              styles.filterChip,
+              roleFilter === key
+                ? { backgroundColor: themeColor, borderColor: themeColor }
+                : { backgroundColor: themeChipInactiveBg, borderColor: themeChipInactiveBorder },
+            ]}
             onPress={() => setRoleFilter(key)}
           >
-            <Icon size={12} color={roleFilter === key ? '#fff' : colors.textMuted} />
-            <Text style={[styles.filterChipText, roleFilter === key && styles.filterChipTextActive]}>
+            <Icon size={12} color={roleFilter === key ? colors.textOnPrimary : themeColor} />
+            <Text
+              style={[
+                styles.filterChipText,
+                roleFilter === key ? styles.filterChipTextActive : { color: themeColor },
+              ]}
+            >
               {label}
             </Text>
           </TouchableOpacity>
@@ -753,25 +818,27 @@ export default function CommunityScreen() {
         renderItem={renderItem}
         renderSectionHeader={({ section: { title } }) => (
           <View style={styles.sectionHeaderWrap}>
-            <Text style={styles.sectionHeader}>{title}</Text>
+            <SectionHeader title={title} style={styles.sectionHeaderComponent} />
           </View>
         )}
         stickySectionHeadersEnabled
         contentContainerStyle={styles.list}
-        initialNumToRender={12}
-        maxToRenderPerBatch={10}
-        windowSize={5}
+        initialNumToRender={16}
+        maxToRenderPerBatch={16}
+        windowSize={15}
+        removeClippedSubviews={false}
         ListEmptyComponent={
-          <View style={styles.placeholder}>
-            <Text style={styles.subtitle}>
-              {members.length === 0
-                ? 'No community members yet.'
-                : 'No results match your search.'}
-            </Text>
-          </View>
+          <EmptyState
+            title={members.length === 0 ? 'The room’s still filling up' : 'No one matches that'}
+            subtitle={
+              members.length === 0
+                ? 'When people join this event, you’ll find them here to connect.'
+                : 'Try another name, or clear your search and filters.'
+            }
+          />
         }
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
         }
       />
     </SafeAreaView>
@@ -781,12 +848,13 @@ export default function CommunityScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: 'transparent',
   },
   eventHeader: {
     paddingHorizontal: 20,
     paddingTop: 8,
-    paddingBottom: 4,
+    paddingBottom: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
   },
   eventHeaderText: {
     fontSize: 16,
@@ -850,16 +918,13 @@ const styles = StyleSheet.create({
   },
   sectionHeaderWrap: {
     paddingHorizontal: 4,
-    paddingTop: 8,
-    paddingBottom: 6,
+    paddingTop: 4,
+    paddingBottom: 2,
     backgroundColor: colors.background,
   },
-  sectionHeader: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: colors.textSecondary,
-    letterSpacing: 0.3,
-    textTransform: 'uppercase',
+  sectionHeaderComponent: {
+    marginTop: 4,
+    marginBottom: 8,
   },
   list: {
     padding: 16,
@@ -906,11 +971,6 @@ const styles = StyleSheet.create({
     marginLeft: 12,
     minWidth: 0,
   },
-  nameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
   name: {
     fontSize: 16,
     fontWeight: '600',
@@ -926,34 +986,6 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     marginTop: 1,
   },
-  roleBadges: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-    alignItems: 'center',
-  },
-  roleBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-    backgroundColor: colors.border,
-  },
-  roleSpeaker: {
-    backgroundColor: colors.primary + '30',
-  },
-  roleVendor: {
-    backgroundColor: colors.secondary + '30',
-  },
-  roleText: {
-    fontSize: 11,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  meta: {
-    fontSize: 13,
-    color: colors.textMuted,
-    marginTop: 2,
-  },
   actions: {
     marginLeft: 8,
   },
@@ -961,10 +993,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    minWidth: 160,
+    flexShrink: 0,
   },
   buttonMessageSolo: {
-    paddingHorizontal: 16,
+    paddingHorizontal: 12,
   },
   button: {
     flexDirection: 'row',

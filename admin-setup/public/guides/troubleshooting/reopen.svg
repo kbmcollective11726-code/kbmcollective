@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 320 200">
+  <rect width="320" height="200" rx="16" fill="#f1f3f5"/>
+  
+    <g>
+    <rect x="118" y="28" width="84" height="140" rx="14" fill="#1a2332"/>
+    <rect x="123" y="33" width="74" height="130" rx="10" fill="#ffffff"/>
+    <rect x="148" y="37" width="24" height="3" rx="1.5" fill="#1a2332" opacity="0.22"/>
+    
+      <circle cx="160" cy="86" r="16" fill="#c9a961"/>
+      <text x="160" y="92" text-anchor="middle" fill="#1a2332" font-family="Georgia, serif" font-size="16" font-weight="700">K</text>
+    
+  </g>
+    <path d="M70 70c20-28 40-28 48-8" fill="none" stroke="#c9a961" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 58l8 10-12 2" fill="#c9a961"/>
+    <text x="78" y="188" fill="#1a2332" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="700">Swipe away, then open again</text>
+  
+</svg>

@@ -17,6 +17,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useAuthStore } from '../../stores/authStore';
 import { isSupabaseConfigured } from '../../lib/supabase';
+import { markPlatformAdminAllEventsLanding, PLATFORM_ADMIN_ALL_EVENTS_HREF } from '../../lib/platformAdminNav';
 
 const LOGO = require('../../assets/logo-full-transparent.png');
 
@@ -65,7 +66,7 @@ export default function RegisterScreen() {
         [{ text: 'OK' }]
       );
     }, 25000);
-    if (__DEV__) console.log('[Register] calling register() with email:', trimmedEmail);
+    if (__DEV__) console.log('[Register] calling register()');
     const { error, needsEmailConfirmation } = await register(trimmedEmail, password, trimmedName);
     clearTimeout(timeoutId);
     if (timeoutHandledRef.current) return;
@@ -97,7 +98,8 @@ export default function RegisterScreen() {
       if (__DEV__) console.log('[Register] redirecting to change-password');
       router.replace('/(auth)/change-password');
     } else if (useAuthStore.getState().user?.is_platform_admin) {
-      router.replace('/profile/admin-all-events');
+      markPlatformAdminAllEventsLanding();
+      router.replace(PLATFORM_ADMIN_ALL_EVENTS_HREF);
     } else {
       router.replace('/(tabs)/home');
     }

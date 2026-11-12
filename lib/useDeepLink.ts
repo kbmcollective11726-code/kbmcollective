@@ -1,12 +1,19 @@
 import { useEffect, useRef } from 'react';
+import { Platform } from 'react-native';
 import * as Linking from 'expo-linking';
 import Constants from 'expo-constants';
 import type { NotificationResponse } from 'expo-notifications';
 import { useRouter, useRootNavigationState } from 'expo-router';
 import { isPasswordRecoveryLaunchUrl } from './passwordRecoveryLaunchUrl';
-import { peekPendingPasswordRecoveryUrl, setPendingPasswordRecoveryUrl } from './pendingRecoveryUrl';
-import { setPendingBadgeToken } from './pendingBadgeUrl';
+import { isPasswordRecoveryHandoffComplete } from './passwordRecoveryHandoff';
+import {
+  peekPendingPasswordRecoveryUrl,
+  hydratePendingPasswordRecoveryUrl,
+  setPendingPasswordRecoveryUrl,
+} from './pendingRecoveryUrl';
+import { hydratePendingBadgeToken, setPendingBadgeToken } from './pendingBadgeUrl';
 import { openBadgeDeepLink, tryOpenPendingBadgeDeepLink } from './openBadgeDeepLink';
+import { captureLaunchDeepLink } from './captureLaunchDeepLink';
 import { safeRouterReplace } from './safeNavigate';
 import { ensureCurrentEventForId, pickNotificationBoothId } from './ensureEventForNotification';
 import { useAuthStore } from '../stores/authStore';
@@ -17,7 +24,10 @@ function navigateToPost(router: ReturnType<typeof useRouter>, postId: string) {
 }
 
 function navigateToChat(router: ReturnType<typeof useRouter>, userId: string) {
-  safeRouterReplace(router, `/profile/chat/${userId}` as any);
+  safeRouterReplace(
+    router,
+    `/profile/chat/${userId}?from=${encodeURIComponent('/(tabs)/community')}` as never
+  );
 }
 
 function navigateToGroup(router: ReturnType<typeof useRouter>, groupId: string) {
@@ -56,13 +66,23 @@ export function useDeepLink() {
   useEffect(() => {
     if (!navigationReady || authLoading) return;
 
-    const p = peekPendingPasswordRecoveryUrl();
-    if (p && isPasswordRecoveryLaunchUrl(p)) {
-      safeRouterReplace(router, '/(auth)/reset-password' as any);
-      return;
-    }
+    let cancelled = false;
+    void (async () => {
+      await Promise.all([captureLaunchDeepLink(), hydratePendingPasswordRecoveryUrl(), hydratePendingBadgeToken()]);
+      if (cancelled) return;
 
-    void tryOpenPendingBadgeDeepLink(router);
+      const p = peekPendingPasswordRecoveryUrl();
+      if (p && isPasswordRecoveryLaunchUrl(p) && !isPasswordRecoveryHandoffComplete()) {
+        safeRouterReplace(router, '/(auth)/reset-password' as any);
+        return;
+      }
+
+      await tryOpenPendingBadgeDeepLink(router);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [navigationReady, authLoading, router]);
 
   useEffect(() => {
@@ -76,6 +96,7 @@ export function useDeepLink() {
     const handleUrl = (url: string) => {
       try {
         if (isPasswordRecoveryLaunchUrl(url)) {
+          if (isPasswordRecoveryHandoffComplete()) return;
           setPendingPasswordRecoveryUrl(url);
           if (canOpenDeepLinksNow(navigationReadyRef.current)) {
             safeRouterReplace(router, '/(auth)/reset-password' as any);
@@ -94,7 +115,14 @@ export function useDeepLink() {
         const parsed = Linking.parse(url);
         const path = parsed.path ?? '';
         const hostname = (parsed as { hostname?: string }).hostname ?? '';
-        const segment = path.startsWith('/') ? path.slice(1).split('/') : path.split('/');
+        const pathSegments = path.replace(/^\/+/, '').split('/').filter(Boolean);
+        const hostSegment = hostname.trim().replace(/^\/+|\/+$/g, '');
+        // Support both collectivelive://post/id (hostname + path) and
+        // collectivelive:///post/id (path-only) URL shapes.
+        const segment =
+          hostSegment && hostSegment !== 'localhost'
+            ? [hostSegment, ...pathSegments]
+            : pathSegments;
         if (hostname === 'schedule' || segment[0] === 'schedule') {
           safeRouterReplace(router, '/(tabs)/schedule' as any);
           return;
@@ -129,7 +157,10 @@ export function useDeepLink() {
     const linkSub = Linking.addEventListener('url', ({ url }) => handleUrl(url));
 
     let notifSub: { remove: () => void } | null = null;
-    if (navigationReady && Constants.appOwnership !== 'expo') {
+    // Push response APIs are native-only (not web, not Expo Go).
+    const canUseNotificationResponses =
+      Platform.OS !== 'web' && Constants.appOwnership !== 'expo';
+    if (navigationReady && canUseNotificationResponses) {
       const Notifications = require('expo-notifications');
       const handleNotificationResponse = (response: NotificationResponse) => {
         const data = response.notification.request.content.data as {
@@ -142,6 +173,7 @@ export function useDeepLink() {
           booth_id?: string;
           session_id?: string;
           event_id?: string;
+          requester_id?: string;
         };
         const boothId = pickNotificationBoothId(data);
         const openBooth = async () => {
@@ -162,6 +194,10 @@ export function useDeepLink() {
         }
         if (data?.post_id) {
           navigateToPost(router, data.post_id);
+          return;
+        }
+        if (data?.type === 'connection_request' && data.requester_id) {
+          safeRouterReplace(router, `/(tabs)/feed/user/${data.requester_id}` as any);
           return;
         }
         if (data?.chat_user_id) {

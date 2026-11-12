@@ -1,10 +1,10 @@
 # Supabase project config (used when running supabase locally and for function deploy options).
-# get-r2-upload-url: skip gateway JWT verify so the function receives the request and validates the JWT itself (fixes 401 Invalid JWT with some clients).
+# R2 upload functions require a signed-in user; gateway verification matches production.
 [functions.get-r2-upload-url]
-verify_jwt = false
+verify_jwt = true
 
 [functions.upload-image-to-r2]
-verify_jwt = false
+verify_jwt = true
 
 # Cron invokes these with x-cron-secret only (no user JWT). Same pattern as other scheduled jobs.
 [functions.notify-event-starting-soon]
@@ -56,11 +56,21 @@ verify_jwt = false
 [functions.process-security-anomalies]
 verify_jwt = false
 
+[functions.process-orphan-auto-deactivate]
+verify_jwt = false
+
 [functions.send-registration-setup-email]
 verify_jwt = false
 
 [functions.send-registration-submitted-email]
 verify_jwt = false
 
+[functions.notify-portal-features-opened]
+verify_jwt = true
+
 [functions.send-app-password-reset]
+verify_jwt = false
+
+# Auth Send Email hook (Dashboard → Authentication → Hooks). Signature via SEND_EMAIL_HOOK_SECRET.
+[functions.auth-send-email]
 verify_jwt = false

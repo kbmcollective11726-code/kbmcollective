@@ -31,6 +31,7 @@ export default function EventSafety() {
   const [blocks, setBlocks] = useState<BlockRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [busyId, setBusyId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!eventId) return;
@@ -67,6 +68,82 @@ export default function EventSafety() {
     load();
   }, [load]);
 
+  const clearReport = async (r: ReportRow) => {
+    if (
+      !window.confirm(
+        `Clear report against "${r.reported.full_name || r.reported.email}"?\n\nUse this for test or mistaken reports.`
+      )
+    ) {
+      return;
+    }
+    setError('');
+    setBusyId(r.id);
+    try {
+      const { data, error: rpcErr } = await supabase.rpc('admin_clear_user_report', {
+        p_report_id: r.id,
+      });
+      if (rpcErr) throw rpcErr;
+      const body = data as { ok?: boolean; error?: string } | null;
+      if (!body?.ok) throw new Error(body?.error || 'Could not clear report');
+      setReports((prev) => prev.filter((row) => row.id !== r.id));
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const clearAllReports = async () => {
+    if (reports.length === 0) return;
+    if (
+      !window.confirm(
+        `Clear all ${reports.length} report(s) for this event?\n\nThis permanently removes them (good for wiping test data).`
+      )
+    ) {
+      return;
+    }
+    setError('');
+    setBusyId('__all_reports__');
+    try {
+      const { data, error: rpcErr } = await supabase.rpc('admin_clear_user_reports', {
+        p_report_ids: reports.map((r) => r.id),
+      });
+      if (rpcErr) throw rpcErr;
+      const body = data as { ok?: boolean; error?: string } | null;
+      if (!body?.ok) throw new Error(body?.error || 'Could not clear reports');
+      await load();
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const unblock = async (b: BlockRow) => {
+    if (
+      !window.confirm(
+        `Unblock "${b.blocked.full_name || b.blocked.email}"?\n\nThey will be able to interact with "${b.blocker.full_name || b.blocker.email}" again.`
+      )
+    ) {
+      return;
+    }
+    setError('');
+    setBusyId(b.id);
+    try {
+      const { data, error: rpcErr } = await supabase.rpc('admin_remove_user_block', {
+        p_block_id: b.id,
+      });
+      if (rpcErr) throw rpcErr;
+      const body = data as { ok?: boolean; error?: string } | null;
+      if (!body?.ok) throw new Error(body?.error || 'Could not unblock');
+      setBlocks((prev) => prev.filter((row) => row.id !== b.id));
+    } catch (e) {
+      setError(postgrestErrorMessage(e));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   if (loading) return <div className={styles.loading}>Loading…</div>;
 
   return (
@@ -78,17 +155,31 @@ export default function EventSafety() {
       </div>
       <h1>Safety — {eventName || 'Event'}</h1>
       <p className={styles.hint}>
-        User reports and blocks tied to this event. New reports include the event they were filed under; older rows may
-        appear when both people were members here. Event and platform admins get in-app (and push) notifications when
-        someone submits a report from the app with this event selected. Reports come from the app profile screen; blocks
-        are stored when someone uses Block there.
+        User reports and blocks tied to this event. Use <strong>Clear</strong> to remove test reports and{' '}
+        <strong>Unblock</strong> to reverse a block. New reports include the event they were filed under; older rows may
+        appear when both people were members here.
       </p>
 
       {error ? <p className={styles.error}>{error}</p> : null}
 
       <section className={styles.section}>
-        <h2 className={styles.sectionTitle}>Reports</h2>
-        <p className={styles.sectionHint}>Reason and optional details submitted by the reporter.</p>
+        <div className={styles.sectionHead}>
+          <h2 className={styles.sectionTitle}>Reports</h2>
+          {reports.length > 0 ? (
+            <button
+              type="button"
+              className={styles.secondaryBtn}
+              disabled={busyId !== null}
+              onClick={() => void clearAllReports()}
+            >
+              {busyId === '__all_reports__' ? 'Clearing…' : 'Clear all'}
+            </button>
+          ) : null}
+        </div>
+        <p className={styles.sectionHint}>
+          Reason and optional details submitted by the reporter. Clear removes the report permanently (for tests or
+          mistakes).
+        </p>
         {reports.length === 0 ? (
           <p className={styles.muted}>No reports for this event yet.</p>
         ) : (
@@ -101,6 +192,7 @@ export default function EventSafety() {
                   <th>Reason</th>
                   <th>Details</th>
                   <th>Submitted</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -117,6 +209,16 @@ export default function EventSafety() {
                     <td>{r.reason}</td>
                     <td className={styles.noteCell}>{r.details?.trim() ? r.details : '—'}</td>
                     <td className={styles.smallMuted}>{new Date(r.created_at).toLocaleString()}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className={styles.secondaryBtn}
+                        disabled={busyId !== null}
+                        onClick={() => void clearReport(r)}
+                      >
+                        {busyId === r.id ? '…' : 'Clear'}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -127,7 +229,9 @@ export default function EventSafety() {
 
       <section className={styles.section}>
         <h2 className={styles.sectionTitle}>Blocks</h2>
-        <p className={styles.sectionHint}>Blocker chose to block the other user (both are event members).</p>
+        <p className={styles.sectionHint}>
+          Blocker chose to block the other user. Unblock restores normal interaction between them.
+        </p>
         {blocks.length === 0 ? (
           <p className={styles.muted}>No blocks between event members yet.</p>
         ) : (
@@ -138,6 +242,7 @@ export default function EventSafety() {
                   <th>Blocker</th>
                   <th>Blocked</th>
                   <th>Created</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -152,6 +257,16 @@ export default function EventSafety() {
                       <div className={styles.smallMuted}>{b.blocked.email}</div>
                     </td>
                     <td className={styles.smallMuted}>{new Date(b.created_at).toLocaleString()}</td>
+                    <td>
+                      <button
+                        type="button"
+                        className={styles.primaryBtn}
+                        disabled={busyId !== null}
+                        onClick={() => void unblock(b)}
+                      >
+                        {busyId === b.id ? '…' : 'Unblock'}
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

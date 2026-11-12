@@ -167,7 +167,11 @@ if (configStdout) {
 }
 
 section('6. expo-doctor (project-wide)');
-const doc = spawnSync('npx', ['expo-doctor'], {
+const expoDoctorCommand = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npx';
+const expoDoctorArgs = process.platform === 'win32'
+  ? ['/d', '/s', '/c', 'npx expo-doctor']
+  : ['expo-doctor'];
+const doc = spawnSync(expoDoctorCommand, expoDoctorArgs, {
   cwd: root,
   encoding: 'utf8',
   maxBuffer: 5 * 1024 * 1024,

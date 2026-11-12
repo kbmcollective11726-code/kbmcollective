@@ -1,6 +1,7 @@
 // Process scheduled announcements: send due announcements (notifications + push) and set sent_at.
 // Invoke via cron (e.g. every minute) or manually with x-cron-secret header.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const EXPO_PUSH_URL = "https://exp.host/--/api/v2/push/send";
@@ -15,6 +16,11 @@ const EXPO_BANNER_FIELDS = {
   vibrate: true,
 } as const;
 
+const NOTIF_INSERT_BATCH = 100;
+const EXPO_PUSH_BATCH = 100;
+
+const CORS_ALLOW_HEADERS = "Authorization, Content-Type, apikey, x-cron-secret";
+
 interface AnnouncementRow {
   id: string;
   event_id: string;
@@ -25,9 +31,20 @@ interface AnnouncementRow {
   target_user_ids: string[] | null;
 }
 
+function json(body: object, status: number, headers: Record<string, string>) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...headers, "Content-Type": "application/json" },
+  });
+}
+
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, CORS_ALLOW_HEADERS);
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders() });
+    return corsPreflightResponse(req, CORS_ALLOW_HEADERS);
+  }
+  if (req.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -35,10 +52,10 @@ Deno.serve(async (req: Request) => {
   const cronSecret = Deno.env.get("CRON_SECRET");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
+    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500, ch);
   }
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
-    return json({ error: "Unauthorized" }, 401);
+  if (!cronSecret || req.headers.get("x-cron-secret") !== cronSecret) {
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
@@ -70,12 +87,12 @@ Deno.serve(async (req: Request) => {
 
   if (fetchError) {
     console.error("Fetch scheduled announcements error:", fetchError);
-    return json({ error: fetchError.message }, 500);
+    return json({ error: fetchError.message }, 500, ch);
   }
 
   const announcements = (rows ?? []) as AnnouncementRow[];
   if (announcements.length === 0) {
-    return json({ processed: 0, message: "No due announcements" }, 200);
+    return json({ processed: 0, message: "No due announcements" }, 200, ch);
   }
 
   let processed = 0;
@@ -93,15 +110,21 @@ Deno.serve(async (req: Request) => {
         continue;
       }
 
-      for (const userId of recipientIds) {
-        await supabase.from("notifications").insert({
-          user_id: userId,
-          event_id: row.event_id,
-          type: "announcement",
-          title: row.title,
-          body: row.content,
-          data: {},
-        });
+      const notifRows = recipientIds.map((userId) => ({
+        user_id: userId,
+        event_id: row.event_id,
+        type: "announcement",
+        title: row.title,
+        body: row.content,
+        data: {},
+      }));
+      for (let i = 0; i < notifRows.length; i += NOTIF_INSERT_BATCH) {
+        const chunk = notifRows.slice(i, i + NOTIF_INSERT_BATCH);
+        const { error: notifErr } = await supabase.from("notifications").insert(chunk);
+        if (notifErr) {
+          console.error("Announcement notification batch insert failed:", row.id, notifErr);
+          throw notifErr;
+        }
       }
 
       const { data: users } = await supabase
@@ -114,20 +137,23 @@ Deno.serve(async (req: Request) => {
         new Set((users ?? []).map((u: { push_token: string }) => u.push_token).filter(Boolean)),
       );
       if (tokens.length > 0) {
-        const messages = tokens.map((to: string) => ({
-          to,
-          title: row.title,
-          body: (row.content ?? "").slice(0, 200),
-          data: { event_id: row.event_id },
-          ...EXPO_BANNER_FIELDS,
-        }));
-        const pushRes = await fetch(EXPO_PUSH_URL, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(messages),
-        });
-        if (!pushRes.ok) {
-          console.warn("Expo push error:", await pushRes.text());
+        for (let offset = 0; offset < tokens.length; offset += EXPO_PUSH_BATCH) {
+          const batch = tokens.slice(offset, offset + EXPO_PUSH_BATCH);
+          const messages = batch.map((to: string) => ({
+            to,
+            title: row.title,
+            body: (row.content ?? "").slice(0, 200),
+            data: { event_id: row.event_id },
+            ...EXPO_BANNER_FIELDS,
+          }));
+          const pushRes = await fetch(EXPO_PUSH_URL, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(messages),
+          });
+          if (!pushRes.ok) {
+            console.warn("Expo push error:", await pushRes.text());
+          }
         }
       }
 
@@ -138,7 +164,7 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  return json({ processed, total: announcements.length }, 200);
+  return json({ processed, total: announcements.length }, 200, ch);
 });
 
 async function getRecipientIds(
@@ -162,19 +188,4 @@ async function getRecipientIds(
     .select("user_id")
     .eq("event_id", row.event_id);
   return (data ?? []).map((r: { user_id: string }) => r.user_id);
-}
-
-function json(body: object, status: number) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders(), "Content-Type": "application/json" },
-  });
-}
-
-function corsHeaders() {
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, x-cron-secret",
-  };
 }

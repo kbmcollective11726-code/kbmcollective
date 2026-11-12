@@ -263,8 +263,7 @@ function SponsorEditor({ sponsor, eventId, eventStartDate, eventEndDate, eventTi
       <label className={styles.checkRow}>
         <input type="checkbox" checked={showLiveWall} onChange={(e) => setShowLiveWall(e.target.checked)} />
         <span>
-          Live wall — logo on the purple bar (no frame). Use a <strong>transparent PNG</strong> so it doesn’t show a white
-          box; JPGs with letterboxing will look as-uploaded.
+          Live wall — logo on the dark sponsor bar (white plate cleared on upload)
         </span>
       </label>
       <label className={styles.checkRow}>

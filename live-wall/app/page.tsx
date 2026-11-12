@@ -6,6 +6,19 @@ import { supabase } from '../lib/supabase';
 
 type Event = { id: string; name: string };
 
+function asEventArray(data: unknown): Event[] {
+  if (Array.isArray(data)) return data as Event[];
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      return Array.isArray(parsed) ? (parsed as Event[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 export default function WallHome() {
   const [events, setEvents] = useState<Event[]>([]);
   const [loading, setLoading] = useState(true);
@@ -16,12 +29,10 @@ export default function WallHome() {
       return;
     }
     supabase
-      .from('events')
-      .select('id, name')
-      .eq('is_active', true)
-      .order('start_date', { ascending: false })
-      .then(({ data }: any) => {
-        setEvents(data ?? []);
+      .rpc('list_live_wall_events')
+      .then(({ data, error }: { data: unknown; error: { message?: string } | null }) => {
+        if (error) console.error('[live-wall] list_live_wall_events', error);
+        setEvents(asEventArray(data));
       })
       .finally(() => setLoading(false));
   }, []);

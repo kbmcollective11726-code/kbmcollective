@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -14,6 +14,7 @@ import {
   BackHandler,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
@@ -47,6 +48,9 @@ import {
 import { effectiveScannerKind } from '../../../lib/rolePreview';
 import { useRolePreviewStore } from '../../../stores/rolePreviewStore';
 import { useEventStore } from '../../../stores/eventStore';
+import { chatHref } from '../../../lib/navReturn';
+import { areVendorScanNotesOn } from '../../../lib/effectiveEventMenu';
+
 function isVendorLike(kind: string | undefined): boolean {
   return kind === 'vendor';
 }
@@ -116,6 +120,8 @@ export default function BadgeScanScreen() {
     resolved?.event_id && currentEvent?.id === resolved.event_id
       ? currentEvent.reminder_timezone
       : currentEvent?.reminder_timezone;
+  const vendorNotesOn =
+    !resolved?.event_id || currentEvent?.id === resolved.event_id ? areVendorScanNotesOn(currentEvent) : true;
   const [scannerKind, setScannerKind] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -194,7 +200,7 @@ export default function BadgeScanScreen() {
       <View style={styles.cameraWrap}>
         {isFocused ? (
           <CameraView
-            style={StyleSheet.absoluteFillObject}
+            style={StyleSheet.absoluteFill}
             facing="back"
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
             onBarcodeScanned={scanCooldown ? undefined : onBarcodeScanned}
@@ -444,7 +450,11 @@ export default function BadgeScanScreen() {
                 <Pressable
                   key={rep.user_id}
                   style={styles.repRow}
-                  onPress={() => router.push(`/(tabs)/feed/user/${rep.user_id}` as any)}
+                  onPress={() =>
+                    router.push(
+                      `/(tabs)/feed/user/${rep.user_id}?from=${encodeURIComponent(exitHref)}` as never
+                    )
+                  }
                 >
                   <Avatar uri={rep.avatar_url} name={rep.full_name} size={40} />
                   <View style={styles.repTextCol}>
@@ -469,7 +479,9 @@ export default function BadgeScanScreen() {
         {isConnected ? (
           <Pressable
             style={styles.secondaryBtn}
-            onPress={() => router.push(`/(tabs)/profile/chat/${subjectUserId}` as any)}
+            onPress={() => {
+              router.push(chatHref(subjectUserId, exitHref) as never);
+            }}
           >
             <MessageCircle size={20} color={colors.primary} />
             <Text style={styles.secondaryBtnText}>Message</Text>
@@ -491,7 +503,17 @@ export default function BadgeScanScreen() {
               <Text style={styles.secondaryBtnText}>Decline</Text>
             </TouchableOpacity>
           </View>
-        ) : requestSentByMe ? null : (
+        ) : requestSentByMe ? (
+          <TouchableOpacity
+            style={styles.secondaryBtn}
+            onPress={handleCancelRequest}
+            disabled={respondingToConnection}
+          >
+            <Text style={styles.secondaryBtnText}>
+              {respondingToConnection ? 'Working…' : 'Cancel request'}
+            </Text>
+          </TouchableOpacity>
+        ) : (
           <TouchableOpacity style={styles.primaryBtn} onPress={handleConnect} disabled={connecting}>
             <View style={styles.connectBtnInner}>
               <UserPlus size={20} color={colors.textOnPrimary} />
@@ -501,7 +523,11 @@ export default function BadgeScanScreen() {
         )}
         <Pressable
           style={styles.secondaryBtn}
-          onPress={() => router.push(`/(tabs)/feed/user/${subjectUserId}` as any)}
+          onPress={() =>
+            router.push(
+              `/(tabs)/feed/user/${subjectUserId}?from=${encodeURIComponent(exitHref)}` as never
+            )
+          }
         >
           <Text style={styles.secondaryBtnText}>View full profile</Text>
         </Pressable>
@@ -617,6 +643,39 @@ export default function BadgeScanScreen() {
     } finally {
       setRespondingToConnection(false);
     }
+  };
+
+  const handleCancelRequest = () => {
+    const uid = resolved?.subject.user_id;
+    const badgeEventId = resolved?.event_id;
+    if (!uid || !currentUser?.id || !badgeEventId) return;
+    Alert.alert('Cancel request?', 'They will no longer see your connection request. You can send a new one later.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Cancel request',
+        style: 'destructive',
+        onPress: async () => {
+          setRespondingToConnection(true);
+          try {
+            const { error } = await supabase
+              .from('connection_requests')
+              .delete()
+              .eq('event_id', badgeEventId)
+              .eq('requester_id', currentUser.id)
+              .eq('requested_user_id', uid)
+              .eq('status', 'pending');
+            if (error) throw error;
+            setRequestSentByMe(false);
+            Toast.show({ type: 'success', text1: 'Request cancelled' });
+          } catch (e) {
+            if (__DEV__) console.warn('Cancel from badge', e);
+            Toast.show({ type: 'error', text1: 'Could not cancel', text2: 'Please try again.' });
+          } finally {
+            setRespondingToConnection(false);
+          }
+        },
+      },
+    ]);
   };
 
   const handleConnect = async () => {
@@ -870,18 +929,22 @@ export default function BadgeScanScreen() {
               <>
                 {badgeSubjectHeader()}
                 {renderConnectActions()}
-                <Text style={styles.label}>Notes</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Lead notes…"
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  value={note}
-                  onChangeText={setNote}
-                />
-                <TouchableOpacity style={styles.primaryBtn} onPress={handleSave} disabled={saving}>
-                  <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : 'Save notes'}</Text>
-                </TouchableOpacity>
+                {vendorNotesOn ? (
+                  <>
+                    <Text style={styles.label}>Notes</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Lead notes…"
+                      placeholderTextColor={colors.textMuted}
+                      multiline
+                      value={note}
+                      onChangeText={setNote}
+                    />
+                    <TouchableOpacity style={styles.primaryBtn} onPress={handleSave} disabled={saving}>
+                      <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : 'Save notes'}</Text>
+                    </TouchableOpacity>
+                  </>
+                ) : null}
                 {resolved.subject.email ? (
                   <TouchableOpacity
                     style={styles.linkBtn}
@@ -960,15 +1023,19 @@ export default function BadgeScanScreen() {
                   </View>
                 </View>
 
-                <Text style={styles.label}>Notes</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="Notes…"
-                  placeholderTextColor={colors.textMuted}
-                  multiline
-                  value={note}
-                  onChangeText={setNote}
-                />
+                {vendorNotesOn ? (
+                  <>
+                    <Text style={styles.label}>Notes</Text>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="Notes…"
+                      placeholderTextColor={colors.textMuted}
+                      multiline
+                      value={note}
+                      onChangeText={setNote}
+                    />
+                  </>
+                ) : null}
 
                 <TouchableOpacity style={styles.primaryBtn} onPress={handleSave} disabled={saving}>
                   <Text style={styles.primaryBtnText}>{saving ? 'Saving…' : 'Save'}</Text>

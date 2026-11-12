@@ -3,7 +3,6 @@ import {
   ActivityIndicator,
   FlatList,
   Image,
-  Linking,
   Platform,
   RefreshControl,
   StyleSheet,
@@ -14,12 +13,13 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Stack, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import { ExternalLink, MapPin, Store } from 'lucide-react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { useEventStore } from '../../stores/eventStore';
 import { supabase, supabaseStorage } from '../../lib/supabase';
 import { colors } from '../../constants/colors';
 import type { VendorBooth } from '../../lib/types';
 import HamburgerMenu from '../../components/HamburgerMenu';
+import { openExternalUrl } from '../../lib/openExternalUrl';
 
 export default function SolutionProvidersScreen() {
   const router = useRouter();
@@ -114,7 +114,7 @@ export default function SolutionProvidersScreen() {
               activeOpacity={0.8}
               onPress={() =>
                 router.push(
-                  `/(tabs)/solution-provider/${item.id}?from=${encodeURIComponent(listReturnHref)}` as any
+                  `/(tabs)/solution-provider/${item.id}?from=${encodeURIComponent(listReturnHref)}&name=${encodeURIComponent(item.vendor_name ?? '')}` as any
                 )
               }
             >
@@ -146,7 +146,7 @@ export default function SolutionProvidersScreen() {
                   {item.website ? (
                     <TouchableOpacity
                       style={s.websiteRow}
-                      onPress={() => Linking.openURL(item.website!).catch(() => {})}
+                      onPress={() => void openExternalUrl(item.website)}
                       activeOpacity={0.7}
                     >
                       <ExternalLink size={14} color={colors.primary} />

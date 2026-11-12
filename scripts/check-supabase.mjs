@@ -45,6 +45,12 @@ async function get(path) {
   return { ok: res.ok, status: res.status, data: res.ok ? await res.json() : await res.text() };
 }
 
+function tableCheckPassed(result) {
+  // A 401/403 confirms PostgREST found the resource but RLS denied this
+  // unauthenticated probe. Treat protected tables as present.
+  return result.ok || result.status === 401 || result.status === 403;
+}
+
 async function main() {
   console.log('Checking Supabase setup for', url.replace(/https?:\/\//, '').split('.')[0], '...\n');
 
@@ -60,7 +66,7 @@ async function main() {
 
   // 2. Check events table
   const events = await get('/events?select=id,name,is_active,start_date,end_date&limit=5');
-  console.log('2. events table:', events.ok ? '✓' : '✗', events.status);
+  console.log('2. events table:', tableCheckPassed(events) ? '✓' : '✗', events.status);
   if (events.ok) {
     const arr = Array.isArray(events.data) ? events.data : [];
     console.log('   Rows:', arr.length, arr.length ? `- e.g. "${arr[0]?.name || ''}"` : '(run seed-event.sql if 0)');
@@ -70,7 +76,7 @@ async function main() {
 
   // 3. Check schedule_sessions
   const sessions = await get('/schedule_sessions?select=id,title,start_time&limit=5');
-  console.log('3. schedule_sessions:', sessions.ok ? '✓' : '✗', sessions.status);
+  console.log('3. schedule_sessions:', tableCheckPassed(sessions) ? '✓' : '✗', sessions.status);
   if (sessions.ok) {
     const arr = Array.isArray(sessions.data) ? sessions.data : [];
     console.log('   Rows:', arr.length, arr.length ? `- e.g. "${arr[0]?.title || ''}"` : '(run seed-schedule-4day.sql if 0)');
@@ -78,7 +84,7 @@ async function main() {
 
   // 4. Check point_rules
   const rules = await get('/point_rules?select=id,action,points_value&limit=5');
-  console.log('4. point_rules:', rules.ok ? '✓' : '✗', rules.status);
+  console.log('4. point_rules:', tableCheckPassed(rules) ? '✓' : '✗', rules.status);
   if (rules.ok) {
     const arr = Array.isArray(rules.data) ? rules.data : [];
     console.log('   Rows:', arr.length);
@@ -86,48 +92,48 @@ async function main() {
 
   // 5. Check users (might be RLS-blocked without auth)
   const users = await get('/users?select=id&limit=1');
-  console.log('5. users table:', users.ok ? '✓' : '✗ (RLS may require auth)', users.status);
+  console.log('5. users table:', tableCheckPassed(users) ? '✓' : '✗', users.status);
 
   // 6. announcements (push notifications)
   const announcements = await get('/announcements?select=id,event_id,title,sent_at&limit=5');
-  console.log('6. announcements:', announcements.ok ? '✓' : '✗', announcements.status);
+  console.log('6. announcements:', tableCheckPassed(announcements) ? '✓' : '✗', announcements.status);
   if (announcements.ok && Array.isArray(announcements.data)) {
     console.log('   Rows:', announcements.data.length);
   }
 
   // 7. connections (Connect/Community)
   const connections = await get('/connections?select=id,event_id&limit=5');
-  console.log('7. connections:', connections.ok ? '✓' : '✗', connections.status);
+  console.log('7. connections:', tableCheckPassed(connections) ? '✓' : '✗', connections.status);
   if (connections.ok && Array.isArray(connections.data)) {
     console.log('   Rows:', connections.data.length);
   }
 
   // 8. connection_requests
   const connRequests = await get('/connection_requests?select=id,event_id,status&limit=5');
-  console.log('8. connection_requests:', connRequests.ok ? '✓' : '✗', connRequests.status);
+  console.log('8. connection_requests:', tableCheckPassed(connRequests) ? '✓' : '✗', connRequests.status);
   if (connRequests.ok && Array.isArray(connRequests.data)) {
     console.log('   Rows:', connRequests.data.length);
   }
 
   // 9. event_members
   const eventMembers = await get('/event_members?select=id,event_id,user_id,role&limit=5');
-  console.log('9. event_members:', eventMembers.ok ? '✓' : '✗', eventMembers.status);
+  console.log('9. event_members:', tableCheckPassed(eventMembers) ? '✓' : '✗', eventMembers.status);
   if (eventMembers.ok && Array.isArray(eventMembers.data)) {
     console.log('   Rows:', eventMembers.data.length);
   }
 
   // 10. posts (feed)
   const posts = await get('/posts?select=id,event_id,user_id&limit=5');
-  console.log('10. posts:', posts.ok ? '✓' : '✗', posts.status);
+  console.log('10. posts:', tableCheckPassed(posts) ? '✓' : '✗', posts.status);
   if (posts.ok && Array.isArray(posts.data)) {
     console.log('   Rows:', posts.data.length);
   }
 
   // 11. users.push_token exists (for push) — select only column
   const usersPush = await get('/users?select=push_token&limit=1');
-  console.log('11. users.push_token (notifications):', usersPush.ok ? '✓' : '✗', usersPush.status);
+  console.log('11. users.push_token (notifications):', tableCheckPassed(usersPush) ? '✓' : '✗', usersPush.status);
 
-  // 12–27. Core app tables (exist + PostgREST; RLS may return empty rows but still 200)
+  // 12–26. Core app tables (exist + PostgREST; RLS may return empty rows but still 200)
   const extra = [
     ['messages', 'id', '12. messages (DMs)'],
     ['notifications', 'id', '13. notifications'],
@@ -144,14 +150,20 @@ async function main() {
     ['blocked_users', 'blocker_id', '24. blocked_users'],
     ['user_reports', 'id', '25. user_reports'],
     ['point_log', 'id', '26. point_log'],
-    ['session_reminder_sent', 'session_id', '27. session_reminder_sent (schedule push)'],
   ];
   const extraOk = [];
   for (const [table, col, label] of extra) {
     const r = await get(`/${table}?select=${col}&limit=1`);
-    extraOk.push(r.ok);
-    console.log(label + ':', r.ok ? '✓' : '✗', r.status);
+    extraOk.push(tableCheckPassed(r));
+    console.log(label + ':', tableCheckPassed(r) ? '✓' : '✗', r.status);
   }
+  const reminderSent = await get('/session_reminder_sent?select=session_id&limit=1');
+  const reminderProtected = reminderSent.status === 401 || reminderSent.status === 403;
+  console.log(
+    '27. session_reminder_sent protected from public access:',
+    reminderProtected ? '✓' : '✗',
+    reminderSent.status,
+  );
 
   // 28–45. Feature tables from later migrations (badges, sponsors, registration, B2B extras, QA guides)
   const feature = [
@@ -177,22 +189,23 @@ async function main() {
   const featureOk = [];
   for (const [table, col, label] of feature) {
     const r = await get(`/${table}?select=${col}&limit=1`);
-    featureOk.push(r.ok);
-    console.log(label + ':', r.ok ? '✓' : '✗', r.status);
+    featureOk.push(tableCheckPassed(r));
+    console.log(label + ':', tableCheckPassed(r) ? '✓' : '✗', r.status);
   }
 
   const allOk =
-    events.ok &&
-    sessions.ok &&
-    rules.ok &&
-    users.ok &&
-    announcements.ok &&
-    connections.ok &&
-    connRequests.ok &&
-    eventMembers.ok &&
-    posts.ok &&
-    usersPush.ok &&
+    tableCheckPassed(events) &&
+    tableCheckPassed(sessions) &&
+    tableCheckPassed(rules) &&
+    tableCheckPassed(users) &&
+    tableCheckPassed(announcements) &&
+    tableCheckPassed(connections) &&
+    tableCheckPassed(connRequests) &&
+    tableCheckPassed(eventMembers) &&
+    tableCheckPassed(posts) &&
+    tableCheckPassed(usersPush) &&
     extraOk.every(Boolean) &&
+    reminderProtected &&
     featureOk.every(Boolean);
 
   console.log(

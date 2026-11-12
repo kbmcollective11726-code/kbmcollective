@@ -1,11 +1,12 @@
 /** Live wall engagement — detection helpers and settings. */
 
 export const POINT_MILESTONES = [50, 100, 250, 500, 1000] as const;
-export const MIN_HERO_INTERVAL_MS = 12_000;
+export const MIN_HERO_INTERVAL_MS = 14_000;
 export const LIKE_HEART_COOLDOWN_MS = 900;
-export const RANK_HIGHLIGHT_MS = 4_500;
+export const RANK_HIGHLIGHT_MS = 12_000;
 export const COMMENT_SPOTLIGHT_INTERVAL_MS = 180_000;
 export const PHOTO_OF_HOUR_MS = 60 * 60 * 1000;
+export const HEART_BURST_MS = 2_400;
 
 export type WallHeroKind =
   | 'new_leader'
@@ -158,6 +159,8 @@ export interface PhotoOfHourResult {
   postId: string;
   likes: number;
   name: string;
+  /** True when winner is from the last hour; false when falling back to overall most-liked. */
+  isRecentHour: boolean;
 }
 
 /** Most likes among posts from the last 60 minutes (tie → newest post). Needs ≥1 like. */
@@ -165,17 +168,16 @@ export function computePhotoOfHour(posts: WallPostRow[], now: Date = new Date())
   return computePhotoOfHourDetailed(posts, now)?.postId ?? null;
 }
 
-export function computePhotoOfHourDetailed(
+function pickMostLikedSince(
   posts: WallPostRow[],
-  now: Date = new Date(),
-): PhotoOfHourResult | null {
-  const cutoff = now.getTime() - PHOTO_OF_HOUR_MS;
+  cutoffMs: number,
+): { post: WallPostRow; likes: number } | null {
   let best: WallPostRow | null = null;
   let bestLikes = -1;
   let bestTime = 0;
   for (const p of posts) {
     const t = new Date(p.created_at).getTime();
-    if (Number.isNaN(t) || t < cutoff) continue;
+    if (Number.isNaN(t) || t < cutoffMs) continue;
     const likes = p.likes_count ?? 0;
     if (likes > bestLikes || (likes === bestLikes && t > bestTime)) {
       bestLikes = likes;
@@ -184,10 +186,27 @@ export function computePhotoOfHourDetailed(
     }
   }
   if (!best || bestLikes < 1) return null;
+  return { post: best, likes: bestLikes };
+}
+
+/**
+ * Crowd favorite for the wall.
+ * Prefers most-liked post created in the last hour; if none, falls back to overall most-liked
+ * so a day-old favorite still shows when there is no fresh activity.
+ */
+export function computePhotoOfHourDetailed(
+  posts: WallPostRow[],
+  now: Date = new Date(),
+): PhotoOfHourResult | null {
+  const hourCutoff = now.getTime() - PHOTO_OF_HOUR_MS;
+  const recent = pickMostLikedSince(posts, hourCutoff);
+  const pick = recent ?? pickMostLikedSince(posts, 0);
+  if (!pick) return null;
   return {
-    postId: best.id,
-    likes: bestLikes,
-    name: best.user?.full_name?.trim() || 'Someone',
+    postId: pick.post.id,
+    likes: pick.likes,
+    name: pick.post.user?.full_name?.trim() || 'Someone',
+    isRecentHour: recent != null,
   };
 }
 

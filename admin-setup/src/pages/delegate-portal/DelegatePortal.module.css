@@ -336,6 +336,37 @@
   white-space: pre-wrap;
 }
 
+.richHtml {
+  line-height: 1.6;
+  white-space: normal;
+  color: #0f172a;
+  font-size: 16px;
+}
+
+.richHtml p {
+  margin: 0 0 0.75em;
+}
+
+.richHtml p:last-child {
+  margin-bottom: 0;
+}
+
+.richHtml ul,
+.richHtml ol {
+  margin: 0.4em 0 0.6em;
+  padding-left: 1.35em;
+}
+
+.richHtml a {
+  color: #1e4f8a;
+  text-decoration: underline;
+  word-break: break-word;
+}
+
+.richHtml a:hover {
+  color: #163a66;
+}
+
 .footerNav {
   position: fixed;
   bottom: 0;
@@ -430,6 +461,14 @@
   border: 1px solid #abefc6;
   padding: 10px 12px;
   border-radius: 4px;
+  font-weight: 600;
+}
+
+.saveFooter {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
 }
 
 .primaryBtn {
@@ -440,11 +479,17 @@
   border-radius: 4px;
   font-weight: 600;
   cursor: pointer;
+  justify-self: start;
 }
 
 .listTable {
   width: 100%;
   border-collapse: collapse;
+}
+
+.tableScroll {
+  width: 100%;
+  overflow-x: auto;
 }
 
 .listTable th,
@@ -504,15 +549,31 @@
   margin: 0 0 16px;
 }
 
+.holdingLead {
+  margin: 0 0 14px;
+  font-size: 20px;
+  line-height: 1.45;
+  color: #0f172a;
+  font-weight: 600;
+}
+
+.holdingLeadAccent {
+  display: inline-block;
+  color: #1e4f8a;
+  font-size: 22px;
+  font-weight: 700;
+}
+
 .holdingSchedule {
   margin: 0 0 12px;
-  padding: 12px;
+  padding: 14px 16px;
   background: #eff6ff;
   border: 1px solid #bfdbfe;
+  border-left: 4px solid #1e4f8a;
   border-radius: 8px;
   color: #1e3a5f;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 16px;
+  line-height: 1.55;
 }
 
 .holdingLogin {
@@ -582,9 +643,10 @@
   padding-top: 4px;
 }
 
-.question label {
+.question label,
+.question .field {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   color: #334155;
   font-size: 14px;
 }
@@ -608,14 +670,41 @@
 
 .checks {
   display: grid;
-  gap: 6px 12px;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 16px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  align-items: start;
 }
 
 .checkItem {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #334155;
+  font-size: 13px;
+  line-height: 1.35;
+  cursor: pointer;
+}
+
+.checkItem:has(input:checked) {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.checkItem input[type='checkbox'] {
+  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+  accent-color: #2563eb;
+}
+
+.checkItem span {
+  min-width: 0;
 }
 
 .termsRow {

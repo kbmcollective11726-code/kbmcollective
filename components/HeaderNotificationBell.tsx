@@ -1,16 +1,65 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, AppState, type StyleProp, type ViewStyle } from 'react-native';
 import { useRouter, usePathname } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { Bell } from 'lucide-react-native';
 import { useAuthStore } from '../stores/authStore';
 import { useEventStore } from '../stores/eventStore';
 import { supabase } from '../lib/supabase';
+import { subscribeUserNotifications } from '../lib/notificationsRealtime';
+import { registerRefetchOnSessionRefreshed } from '../lib/onSessionRefreshed';
 import { setAppBadgeCount } from '../lib/pushNotifications';
 import { colors } from '../constants/colors';
+import { useEventThemeColor } from '../lib/eventTheme';
 
 
-const POLL_MS = 5000;
+const POLL_MS = 60_000;
+const UNREAD_CACHE_MS = 15_000;
+
+interface UnreadCache {
+  key: string;
+  count: number;
+  updatedAt: number;
+}
+
+let unreadCache: UnreadCache | null = null;
+let unreadInFlight: { key: string; promise: Promise<number | null> } | null = null;
+
+async function loadUnreadCount(
+  userId: string,
+  eventId: string,
+  force = false,
+): Promise<number | null> {
+  const key = `${userId}:${eventId}`;
+  if (
+    !force &&
+    unreadCache?.key === key &&
+    Date.now() - unreadCache.updatedAt < UNREAD_CACHE_MS
+  ) {
+    return unreadCache.count;
+  }
+  if (unreadInFlight?.key === key) return unreadInFlight.promise;
+
+  const promise = (async () => {
+    const { count, error } = await supabase
+      .from('notifications')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('event_id', eventId)
+      .eq('is_read', false)
+      // Chat messages live in Chat hub — don't inflate the bell badge.
+      .neq('type', 'message');
+    if (error) return null;
+    const nextCount = count ?? 0;
+    unreadCache = { key, count: nextCount, updatedAt: Date.now() };
+    return nextCount;
+  })();
+  unreadInFlight = { key, promise };
+  void promise.finally(() => {
+    if (unreadInFlight?.promise === promise) unreadInFlight = null;
+  });
+  return promise;
+}
 
 type HeaderNotificationBellProps = {
   /** Use on Feed page to keep badge inside bounds and avoid header clipping */
@@ -24,25 +73,19 @@ export default function HeaderNotificationBell({ compact, style }: HeaderNotific
   const pathname = usePathname();
   const { user } = useAuthStore();
   const currentEvent = useEventStore((s) => s.currentEvent);
+  const themeColor = useEventThemeColor();
   const [unreadCount, setUnreadCount] = useState(0);
   const appStateRef = useRef(AppState.currentState);
 
-  const fetchUnreadCount = useCallback(async () => {
+  const fetchUnreadCount = useCallback(async (force = false) => {
     if (!user?.id) return;
     if (!currentEvent?.id) {
       setUnreadCount(0);
       setAppBadgeCount(0);
       return;
     }
-    const { data, error } = await supabase
-      .from('notifications')
-      .select('id')
-      .eq('user_id', user.id)
-      .eq('event_id', currentEvent.id)
-      .eq('is_read', false)
-      .limit(500);
-    if (error) return;
-    const count = Array.isArray(data) ? data.length : 0;
+    const count = await loadUnreadCount(user.id, currentEvent.id, force);
+    if (count === null) return;
     setUnreadCount(count);
     setAppBadgeCount(count);
   }, [user?.id, currentEvent?.id]);
@@ -60,10 +103,15 @@ export default function HeaderNotificationBell({ compact, style }: HeaderNotific
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
       appStateRef.current = state;
-      if (state === 'active') fetchUnreadCount();
     });
     return () => sub.remove();
-  }, [fetchUnreadCount]);
+  }, []);
+
+  useEffect(() => {
+    return registerRefetchOnSessionRefreshed(() => {
+      if (user?.id) fetchUnreadCount();
+    });
+  }, [user?.id, fetchUnreadCount]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -74,20 +122,10 @@ export default function HeaderNotificationBell({ compact, style }: HeaderNotific
 
   useEffect(() => {
     if (!user?.id) return;
-    const channel = supabase
-      .channel(`header-notifications-${user.id}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications' }, (payload) => {
-        const row = payload?.new as Record<string, unknown> | null;
-        const rowUserId = row?.user_id ?? (row as { userId?: string })?.userId;
-        if (String(rowUserId) === String(user.id)) fetchUnreadCount();
-      })
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications' }, (payload) => {
-        const row = payload?.new as Record<string, unknown> | null;
-        const rowUserId = row?.user_id ?? (row as { userId?: string })?.userId;
-        if (String(rowUserId) === String(user.id)) fetchUnreadCount();
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return subscribeUserNotifications(user.id, {
+      onInsert: () => { void fetchUnreadCount(true); },
+      onUpdate: () => { void fetchUnreadCount(true); },
+    });
   }, [user?.id, fetchUnreadCount]);
 
   if (!user) return null;
@@ -104,9 +142,9 @@ export default function HeaderNotificationBell({ compact, style }: HeaderNotific
       activeOpacity={0.85}
     >
       <Bell
-        size={24}
-        color={unreadCount > 0 ? (colors.danger ?? '#ef4444') : colors.primary}
-        strokeWidth={2}
+        size={22}
+        color={unreadCount > 0 ? (colors.danger ?? '#ef4444') : themeColor}
+        strokeWidth={1.75}
       />
       {unreadCount > 0 && (
         <View style={[styles.badge, compact && styles.badgeCompact]}>

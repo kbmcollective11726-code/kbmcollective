@@ -1,6 +1,6 @@
-import { supabaseUrl } from './supabase';
+import { supabaseUrl, supabaseAnonKey } from './supabase';
 
-export type AuthAttemptSource = 'mobile' | 'cadmin';
+export type AuthAttemptSource = 'mobile' | 'cadmin' | 'portal';
 
 /** Fire-and-forget login audit (does not block sign-in UI). */
 export function logAuthAttempt(params: {
@@ -9,17 +9,26 @@ export function logAuthAttempt(params: {
   source: AuthAttemptSource;
   errorMessage?: string;
   userId?: string;
-  anonKey: string;
+  anonKey?: string;
+  /** Required for success logs (user access token). */
+  accessToken?: string;
 }): void {
   const email = params.email.trim().toLowerCase();
-  if (!email || !supabaseUrl || !params.anonKey) return;
+  const anonKey = (params.anonKey || supabaseAnonKey).trim();
+  if (!email || !supabaseUrl || !anonKey) return;
+  if (params.success && !params.accessToken) return;
+
+  const bearer =
+    params.success && params.accessToken
+      ? params.accessToken
+      : anonKey;
 
   void fetch(`${supabaseUrl}/functions/v1/log-auth-attempt`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${params.anonKey}`,
-      apikey: params.anonKey,
+      Authorization: `Bearer ${bearer}`,
+      apikey: anonKey,
     },
     body: JSON.stringify({
       email,

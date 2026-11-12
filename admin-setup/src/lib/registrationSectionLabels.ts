@@ -3,13 +3,17 @@ import { normalizeRegistrationPrompt } from './registrationDefaultVisibility';
 
 /** Display order for delegate Registration Details sections. */
 export const DELEGATE_REGISTRATION_SECTION_ORDER = [
+  'Registration',
   'Identity & contact',
   'Company information',
   'Eligibility & buying intent',
   'Solution interest',
   'Meeting preferences',
-  'Profile',
+  'Logistics',
 ] as const;
+
+/** Top-of-form account fields shown in the public registration header grid. */
+export const REGISTRATION_SECTION_LABEL = 'Registration';
 
 type SectionEntry = { prompt: string; section?: string };
 
@@ -24,16 +28,17 @@ function buildPromptSectionMap(entries: SectionEntry[]): Map<string, string> {
 }
 
 const DELEGATE_SECTION_ENTRIES: SectionEntry[] = [
-  { prompt: 'Company Name', section: 'Identity & contact' },
-  { prompt: 'First Name' },
+  { prompt: 'First Name', section: REGISTRATION_SECTION_LABEL },
   { prompt: 'Last Name' },
-  { prompt: 'Job Title' },
   { prompt: 'E-Mail Address' },
-  { prompt: 'Work Phone' },
+  { prompt: 'Company Name' },
+  { prompt: 'Job Title' },
   { prompt: 'Cell Phone' },
+  { prompt: 'Work Phone', section: 'Identity & contact' },
   { prompt: 'How did you hear about this event?' },
   { prompt: 'Dietary Restrictions' },
   { prompt: 'Preferred Pronouns' },
+  { prompt: 'Headshot/Photo' },
   { prompt: 'Address', section: 'Company information' },
   { prompt: 'City' },
   { prompt: 'State/Province' },
@@ -44,14 +49,14 @@ const DELEGATE_SECTION_ENTRIES: SectionEntry[] = [
   { prompt: 'Assistant Email' },
   { prompt: 'Assistant Work Phone' },
   { prompt: "Company's Annual Revenue", section: 'Eligibility & buying intent' },
+  { prompt: 'Total number of employees globally' },
   { prompt: 'Select your budget for external solutions for 2026' },
   { prompt: 'Scope of Responsibility' },
-  { prompt: 'I sit in the C-suite or report directly to the C-suite' },
+  { prompt: 'Seniority Level' },
   { prompt: 'Name of person I report to' },
   { prompt: 'Solution Category of Interest', section: 'Solution interest' },
   { prompt: 'Meeting Goals', section: 'Meeting preferences' },
   { prompt: 'What are you hoping to get from this event?' },
-  { prompt: 'Headshot/Photo', section: 'Profile' },
 ];
 
 const DELEGATE_PROMPT_SECTION_MAP = buildPromptSectionMap(DELEGATE_SECTION_ENTRIES);
@@ -59,20 +64,43 @@ const DELEGATE_PROMPT_SECTION_MAP = buildPromptSectionMap(DELEGATE_SECTION_ENTRI
 /** Map legacy DB section labels to current display names. */
 const LEGACY_SECTION_ALIASES: Record<string, string> = {
   'meeting preferences & matching': 'Meeting preferences',
-  'profile & event logistics': 'Profile',
+  'profile & event logistics': 'Identity & contact',
+  profile: 'Identity & contact',
+  'registration details': REGISTRATION_SECTION_LABEL,
 };
 
 export function resolveRegistrationSectionLabel(
   question: Pick<EventRegistrationQuestion, 'prompt' | 'section_label'>,
   audience: MatchmakingAudience,
 ): string {
+  const norm = normalizeRegistrationPrompt(question.prompt);
+  // Header-grid fields always belong under Registration (public form top block).
+  if (
+    norm === 'company name' ||
+    norm === 'first name' ||
+    norm === 'last name' ||
+    norm === 'job title' ||
+    norm === 'e-mail address' ||
+    norm === 'email' ||
+    norm === 'cell phone'
+  ) {
+    return REGISTRATION_SECTION_LABEL;
+  }
+  // Always keep headshot with identity fields, even if an older section_label lingers in DB.
+  if (norm === 'headshot/photo') {
+    return 'Identity & contact';
+  }
+  // Reviewed with revenue and budget when qualifying a registration.
+  if (norm === 'total number of employees globally' && audience === 'attendee') {
+    return 'Eligibility & buying intent';
+  }
   const fromDb = (question.section_label ?? '').trim();
   if (fromDb) {
     const alias = LEGACY_SECTION_ALIASES[fromDb.toLowerCase()];
     return alias ?? fromDb;
   }
   if (audience === 'attendee') {
-    return DELEGATE_PROMPT_SECTION_MAP.get(normalizeRegistrationPrompt(question.prompt)) ?? 'General';
+    return DELEGATE_PROMPT_SECTION_MAP.get(norm) ?? 'General';
   }
   return 'General';
 }
@@ -113,7 +141,10 @@ export function groupQuestionsBySection(
     })
     .map((sectionLabel) => ({
       sectionLabel,
-      questions: grouped.get(sectionLabel) ?? [],
+      questions: (grouped.get(sectionLabel) ?? []).slice().sort((a, b) => {
+        // Match Matchmaking admin: sort_order within the section (no special-case reordering).
+        return a.sort_order - b.sort_order || a.prompt.localeCompare(b.prompt);
+      }),
     }))
     .filter((group) => options?.includeEmptySections || group.questions.length > 0);
 }

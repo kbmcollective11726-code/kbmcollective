@@ -5,6 +5,7 @@ node_modules/
 .env
 .env.local
 .env.*.local
+env.local
 .env.vercel.local
 .env.vercel.production
 .env.r2.secrets
@@ -45,6 +46,18 @@ Thumbs.db
 
 # Temp
 _temp-assets/
+.tmp-deploy/
+.tmp-*
+.tmp-deploy-fns.json
+
+# Deploy payloads (contain full Edge Function source; never commit)
+.deploy-payloads/
+
+# Supabase temp artefacts (linked project refs, deploy args, pooler URL)
+supabase/.temp/
+
+# Android debug keystore (default React Native; not a secret, but cleaner to omit)
+android/app/debug.keystore
 
 # Firebase service account key (secret – never commit)
 **/firebase-service-account*.json

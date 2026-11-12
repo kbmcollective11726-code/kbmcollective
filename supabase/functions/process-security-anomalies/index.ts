@@ -1,44 +1,40 @@
 // Every ~5 min (pg_cron): detect brute-force patterns and alert platform admins.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey, x-cron-secret",
-};
-
-function json(body: object, status: number) {
+function json(body: object, status: number, headers: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
   });
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const cronSecret = Deno.env.get("CRON_SECRET");
   if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Server configuration error" }, 500);
+    return json({ error: "Server configuration error" }, 500, ch);
   }
 
   const headerSecret = req.headers.get("x-cron-secret");
   if (!cronSecret || headerSecret !== cronSecret) {
-    return json({ error: "Unauthorized" }, 401);
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
   const { data, error } = await admin.rpc("process_brute_force_anomaly_alerts");
   if (error) {
-    return json({ error: error.message }, 500);
+    return json({ error: error.message }, 500, ch);
   }
 
   const sent = (data as { sent?: number } | null)?.sent ?? 0;
@@ -68,5 +64,5 @@ Deno.serve(async (req: Request) => {
     }
   }
 
-  return json({ ok: true, sent }, 200);
+  return json({ ok: true, sent }, 200, ch);
 });

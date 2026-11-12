@@ -1,8 +1,10 @@
-// Session starting soon (~4 min target, 2–6 min window): in-app row for every event member + push when a token exists.
+// Session starting soon (~4 min target, 2–6 min window): in-app row + push (when a token exists) for event members
+// who saved the session, or every member who turned off users.session_reminder_saved_only.
 // Session start_time is wall-clock digits in UTC (see wallClockLocalPickerToSessionIso).
 // Interpret that wall clock in SESSION_REMINDER_TIMEZONE (default America/New_York).
 // Set Edge secret SESSION_REMINDER_TIMEZONE to the venue IANA zone if not America/New_York.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { DateTime } from "https://esm.sh/luxon@3.5.0";
 
@@ -24,12 +26,6 @@ const WINDOW_MIN_BEFORE_HI = 6;
 
 /** Expo HTTP API accepts a limited number of messages per request; chunk to avoid silent failures. */
 const EXPO_PUSH_BATCH = 100;
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, x-cron-secret",
-};
 
 /** Parse Expo push API response; count tickets with status "ok". Logs failures (invalid tokens, etc.). */
 function countExpoOkTickets(rawText: string): number {
@@ -119,12 +115,18 @@ function wantsSkipSameRoom(row: { session_reminder_skip_same_room?: boolean | nu
   return row?.session_reminder_skip_same_room !== false;
 }
 
+/** True = only remind for bookmarked sessions. False (default) = remind for every session. */
+function wantsSavedOnly(row: { session_reminder_saved_only?: boolean | null } | null): boolean {
+  return row?.session_reminder_saved_only !== false;
+}
+
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -132,10 +134,10 @@ Deno.serve(async (req: Request) => {
   const cronSecret = Deno.env.get("CRON_SECRET");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
+    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500, ch);
   }
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
-    return json({ error: "Unauthorized" }, 401);
+  if (!cronSecret || req.headers.get("x-cron-secret") !== cronSecret) {
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   const defaultZone = (Deno.env.get("SESSION_REMINDER_TIMEZONE") ?? "America/New_York").trim() || "America/New_York";
@@ -168,7 +170,7 @@ type EvRow = {
       .gte("end_date", fromStr);
     if (evIdOnly.error) {
       console.error("Fetch events error:", evIdOnly.error);
-      return json({ error: evIdOnly.error.message }, 500);
+      return json({ error: evIdOnly.error.message }, 500, ch);
     }
     eventRows = (evIdOnly.data ?? []) as EvRow[];
   } else {
@@ -191,7 +193,7 @@ type EvRow = {
   }
 
   if (eventIds.length === 0) {
-    return json({ sent: 0, message: "No active events in date window" }, 200);
+    return json({ sent: 0, message: "No active events in date window" }, 200, ch);
   }
 
   const { data: sessionRows, error: sessionsError } = await supabase
@@ -202,7 +204,7 @@ type EvRow = {
 
   if (sessionsError) {
     console.error("Fetch sessions error:", sessionsError);
-    return json({ error: sessionsError.message }, 500);
+    return json({ error: sessionsError.message }, 500, ch);
   }
 
   const nowMs = Date.now();
@@ -227,18 +229,44 @@ type EvRow = {
       sent: 0,
       message: "No sessions starting in reminder window (timezone-aware, ~2-6 min before start)",
       hint: `Set Edge secret SESSION_REMINDER_TIMEZONE or events.reminder_timezone (default ${defaultZone}).`,
-    }, 200);
+    }, 200, ch);
   }
 
+  const dueById = new Map(due.map((s) => [s.id, s]));
   const { data: alreadySent } = await supabase
     .from("session_reminder_sent")
-    .select("session_id")
+    .select("session_id, sent_at")
     .in("session_id", due.map((s) => s.id));
 
-  const sentSet = new Set((alreadySent ?? []).map((r: { session_id: string }) => r.session_id));
+  // Preview/reschedule: markers from an earlier calendar day than the session wall date
+  // must not block reminders (same session_id after start_time was moved).
+  const sentSet = new Set<string>();
+  const staleIds: string[] = [];
+  for (const row of alreadySent ?? []) {
+    const r = row as { session_id: string; sent_at?: string | null };
+    const session = dueById.get(r.session_id);
+    const sessionDate = session ? getSessionDateKeyFromIso(session.start_time) : null;
+    const sentDate = r.sent_at ? getSessionDateKeyFromIso(r.sent_at) : null;
+    if (sessionDate && sentDate && sentDate < sessionDate) {
+      staleIds.push(r.session_id);
+      continue;
+    }
+    sentSet.add(r.session_id);
+  }
+  if (staleIds.length > 0) {
+    await supabase.from("session_reminder_sent").delete().in("session_id", staleIds);
+    console.warn(
+      JSON.stringify({
+        kind: "session_reminder_stale_cleared",
+        count: staleIds.length,
+        session_ids: staleIds,
+      }),
+    );
+  }
+
   const toProcess = due.filter((s) => !sentSet.has(s.id));
   if (toProcess.length === 0) {
-    return json({ sent: 0, message: "Reminders already sent for these sessions" }, 200);
+    return json({ sent: 0, message: "Reminders already sent for these sessions" }, 200, ch);
   }
 
   let totalSent = 0;
@@ -305,18 +333,28 @@ type EvRow = {
 
     const { data: userPrefs } = await supabase
       .from("users")
-      .select("id, push_token, session_reminder_skip_same_room")
+      .select("id, push_token, session_reminder_skip_same_room, session_reminder_saved_only")
       .in("id", userIds);
-    const prefByUser = new Map<string, { push_token: string | null; session_reminder_skip_same_room?: boolean | null }>();
+    type ReminderPref = {
+      push_token: string | null;
+      session_reminder_skip_same_room?: boolean | null;
+      session_reminder_saved_only?: boolean | null;
+    };
+    const prefByUser = new Map<string, ReminderPref>();
     for (const u of userPrefs ?? []) {
-      const row = u as { id: string; push_token: string | null; session_reminder_skip_same_room?: boolean | null };
+      const row = u as ReminderPref & { id: string };
       prefByUser.set(row.id, row);
     }
 
     const startMsS = sessionStartInZoneMs(session.start_time, zone);
     const recipientUserIds: string[] = [];
+    let savedOnlySkippedThisSession = 0;
     for (const uid of userIds) {
       const pref = prefByUser.get(uid) ?? null;
+      if (wantsSavedOnly(pref) && !(bookmarksByUser.get(uid)?.has(session.id) ?? false)) {
+        savedOnlySkippedThisSession++;
+        continue;
+      }
       if (!wantsSkipSameRoom(pref)) {
         recipientUserIds.push(uid);
         continue;
@@ -353,17 +391,18 @@ type EvRow = {
       recipientUserIds.push(uid);
     }
 
-    const sameRoomSkippedThisSession = userIds.length - recipientUserIds.length;
-    if (sameRoomSkippedThisSession > 0) {
+    const sameRoomSkippedThisSession = userIds.length - recipientUserIds.length - savedOnlySkippedThisSession;
+    if (sameRoomSkippedThisSession > 0 || savedOnlySkippedThisSession > 0) {
       totalSameRoomSkipped += sameRoomSkippedThisSession;
       console.log(
         JSON.stringify({
-          kind: "session_reminder_same_room_skipped",
+          kind: "session_reminder_skipped",
           session_id: session.id,
           event_id: session.event_id,
           members: userIds.length,
           recipients: recipientUserIds.length,
           same_room_skipped: sameRoomSkippedThisSession,
+          saved_only_skipped: savedOnlySkippedThisSession,
         }),
       );
     }
@@ -455,12 +494,12 @@ type EvRow = {
     sent: totalSent,
     sessions: toProcess.length,
     same_room_skipped: totalSameRoomSkipped,
-  }, 200);
+  }, 200, ch);
 });
 
-function json(body: object, status: number) {
+function json(body: object, status: number, headers: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
   });
 }

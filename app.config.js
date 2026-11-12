@@ -8,6 +8,7 @@ let SUPABASE_ANON_KEY = '';
 let ANDROID_USE_R2 = '';
 let LIVE_WALL_URL = '';
 let PASSWORD_RESET_WEB_URL = '';
+let SENTRY_DSN = '';
 if (fs.existsSync(envPath)) {
   const content = fs.readFileSync(envPath, 'utf8');
   content.split('\n').forEach((line) => {
@@ -26,7 +27,21 @@ if (fs.existsSync(envPath)) {
     if (key === 'EXPO_PUBLIC_ANDROID_USE_R2') ANDROID_USE_R2 = value;
     if (key === 'EXPO_PUBLIC_LIVE_WALL_URL') LIVE_WALL_URL = value.replace(/\/+$/, '');
     if (key === 'EXPO_PUBLIC_PASSWORD_RESET_WEB_URL') PASSWORD_RESET_WEB_URL = value.replace(/\/+$/, '');
+    if (key === 'EXPO_PUBLIC_SENTRY_DSN') SENTRY_DSN = value.trim();
   });
+}
+
+// Ensure Metro/Babel can inline the public DSN (Expo Go + EAS).
+if (SENTRY_DSN) {
+  process.env.EXPO_PUBLIC_SENTRY_DSN = SENTRY_DSN;
+} else if ((process.env.EXPO_PUBLIC_SENTRY_DSN || '').trim()) {
+  SENTRY_DSN = process.env.EXPO_PUBLIC_SENTRY_DSN.trim();
+} else {
+  const fromFile = readEnv('EXPO_PUBLIC_SENTRY_DSN');
+  if (fromFile) {
+    SENTRY_DSN = fromFile;
+    process.env.EXPO_PUBLIC_SENTRY_DSN = fromFile;
+  }
 }
 
 function readEnv(key) {
@@ -49,24 +64,54 @@ function readEnv(key) {
 }
 
 // Embed Supabase in extra so Expo Go gets it via Constants.expoConfig.extra (reliable in dev).
-module.exports = ({ config }) => ({
-  ...config,
-  extra: {
-    ...(config?.extra || {}),
-    SUPABASE_URL: SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '',
-    SUPABASE_ANON_KEY: SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
-    ANDROID_USE_R2: ANDROID_USE_R2 || process.env.EXPO_PUBLIC_ANDROID_USE_R2 || readEnv('EXPO_PUBLIC_ANDROID_USE_R2') || '',
-    /** Public HTTPS URL of deployed Next.js live-wall (no trailing slash). EAS: set EXPO_PUBLIC_LIVE_WALL_URL in eas.json env or Expo dashboard. */
-    liveWallUrl:
-      LIVE_WALL_URL ||
-      (process.env.EXPO_PUBLIC_LIVE_WALL_URL || '').replace(/\/+$/, '') ||
-      readEnv('EXPO_PUBLIC_LIVE_WALL_URL').replace(/\/+$/, '') ||
-      '',
-    /** HTTPS auth recovery bridge; see admin-setup/public/auth-recovery.html */
-    PASSWORD_RESET_WEB_URL:
-      PASSWORD_RESET_WEB_URL ||
-      (process.env.EXPO_PUBLIC_PASSWORD_RESET_WEB_URL || '').trim().replace(/\/+$/, '') ||
-      readEnv('EXPO_PUBLIC_PASSWORD_RESET_WEB_URL').replace(/\/+$/, '') ||
-      '',
-  },
-});
+const sentryOrg = process.env.SENTRY_ORG || 'kbm-collective';
+const sentryProject = process.env.SENTRY_PROJECT || 'react-native';
+
+module.exports = ({ config }) => {
+  const plugins = [...(config?.plugins || [])];
+  const hasSentryPlugin = plugins.some(
+    (p) => p === '@sentry/react-native' || p === '@sentry/react-native/expo' || (Array.isArray(p) && String(p[0]).includes('sentry'))
+  );
+  if (!hasSentryPlugin) {
+    plugins.push([
+      '@sentry/react-native/expo',
+      {
+        url: 'https://sentry.io/',
+        organization: sentryOrg,
+        project: sentryProject,
+        // Auth token: set SENTRY_AUTH_TOKEN in EAS secrets / .env.local — never commit it
+      },
+    ]);
+  }
+  if (!plugins.includes('expo-secure-store')) {
+    plugins.push('expo-secure-store');
+  }
+
+  return {
+    ...config,
+    plugins,
+    extra: {
+      ...(config?.extra || {}),
+      SUPABASE_URL: SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '',
+      SUPABASE_ANON_KEY: SUPABASE_ANON_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY || '',
+      ANDROID_USE_R2: ANDROID_USE_R2 || process.env.EXPO_PUBLIC_ANDROID_USE_R2 || readEnv('EXPO_PUBLIC_ANDROID_USE_R2') || '',
+      /** Public HTTPS URL of deployed Next.js live-wall (no trailing slash). EAS: set EXPO_PUBLIC_LIVE_WALL_URL in eas.json env or Expo dashboard. */
+      liveWallUrl:
+        LIVE_WALL_URL ||
+        (process.env.EXPO_PUBLIC_LIVE_WALL_URL || '').replace(/\/+$/, '') ||
+        readEnv('EXPO_PUBLIC_LIVE_WALL_URL').replace(/\/+$/, '') ||
+        '',
+      /** HTTPS auth recovery bridge; see admin-setup/public/auth-recovery.html */
+      PASSWORD_RESET_WEB_URL:
+        PASSWORD_RESET_WEB_URL ||
+        (process.env.EXPO_PUBLIC_PASSWORD_RESET_WEB_URL || '').trim().replace(/\/+$/, '') ||
+        readEnv('EXPO_PUBLIC_PASSWORD_RESET_WEB_URL').replace(/\/+$/, '') ||
+        '',
+      SENTRY_DSN:
+        SENTRY_DSN ||
+        (process.env.EXPO_PUBLIC_SENTRY_DSN || '').trim() ||
+        readEnv('EXPO_PUBLIC_SENTRY_DSN') ||
+        '',
+    },
+  };
+};

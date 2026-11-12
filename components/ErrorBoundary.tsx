@@ -1,5 +1,6 @@
 import React, { Component, type ErrorInfo, type ReactNode } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
+import { captureAppException } from '../lib/sentry';
 
 interface Props {
   children: ReactNode;
@@ -21,6 +22,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     console.error('ErrorBoundary caught:', error, errorInfo.componentStack);
+    captureAppException(error, {
+      componentStack: errorInfo.componentStack ?? undefined,
+    });
   }
 
   reset = () => {

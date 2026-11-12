@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
-  Linking,
   ScrollView,
   StyleSheet,
   Text,
@@ -20,11 +19,13 @@ import { Platform } from 'react-native';
 import SolutionNavBack, { navigateSolutionBack } from '../../../components/SolutionNavBack';
 import Avatar from '../../../components/Avatar';
 import { fetchBoothRepresentatives, type BoothRepresentative } from '../../../lib/vendorBoothReps';
+import { openExternalUrl } from '../../../lib/openExternalUrl';
 
 export default function SolutionProviderDetailScreen() {
-  const params = useLocalSearchParams<{ boothId: string; from?: string }>();
+  const params = useLocalSearchParams<{ boothId: string; from?: string; name?: string }>();
   const boothId = typeof params.boothId === 'string' ? params.boothId : Array.isArray(params.boothId) ? params.boothId[0] : '';
   const from = typeof params.from === 'string' ? params.from : Array.isArray(params.from) ? params.from[0] : '';
+  const nameParam = typeof params.name === 'string' ? params.name : Array.isArray(params.name) ? params.name[0] : '';
   const router = useRouter();
   const { currentEvent } = useEventStore();
   const [booth, setBooth] = useState<VendorBooth | null>(null);
@@ -37,6 +38,7 @@ export default function SolutionProviderDetailScreen() {
   }, [from, router]);
 
   useEffect(() => {
+    let cancelled = false;
     const load = async () => {
       if (!boothId || !currentEvent?.id) {
         setBooth(null);
@@ -44,6 +46,10 @@ export default function SolutionProviderDetailScreen() {
         setLoading(false);
         return;
       }
+      // Drop the previous vendor immediately so a second tap doesn't flash the last page.
+      setLoading(true);
+      setBooth(null);
+      setRepresentatives([]);
       setError(null);
       const client = Platform.OS === 'android' ? supabaseStorage : supabase;
       try {
@@ -54,6 +60,7 @@ export default function SolutionProviderDetailScreen() {
           .eq('event_id', currentEvent.id)
           .eq('is_active', true)
           .maybeSingle();
+        if (cancelled) return;
         if (fetchError) throw fetchError;
         if (!data) {
           setBooth(null);
@@ -64,30 +71,41 @@ export default function SolutionProviderDetailScreen() {
         const boothRow = data as VendorBooth;
         setBooth(boothRow);
         try {
-          setRepresentatives(await fetchBoothRepresentatives(boothRow, client));
+          const reps = await fetchBoothRepresentatives(boothRow, client);
+          if (!cancelled) setRepresentatives(reps);
         } catch {
-          setRepresentatives([]);
+          if (!cancelled) setRepresentatives([]);
         }
       } catch (err) {
+        if (cancelled) return;
         setBooth(null);
         setRepresentatives([]);
         setError(err instanceof Error ? err.message : 'Could not load solution provider.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     };
     load().catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [boothId, currentEvent?.id]);
+
+  // The tab screen is reused, so the first render for a new boothId still holds the previous vendor.
+  const isStale = !!booth && booth.id !== boothId;
+  const showLoading = loading || isStale;
+  const headerTitle =
+    !isStale && booth?.vendor_name ? booth.vendor_name : nameParam.trim() || 'Solution Provider';
 
   return (
     <SafeAreaView style={s.container} edges={[]}>
       <Stack.Screen
         options={{
-          title: booth?.vendor_name ?? 'Solution Provider',
+          title: headerTitle,
           headerLeft: () => <SolutionNavBack fromParam={from} />,
         }}
       />
-      {loading ? (
+      {showLoading ? (
         <View style={s.centered}>
           <ActivityIndicator size="large" color={colors.primary} />
           <Text style={s.loadingText}>Loading solution provider...</Text>
@@ -129,7 +147,15 @@ export default function SolutionProviderDetailScreen() {
                     key={rep.user_id}
                     style={s.repRow}
                     activeOpacity={0.75}
-                    onPress={() => router.push(`/(tabs)/feed/user/${rep.user_id}` as any)}
+                    onPress={() =>
+                      router.push(
+                        `/(tabs)/feed/user/${rep.user_id}?from=${encodeURIComponent(
+                          from?.trim()
+                            ? `/solution-provider/${boothId}?from=${encodeURIComponent(from)}&name=${encodeURIComponent(booth.vendor_name ?? '')}`
+                            : '/(tabs)/solution-providers'
+                        )}` as never
+                      )
+                    }
                   >
                     <Avatar uri={rep.avatar_url} name={rep.full_name} size={44} />
                     <View style={s.repTextCol}>
@@ -164,7 +190,7 @@ export default function SolutionProviderDetailScreen() {
           {booth.website ? (
             <View style={s.section}>
               <Text style={s.sectionTitle}>Website</Text>
-              <TouchableOpacity onPress={() => Linking.openURL(booth.website!).catch(() => {})} style={s.linkRow} activeOpacity={0.7}>
+              <TouchableOpacity onPress={() => void openExternalUrl(booth.website)} style={s.linkRow} activeOpacity={0.7}>
                 <ExternalLink size={16} color={colors.primary} />
                 <Text style={s.linkText}>{booth.website}</Text>
               </TouchableOpacity>

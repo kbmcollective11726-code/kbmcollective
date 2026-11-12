@@ -24,10 +24,18 @@ import {
   resolveLiveWallSponsors,
   type LiveWallSponsorRow,
 } from '../../lib/sponsorCreatives';
-import { parseEngagementSettings } from '../../lib/wallEngagement';
+import { parseEngagementSettings, computePhotoOfHour } from '../../lib/wallEngagement';
+import { fetchAllWallPosts } from '../../lib/wallPosts';
 import { useWallEngagement } from '../../hooks/useWallEngagement';
 import WallEngagementLayer, { WallHeartBursts, PhotoOfHourBadge } from '../../components/WallEngagementLayer';
-import { pickStartupFeaturedIndex, rememberFeaturedPost } from '../../lib/wallFeaturedRotation';
+import {
+  loadPassState,
+  markPostShown,
+  pickNextFeaturedIndex,
+  pickPreferredOrNextUnshown,
+  pickStartupFeaturedIndex,
+  rememberFeaturedPost,
+} from '../../lib/wallFeaturedRotation';
 
 const MOBILE_BREAKPOINT = 768;
 
@@ -75,9 +83,9 @@ type LiveWallSponsor = {
 };
 
 /**
- * WebKit/Chromium can show black bands around `<img>` under CSS transforms — use `translateZ(0)` /
- * `backfaceVisibility` on the image. Keep the **slot** background the same as the sponsor strip
- * (`slate` / transparent); a darker `photoBg` chip behind a white logo reads as black “shadow” bars.
+ * WebKit/Chromium can show black bands around `<img>` under CSS transforms — avoid stacking
+ * `translateZ` here (it ghosted sponsor logos). Use the uploaded URL as-is (cadmin already
+ * clears white/light-gray plates on save).
  */
 function SponsorWallImgBlock({
   logoUrl,
@@ -135,84 +143,60 @@ function SponsorWallImgBlock({
       referrerPolicy="no-referrer-when-downgrade"
       style={{
         ...imgStyle,
-        WebkitBackfaceVisibility: 'hidden',
-        backfaceVisibility: 'hidden',
-        transform: 'translateZ(0)',
+        background: 'transparent',
       }}
       onError={() => setFailed(true)}
     />
   );
 }
 
-/** Pixels travelled per second along the sponsor path (single-sponsor seamless segment). */
-/** Lower px/s = slower scroll for the single-sponsor seamless loop. */
-const SINGLE_SWEEP_SPEED_PX = 65;
-/** Gap between duplicated logo copies for a seamless loop (no empty rail between cycles). */
-const SINGLE_SPONSOR_DUPLICATE_GAP_PX = 36;
+const SINGLE_SWEEP_SPEED_PX = 55;
 
+/**
+ * One sponsor: logo sweeps across the rail. Duplicate copy sits one full rail-width away
+ * so only one logo is on screen at a time (seamless loop, no side-by-side pair).
+ */
 function SingleSponsorSweepRail({
   sponsor,
-  slotRadius,
   isMobile,
   windowWidth,
 }: {
   sponsor: LiveWallSponsor;
-  slotRadius: number;
   isMobile: boolean;
   windowWidth: number;
 }) {
   const idSafe = useId().replace(/[^a-zA-Z0-9_-]/g, '') || 's';
   const railRef = useRef<HTMLDivElement>(null);
-  const moverRef = useRef<HTMLDivElement>(null);
   const [railPx, setRailPx] = useState(() =>
     Math.max(280, Math.floor((typeof window !== 'undefined' ? window.innerWidth : windowWidth) * 0.52)),
   );
-  const [tilePx, setTilePx] = useState(320);
 
   useLayoutEffect(() => {
     const rail = railRef.current;
-    const mover = moverRef.current;
     if (!rail || typeof ResizeObserver === 'undefined') return;
-
     let raf = 0;
-    const measure = () => {
-      setRailPx(Math.max(64, rail.clientWidth));
-      const first = mover?.firstElementChild as HTMLElement | undefined;
-      const second = first?.nextElementSibling as HTMLElement | undefined;
-      if (first) {
-        const gap =
-          second != null
-            ? Math.max(0, second.offsetLeft - first.offsetLeft - first.offsetWidth)
-            : SINGLE_SPONSOR_DUPLICATE_GAP_PX;
-        setTilePx(Math.max(64, Math.ceil(first.offsetWidth + gap)));
-      } else {
-        setTilePx(Math.max(64, Math.ceil((mover?.getBoundingClientRect().width ?? 240) / 2)));
-      }
-    };
-
+    const measure = () => setRailPx(Math.max(64, rail.clientWidth));
     const ro = new ResizeObserver(() => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(measure);
     });
     ro.observe(rail);
-    if (mover) ro.observe(mover);
     measure();
-
     return () => {
       cancelAnimationFrame(raf);
       ro.disconnect();
     };
   }, [sponsor.id, sponsor.logo_url]);
 
-  /** Wide banner slot — keep height modest so the sponsor row stays slim (logo uses `contain` inside). */
-  const bannerW = railPx > 80 ? Math.max(220, railPx - 8) : Math.max(280, Math.floor(windowWidth * 0.5));
-  const bannerH = Math.min(isMobile ? 52 : 60, Math.max(36, Math.floor(bannerW * 0.12)));
+  const bannerW = isMobile
+    ? Math.min(220, Math.max(150, Math.floor(windowWidth * 0.38)))
+    : Math.min(280, Math.max(180, Math.floor(windowWidth * 0.22)));
+  const bannerH = Math.min(isMobile ? 44 : 50, Math.max(34, Math.floor(bannerW * 0.2)));
 
-  /** One segment = one logo copy + gap; duplicate copies make the loop seamless (no dead air). */
-  const segmentPx = tilePx;
-  const durSec = Math.min(110, Math.max(14, segmentPx / SINGLE_SWEEP_SPEED_PX));
-  /** Name encodes px so keyframe updates always match (some engines cache by name only). */
-  const animName = `sponsor_sweep_${idSafe}_0_${segmentPx}`;
+  /** Travel one full rail so the twin stays off-screen until the first exits. */
+  const segmentPx = Math.max(railPx + bannerW, railPx + 80);
+  const durSec = Math.min(90, Math.max(18, segmentPx / SINGLE_SWEEP_SPEED_PX));
+  const animName = `sponsor_sweep_${idSafe}_${segmentPx}`;
 
   const href = (sponsor.website_url || '').trim();
 
@@ -220,11 +204,14 @@ function SingleSponsorSweepRail({
     display: 'block',
     width: bannerW,
     height: bannerH,
-    borderRadius: slotRadius,
+    borderRadius: 8,
     overflow: 'hidden',
     lineHeight: 0,
-    /** Same tone as sponsor row — avoids dark pillars beside a white opaque logo. */
-    background: 'transparent',
+    /** Light plate for dark logo text — no backdrop-blur (ghosts under transform). */
+    background: 'rgba(255, 255, 255, 0.92)',
+    boxSizing: 'border-box',
+    padding: isMobile ? '4px 8px' : '5px 10px',
+    flexShrink: 0,
   };
 
   const imgStyle: CSSProperties = {
@@ -233,18 +220,8 @@ function SingleSponsorSweepRail({
     height: '100%',
     objectFit: 'contain',
     objectPosition: 'center',
+    background: 'transparent',
   };
-
-  const moverInner = (
-    <div style={shell}>
-      <SponsorWallImgBlock
-        logoUrl={sponsor.logo_url}
-        companyName={sponsor.company_name}
-        tierLabel={sponsor.tier_label}
-        imgStyle={imgStyle}
-      />
-    </div>
-  );
 
   const linkStyle: CSSProperties = {
     textDecoration: 'none',
@@ -252,6 +229,36 @@ function SingleSponsorSweepRail({
     outline: 'none',
     lineHeight: 0,
     display: 'inline-block',
+    flexShrink: 0,
+  };
+
+  const renderTile = (key: string) => {
+    const inner = (
+      <div style={shell}>
+        <SponsorWallImgBlock
+          logoUrl={sponsor.logo_url}
+          companyName={sponsor.company_name}
+          tierLabel={sponsor.tier_label}
+          imgStyle={imgStyle}
+        />
+      </div>
+    );
+    return href ? (
+      <a
+        key={key}
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={linkStyle}
+        title={`Visit ${sponsor.company_name}`}
+      >
+        {inner}
+      </a>
+    ) : (
+      <div key={key} style={{ flexShrink: 0, lineHeight: 0 }}>
+        {inner}
+      </div>
+    );
   };
 
   return (
@@ -272,13 +279,10 @@ function SingleSponsorSweepRail({
           width: '100%',
           overflow: 'hidden',
           position: 'relative',
-          minHeight: bannerH + 6,
-          marginTop: 0,
-          marginBottom: 0,
+          minHeight: bannerH + 4,
         }}
       >
         <div
-          ref={moverRef}
           style={{
             position: 'absolute',
             left: 0,
@@ -286,26 +290,12 @@ function SingleSponsorSweepRail({
             display: 'flex',
             flexDirection: 'row',
             alignItems: 'center',
-            columnGap: SINGLE_SPONSOR_DUPLICATE_GAP_PX,
+            columnGap: Math.max(48, railPx - bannerW + 24),
             animation: `${animName} ${durSec}s linear infinite`,
-            willChange: 'transform',
           }}
         >
-          {href ? (
-            <>
-              <a href={href} target="_blank" rel="noopener noreferrer" style={linkStyle} title={`Visit ${sponsor.company_name}`}>
-                {moverInner}
-              </a>
-              <a href={href} target="_blank" rel="noopener noreferrer" style={linkStyle} title={`Visit ${sponsor.company_name}`}>
-                {moverInner}
-              </a>
-            </>
-          ) : (
-            <>
-              {moverInner}
-              {moverInner}
-            </>
-          )}
+          {renderTile('a')}
+          {renderTile('b')}
         </div>
       </div>
     </>
@@ -333,25 +323,69 @@ export default function WallPageContent() {
   const [liveWallSponsorsRaw, setLiveWallSponsorsRaw] = useState<LiveWallSponsorRow[]>([]);
   const featuredPostIdRef = useRef<string | null>(null);
   const startupFeaturedPickedRef = useRef(false);
+  const pendingStartupIndexRef = useRef<number | null>(null);
+  /** Round-robin cursor + pass progress (persisted so open/close continues the pass). */
+  const rotationCursorRef = useRef(0);
+  const shownIdsRef = useRef<string[]>([]);
+  const pohBonusUsedRef = useRef(false);
+  const prevPostIdsRef = useRef<string[]>([]);
+
+  const photoOfHourPostId = useMemo(() => computePhotoOfHour(posts), [posts]);
 
   const featuredPost = posts[featuredIndex] ?? null;
   featuredPostIdRef.current = featuredPost?.id ?? null;
 
-  // Each time the wall opens, feature a different photo (not always index 0)
+  // Keep featured index in range if the post list shrinks
+  useEffect(() => {
+    if (posts.length === 0) return;
+    if (featuredIndex >= posts.length) {
+      const idx = 0;
+      rotationCursorRef.current = idx;
+      setFeaturedIndex(idx);
+    }
+  }, [posts.length, featuredIndex]);
+
+  // Reset startup picker when switching events
   useEffect(() => {
     startupFeaturedPickedRef.current = false;
+    pendingStartupIndexRef.current = null;
+    rotationCursorRef.current = 0;
+    shownIdsRef.current = [];
+    pohBonusUsedRef.current = false;
+    prevPostIdsRef.current = [];
   }, [eventId]);
 
+  // On open/reopen: resume after last featured photo; skip already-shown this pass
   useEffect(() => {
     if (!eventId || posts.length === 0 || startupFeaturedPickedRef.current) return;
     startupFeaturedPickedRef.current = true;
-    setFeaturedIndex(pickStartupFeaturedIndex(posts, eventId));
-  }, [eventId, posts]);
+    const pass = loadPassState(eventId);
+    const { index: idx, shownIds, pohBonusUsed } = pickStartupFeaturedIndex(
+      posts,
+      photoOfHourPostId,
+      pass,
+    );
+    shownIdsRef.current = shownIds;
+    pohBonusUsedRef.current = pohBonusUsed;
+    pendingStartupIndexRef.current = idx;
+    rotationCursorRef.current = idx;
+    prevPostIdsRef.current = posts.map((p) => p.id);
+    setFeaturedIndex(idx);
+  }, [eventId, posts, photoOfHourPostId]);
 
+  // Persist progress whenever a photo is featured (survives close/reopen)
   useEffect(() => {
-    if (!eventId || !featuredPost?.id) return;
-    rememberFeaturedPost(eventId, featuredPost.id);
-  }, [eventId, featuredPost?.id]);
+    if (!eventId || !featuredPost?.id || !startupFeaturedPickedRef.current) return;
+    if (pendingStartupIndexRef.current != null && featuredIndex !== pendingStartupIndexRef.current) return;
+    pendingStartupIndexRef.current = null;
+    shownIdsRef.current = markPostShown(shownIdsRef.current, featuredPost.id);
+    rememberFeaturedPost(
+      eventId,
+      featuredPost.id,
+      shownIdsRef.current,
+      pohBonusUsedRef.current,
+    );
+  }, [eventId, featuredPost?.id, featuredIndex]);
 
   const engagementSettings = useMemo(() => parseEngagementSettings(searchParams), [searchParams]);
   const engagement = useWallEngagement({
@@ -365,46 +399,53 @@ export default function WallPageContent() {
 
   const refetchPosts = useCallback(() => {
     if (!eventId || !supabase) return;
-    supabase
-      .from('posts')
-      .select('id, image_url, caption, likes_count, comments_count, created_at, user:users(full_name)')
-      .eq('event_id', eventId)
-      .eq('is_deleted', false)
-      .eq('is_approved', true)
-      .order('is_pinned', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(50)
-      .then(({ data }: { data: typeof posts | null }) => setPosts(data ?? []));
+    void fetchAllWallPosts(supabase, eventId).then((data) => {
+      setPosts((prev) => {
+        if (
+          prev.length === data.length &&
+          prev.every((p, i) => p?.id === data[i]?.id && p?.likes_count === data[i]?.likes_count && p?.comments_count === data[i]?.comments_count)
+        ) {
+          return prev;
+        }
+        return data;
+      });
+    });
   }, [eventId]);
 
   const refetchLeaderboard = useCallback(() => {
     if (!eventId || !supabase) return;
     supabase
-      .from('event_members')
-      .select('user_id, points, users!inner(full_name, avatar_url, title)')
-      .eq('event_id', eventId)
-      .order('points', { ascending: false })
-      .limit(10)
-      .then(({ data }: { data: typeof leaderboard | null }) => setLeaderboard(data ?? []));
+      .rpc('get_live_wall_leaderboard', { p_event_id: eventId, p_limit: 10 })
+      .then(({ data }: { data: unknown }) => {
+        const rows = Array.isArray(data) ? data : [];
+        setLeaderboard(rows as typeof leaderboard);
+      });
   }, [eventId]);
 
-  // Jump featured photo to crowd favorite when it wins / is celebrated
+  // New photo arrives: feature it only if it has not been shown this pass (never force a repeat)
   useEffect(() => {
-    if (!engagement.photoOfHourPostId || posts.length === 0) return;
-    const idx = posts.findIndex((p) => p.id === engagement.photoOfHourPostId);
-    if (idx >= 0 && engagement.hero?.kind === 'photo_of_hour') {
-      setFeaturedIndex(idx);
+    if (!startupFeaturedPickedRef.current || posts.length === 0) {
+      prevPostIdsRef.current = posts.map((p) => p.id);
+      return;
     }
-  }, [engagement.hero?.id, engagement.hero?.kind, engagement.photoOfHourPostId, posts]);
+    const prevIds = new Set(prevPostIdsRef.current);
+    const newest = posts[0];
+    prevPostIdsRef.current = posts.map((p) => p.id);
+    if (!newest?.id || prevIds.has(newest.id)) return;
+    if (shownIdsRef.current.includes(newest.id)) return;
 
-  // Show newest post on the big screen when a new one arrives
-  const prevPostsLenRef = useRef(0);
-  useEffect(() => {
-    if (posts.length > prevPostsLenRef.current && prevPostsLenRef.current > 0) {
-      setFeaturedIndex(0);
-    }
-    prevPostsLenRef.current = posts.length;
-  }, [posts.length]);
+    const next = pickPreferredOrNextUnshown(
+      posts,
+      shownIdsRef.current,
+      rotationCursorRef.current,
+      newest.id,
+      pohBonusUsedRef.current,
+    );
+    shownIdsRef.current = next.shownIds;
+    pohBonusUsedRef.current = next.pohBonusUsed;
+    rotationCursorRef.current = next.index;
+    setFeaturedIndex(next.index);
+  }, [posts]);
 
   useEffect(() => {
     const id = setInterval(() => setWallClockTick((t) => t + 1), 60_000);
@@ -413,31 +454,38 @@ export default function WallPageContent() {
 
   const fetchEventAndStats = useCallback(() => {
     if (!eventId || !supabase) return;
-    supabase
-      .from('events')
-      .select('name, start_date, end_date, reminder_timezone')
-      .eq('id', eventId)
-      .single()
-      .then(({ data }: any) => {
-        setEventName(data?.name ?? '');
-        setEventStartDate(typeof data?.start_date === 'string' ? data.start_date : null);
-        setEventEndDate(typeof data?.end_date === 'string' ? data.end_date : null);
-        const tz = typeof data?.reminder_timezone === 'string' ? data.reminder_timezone.trim() : '';
-        setEventReminderTimezone(tz || null);
-      });
+    supabase.rpc('get_live_wall_event', { p_event_id: eventId }).then(({ data }: { data: any }) => {
+      const row = data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+      setEventName(row?.name ?? '');
+      setEventStartDate(typeof row?.start_date === 'string' ? row.start_date : null);
+      setEventEndDate(typeof row?.end_date === 'string' ? row.end_date : null);
+      const tz = typeof row?.reminder_timezone === 'string' ? row.reminder_timezone.trim() : '';
+      setEventReminderTimezone(tz || null);
+    });
 
     Promise.all([
-      supabase.from('posts').select('id, likes_count, comments_count').eq('event_id', eventId).eq('is_deleted', false).eq('is_approved', true),
-      supabase.from('event_members').select('user_id', { count: 'exact', head: true }).eq('event_id', eventId),
-    ]).then(([postsRes, membersRes]) => {
-      const postList = (postsRes.data ?? []) as any[];
+      fetchAllWallPosts(supabase, eventId),
+      supabase.rpc('get_live_wall_member_count', { p_event_id: eventId }),
+    ]).then(([postList, membersRes]) => {
       const totalLikes = postList.reduce((s, p) => s + (p.likes_count || 0), 0);
       const totalComments = postList.reduce((s, p) => s + (p.comments_count || 0), 0);
+      const countRaw = (membersRes as { data?: unknown }).data;
+      const participants = typeof countRaw === 'number' ? countRaw : Number(countRaw) || 0;
       setStats({
         photos: postList.length,
         likes: totalLikes,
         comments: totalComments,
-        participants: (membersRes as any).count ?? 0,
+        participants,
+      });
+      // Keep posts in sync for stats/poll without forcing a new array when unchanged
+      setPosts((prev) => {
+        if (
+          prev.length === postList.length &&
+          prev.every((p, i) => p?.id === postList[i]?.id && p?.likes_count === postList[i]?.likes_count && p?.comments_count === postList[i]?.comments_count)
+        ) {
+          return prev;
+        }
+        return postList;
       });
     });
   }, [eventId]);
@@ -446,25 +494,11 @@ export default function WallPageContent() {
     if (!eventId || !supabase) return;
     fetchEventAndStats();
 
-    supabase
-      .from('posts')
-      .select('id, image_url, caption, likes_count, comments_count, created_at, user:users(full_name)')
-      .eq('event_id', eventId)
-      .eq('is_deleted', false)
-      .eq('is_approved', true)
-      .order('is_pinned', { ascending: false })
-      .order('created_at', { ascending: false })
-      .limit(50)
-      .then(({ data }: any) => setPosts(data ?? []));
+    void fetchAllWallPosts(supabase, eventId).then((data) => setPosts(data));
 
     supabase
-      .from('schedule_sessions')
-      .select('*')
-      .eq('event_id', eventId)
-      .eq('is_active', true)
-      .order('day_number')
-      .order('start_time')
-      .then(({ data }: any) => setSessions(data ?? []));
+      .rpc('get_live_wall_sessions', { p_event_id: eventId })
+      .then(({ data }: any) => setSessions(Array.isArray(data) ? data : []));
 
     supabase
       .from('event_sponsors')
@@ -476,91 +510,28 @@ export default function WallPageContent() {
       .order('id', { ascending: true })
       .then(({ data }: any) => setLiveWallSponsorsRaw(data ?? []));
 
-    supabase
-      .from('event_members')
-      .select('user_id, points, users!inner(full_name, avatar_url, title)')
-      .eq('event_id', eventId)
-      .order('points', { ascending: false })
-      .limit(10)
-      .then(({ data }: any) => setLeaderboard(data ?? []));
+    refetchLeaderboard();
 
     const fetchLiveComments = () => {
       supabase
-        .from('posts')
-        .select('id')
-        .eq('event_id', eventId)
-        .eq('is_deleted', false)
-        .eq('is_approved', true)
-        .limit(200)
-        .then(({ data: postRows }: any) => {
-          const postIds = (postRows ?? []).map((p: any) => p.id);
-          if (postIds.length === 0) {
-            setLiveComments([]);
-            return;
-          }
-          // Chunk post IDs (some Supabase/PostgREST setups limit .in() size); merge and sort by created_at
-          const CHUNK = 50;
-          const promises = [];
-          for (let i = 0; i < postIds.length; i += CHUNK) {
-            const chunk = postIds.slice(i, i + CHUNK);
-            promises.push(
-              supabase
-                .from('comments')
-                .select('id, content, created_at, user:users(full_name)')
-                .in('post_id', chunk)
-                .order('created_at', { ascending: false })
-                .limit(100)
-            );
-          }
-          Promise.all(promises).then((results) => {
-            const merged = (results.flatMap((r: any) => r.data ?? []) as any[])
-              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-            const unique = merged.filter((c, i, arr) => arr.findIndex((x) => x.id === c.id) === i);
-            setLiveComments(unique.slice(0, 100));
-          });
-        });
+        .rpc('get_live_wall_comments', { p_event_id: eventId, p_limit: 100 })
+        .then(({ data }: any) => setLiveComments(Array.isArray(data) ? data : []));
     };
     fetchLiveComments();
+    // Polling drives updates after RLS lockdown (anon realtime on posts/comments is blocked).
     const interval = setInterval(fetchLiveComments, 20000);
+    // Stats/leaderboard every 12s; posts refresh inside fetchEventAndStats only when content changes
+    // so the 15s featured rotation timer is not constantly reset.
     const leaderboardInterval = setInterval(() => {
-      refetchLeaderboard();
       fetchEventAndStats();
+      refetchLeaderboard();
     }, 12000);
 
-    const ch = supabase
-      .channel('wall-summit')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'posts', filter: `event_id=eq.${eventId}` }, () => {
-        refetchPosts();
-        fetchEventAndStats();
-      })
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'point_log', filter: `event_id=eq.${eventId}` }, () => {
-        fetchEventAndStats();
-        refetchLeaderboard();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'likes' }, () => {
-        fetchEventAndStats();
-        refetchPosts();
-        refetchLeaderboard();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'comments' }, () => {
-        fetchLiveComments();
-        const pid = featuredPostIdRef.current;
-        if (pid) {
-          supabase.from('comments').select('id, content, created_at, user:users(full_name)').eq('post_id', pid).order('created_at', { ascending: false }).limit(10).then(({ data }: any) => setFeaturedComments(data ?? []));
-        }
-        refetchLeaderboard();
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'event_members', filter: `event_id=eq.${eventId}` }, () => {
-        fetchEventAndStats();
-        refetchLeaderboard();
-      })
-      .subscribe();
     return () => {
       clearInterval(interval);
       clearInterval(leaderboardInterval);
-      supabase.removeChannel(ch);
     };
-  }, [eventId, fetchEventAndStats, refetchPosts, refetchLeaderboard]);
+  }, [eventId, fetchEventAndStats, refetchLeaderboard]);
 
   useEffect(() => {
     if (!featuredPost?.id || !supabase) {
@@ -568,22 +539,35 @@ export default function WallPageContent() {
       return;
     }
     supabase
-      .from('comments')
-      .select('id, content, created_at, user:users(full_name)')
-      .eq('post_id', featuredPost.id)
-      .order('created_at', { ascending: false })
-      .limit(10)
-      .then(({ data }: any) => setFeaturedComments(data ?? []));
+      .rpc('get_live_wall_comments_for_post', { p_post_id: featuredPost.id, p_limit: 10 })
+      .then(({ data }: any) => setFeaturedComments(Array.isArray(data) ? data : []));
   }, [featuredPost?.id]);
 
-  // Rotate featured post every 15s if multiple posts
+  // Rotate every 15s — use refs so polling/stats updates don't reset the timer
+  const postsRef = useRef(posts);
+  postsRef.current = posts;
+  const photoOfHourRef = useRef(engagement.photoOfHourPostId);
+  photoOfHourRef.current = engagement.photoOfHourPostId;
+
   useEffect(() => {
     if (posts.length <= 1) return;
     const t = setInterval(() => {
-      setFeaturedIndex((i) => (i + 1) % posts.length);
+      const list = postsRef.current;
+      if (list.length <= 1) return;
+      const next = pickNextFeaturedIndex({
+        posts: list,
+        shownIds: shownIdsRef.current,
+        fromIndex: rotationCursorRef.current,
+        photoOfHourPostId: photoOfHourRef.current,
+        pohBonusUsed: pohBonusUsedRef.current,
+      });
+      shownIdsRef.current = next.shownIds;
+      pohBonusUsedRef.current = next.pohBonusUsed;
+      rotationCursorRef.current = next.index;
+      setFeaturedIndex(next.index);
     }, 15000);
     return () => clearInterval(t);
-  }, [posts.length]);
+  }, [posts.length > 1]);
 
   useEffect(() => {
     if (typeof document === 'undefined') return;
@@ -780,7 +764,6 @@ export default function WallPageContent() {
                 return (
                   <SingleSponsorSweepRail
                     sponsor={liveWallSponsors[0]!}
-                    slotRadius={SLOT_RADIUS}
                     isMobile={isMobile}
                     windowWidth={windowWidth}
                   />
@@ -798,7 +781,8 @@ export default function WallPageContent() {
                 boxSizing: 'border-box' as const,
                 borderRadius: SLOT_RADIUS,
                 overflow: 'hidden' as const,
-                background: 'transparent',
+                background: 'rgba(255, 255, 255, 0.92)',
+                padding: isMobile ? '4px 8px' : '5px 10px',
                 flexShrink: 0,
                 lineHeight: 0,
               };
@@ -809,6 +793,7 @@ export default function WallPageContent() {
                 height: '100%' as const,
                 objectFit: 'contain' as const,
                 objectPosition: 'center' as const,
+                background: 'transparent' as const,
               };
 
               const renderTile = (s: (typeof liveWallSponsors)[number], roundKey: string) => {

@@ -1,12 +1,15 @@
 import { View, TouchableOpacity, StyleSheet, Text } from 'react-native';
-import { Stack, useRouter } from 'expo-router';
+import { Stack, useNavigation, useRouter } from 'expo-router';
 import { ChevronLeft, User } from 'lucide-react-native';
 import { colors } from '../../../constants/colors';
 import { flatNativeStackHeaderStyle } from '../../../constants/headerStyle';
+import { useEventThemeColor } from '../../../lib/eventTheme';
+import { navigateToFeedRoot } from '../../../lib/navigateToFeedRoot';
 import HeaderNotificationBell from '../../../components/HeaderNotificationBell';
 
 function HeaderProfileButton() {
   const router = useRouter();
+  const themeColor = useEventThemeColor();
   return (
     <TouchableOpacity
       onPress={() => router.push('/(tabs)/profile')}
@@ -14,24 +17,23 @@ function HeaderProfileButton() {
       hitSlop={12}
       activeOpacity={0.85}
     >
-      <User size={24} color={colors.primary} strokeWidth={2} />
+      <User size={24} color={themeColor} strokeWidth={2} />
     </TouchableOpacity>
   );
 }
 
 function HeaderFeedBackButton() {
-  const router = useRouter();
+  const navigation = useNavigation();
+  const themeColor = useEventThemeColor();
   return (
     <TouchableOpacity
-      onPress={() => {
-        router.replace('/(tabs)/feed' as any);
-      }}
+      onPress={() => navigateToFeedRoot(navigation)}
       style={headerStyles.backBtn}
       hitSlop={12}
       activeOpacity={0.85}
     >
-      <ChevronLeft size={20} color={colors.primary} strokeWidth={2.25} />
-      <Text style={headerStyles.backText}>Feed</Text>
+      <ChevronLeft size={20} color={themeColor} strokeWidth={2.25} />
+      <Text style={[headerStyles.backText, { color: themeColor }]}>Feed</Text>
     </TouchableOpacity>
   );
 }

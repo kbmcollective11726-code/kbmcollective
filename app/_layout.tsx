@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { StyleSheet, Platform, View, Text, LogBox, AppState, AppStateStatus } from 'react-native';
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
@@ -10,19 +10,32 @@ import Toast from 'react-native-toast-message';
 import { useAuthStore } from '../stores/authStore';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import NotificationFeedbackListener from '../components/NotificationFeedbackListener';
-import { abortAllRequests, supabase, isSupabaseConfigured, startForegroundRefresh, awaitForegroundRefresh, testSupabaseConnection } from '../lib/supabase';
+import { isSupabaseConfigured, startForegroundRefresh, awaitForegroundRefresh, testSupabaseConnection } from '../lib/supabase';
 import { notifyAfterSessionRefreshed } from '../lib/onSessionRefreshed';
 import { registerPushToken } from '../lib/pushNotifications';
 import { ensureAndroidNotificationChannel } from '../lib/notificationChannel';
 import { isOtaUpdatesEnabled, prefetchAppUpdateOnResume, syncAppUpdateOnLaunch } from '../lib/appUpdates';
+import { captureLaunchDeepLink } from '../lib/captureLaunchDeepLink';
+import { hydratePendingBadgeToken, peekPendingBadgeToken } from '../lib/pendingBadgeUrl';
+import { hydratePendingPasswordRecoveryUrl, peekPendingPasswordRecoveryUrl } from '../lib/pendingRecoveryUrl';
 
-SplashScreen.preventAutoHideAsync();
+import { initSentry, Sentry } from '../lib/sentry';
+
+SplashScreen.preventAutoHideAsync().catch(() => {});
+initSentry();
+// Capture QR / deep-link URL before OTA/auth so we don't lose it on cold start.
+void captureLaunchDeepLink();
+void hydratePendingBadgeToken();
+// Failsafe only — keep the native splash until index navigates (avoids logo → Loading → Stuck).
+setTimeout(() => {
+  SplashScreen.hideAsync().catch(() => {});
+}, 8000);
 
 // Suppress known harmless Expo Go/Android noise (keep-awake during camera/media; Metro may still log promise rejections).
 LogBox.ignoreLogs(['Unable to activate keep awake', 'Uncaught (in promise']);
 
 function setupPushNotifications() {
-  if (Constants.appOwnership === 'expo') return;
+  if (Constants.appOwnership === 'expo' || Platform.OS === 'web') return;
   const Notifications = require('expo-notifications');
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
@@ -40,54 +53,68 @@ function setupPushNotifications() {
 
 setupPushNotifications();
 
-const SPLASH_HIDE_MAX_MS = 500;
-
-export default function RootLayout() {
-  const { initialize, isLoading } = useAuthStore();
-  const splashHidden = useRef(false);
+function RootLayout() {
+  const { initialize } = useAuthStore();
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
-  const [otaReady, setOtaReady] = useState(!isOtaUpdatesEnabled());
+  const backgroundedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
-    if (otaReady) return;
+    initialize();
+  }, [initialize]);
+
+  // Native splash stays up until app/index navigates (or the 8s failsafe above).
+  // Do not hide early on isLoading — that caused logo → white Loading → Stuck.
+
+  // OTA on launch. Recovery URLs are persisted to storage so an update reload does not lose the link.
+  useEffect(() => {
+    if (!isOtaUpdatesEnabled()) return;
     let cancelled = false;
-    void syncAppUpdateOnLaunch().finally(() => {
-      if (!cancelled) setOtaReady(true);
-    });
+    void (async () => {
+      await Promise.all([
+        captureLaunchDeepLink(),
+        hydratePendingPasswordRecoveryUrl(),
+        hydratePendingBadgeToken(),
+      ]);
+      if (cancelled) return;
+      // Don't block or reload during badge QR / password-reset cold starts.
+      if (peekPendingBadgeToken() || peekPendingPasswordRecoveryUrl()) return;
+      await syncAppUpdateOnLaunch();
+    })();
     return () => {
       cancelled = true;
     };
-  }, [otaReady]);
+  }, []);
 
-  useEffect(() => {
-    if (!otaReady) return;
-    initialize();
-  }, [initialize, otaReady]);
-
-  // When app returns from background: abort stale requests, refresh Supabase session, then notify screens.
+  // Refresh after a real background period. Camera and permission screens cause
+  // brief inactive/background transitions; treating those as a full resume used
+  // to cancel the photo upload and start every screen refetch at once.
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
       const prev = appStateRef.current;
       appStateRef.current = state;
       if (state === 'background') {
-        abortAllRequests();
+        backgroundedAtRef.current = Date.now();
       }
       if (state === 'active') {
-        if (prev === 'background' || prev === 'inactive') {
-          void prefetchAppUpdateOnResume();
-          const uid = useAuthStore.getState().session?.user?.id;
-          if (uid && Constants.appOwnership !== 'expo') {
-            registerPushToken(uid).catch(() => {});
-          }
+        const backgroundedAt = backgroundedAtRef.current;
+        backgroundedAtRef.current = null;
+        const backgroundDurationMs =
+          backgroundedAt === null ? 0 : Date.now() - backgroundedAt;
+        const resumedAfterMeaningfulBackground =
+          prev === 'background' && backgroundDurationMs >= 15_000;
+        if (!resumedAfterMeaningfulBackground) return;
+
+        void prefetchAppUpdateOnResume();
+        const uid = useAuthStore.getState().session?.user?.id;
+        if (uid && Constants.appOwnership !== 'expo') {
+          registerPushToken(uid).catch(() => {});
         }
-        abortAllRequests(); // clear any stale connections
         startForegroundRefresh();
         awaitForegroundRefresh().then(() => {
           notifyAfterSessionRefreshed();
         }).catch(() => {
           notifyAfterSessionRefreshed();
         });
-        // Dev-only: after 2s log whether device can reach Supabase (helps debug "Request timed out" after resume).
         if (__DEV__ && isSupabaseConfigured) {
           setTimeout(() => {
             testSupabaseConnection().then(({ ok, message }) => {
@@ -101,28 +128,10 @@ export default function RootLayout() {
     return () => sub.remove();
   }, []);
 
-  // Re-apply Android channel after mount (covers cold start ordering vs token registration).
   useEffect(() => {
     void ensureAndroidNotificationChannel();
   }, []);
 
-  // Hide splash quickly so we never get stuck on white/blue in Expo Go
-  useEffect(() => {
-    const hide = () => {
-      if (splashHidden.current) return;
-      splashHidden.current = true;
-      SplashScreen.hideAsync().catch(() => {});
-    };
-    if (!isLoading) {
-      hide();
-      return;
-    }
-    if (!otaReady) return;
-    const t = setTimeout(hide, SPLASH_HIDE_MAX_MS);
-    return () => clearTimeout(t);
-  }, [isLoading, otaReady]);
-
-  // Expo Go only: if Supabase URL wasn't loaded into the bundle, pages will never load. Show clear message.
   const isExpoGo = Constants.appOwnership === 'expo';
   if (isExpoGo && !isSupabaseConfigured) {
     SplashScreen.hideAsync().catch(() => {});
@@ -153,9 +162,13 @@ export default function RootLayout() {
           <NotificationFeedbackListener />
           <Stack screenOptions={{ headerShown: false }}>
             <Stack.Screen name="index" />
+            <Stack.Screen name="badge" options={{ animation: 'fade' }} />
             <Stack.Screen name="(auth)" options={{ animation: 'fade' }} />
             <Stack.Screen name="(tabs)" options={{ animation: 'fade' }} />
-            <Stack.Screen name="post" options={{ presentation: 'modal', animation: 'slide_from_bottom' }} />
+            <Stack.Screen
+              name="post"
+              options={{ presentation: 'fullScreenModal', animation: 'slide_from_bottom' }}
+            />
           </Stack>
         </ErrorBoundary>
       </SafeAreaProvider>
@@ -197,3 +210,5 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
 });
+
+export default Sentry.wrap(RootLayout);

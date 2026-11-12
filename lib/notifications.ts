@@ -16,7 +16,8 @@ export type NotificationType =
 
 /**
  * Create an in-app notification for a user.
- * Used when someone likes a post, comments, sends a DM, etc.
+ * Used when someone likes a post, comments, etc. Prefer push-only for chat messages
+ * (Chat hub + unread badges cover in-app messaging).
  */
 export async function createNotification(
   userId: string,
@@ -57,12 +58,15 @@ export async function createNotificationAndPush(
   const result = await createNotification(userId, eventId, type, title, body, data);
   if (result.error) return result;
   // Send push so the user gets a device notification (in-app record already created above)
+  // Connection requests go as a peer push from the requester; otherwise the server treats them as an admin broadcast.
+  const isConnectionRequest = type === 'connection_request';
   const pushResult = await sendPushToUser(userId, title, body ?? '', {
     eventId: eventId ?? undefined,
     postId: data?.post_id as string | undefined,
-    chatUserId: data?.chat_user_id as string | undefined,
+    chatUserId: (data?.chat_user_id ?? (isConnectionRequest ? data?.requester_id : undefined)) as string | undefined,
     groupId: data?.group_id as string | undefined,
     boothId: data?.booth_id as string | undefined,
+    kind: isConnectionRequest ? 'connection_request' : undefined,
   });
   if (pushResult.error) {
     console.warn('[notifications] Push failed (in-app notification was saved):', pushResult.error);

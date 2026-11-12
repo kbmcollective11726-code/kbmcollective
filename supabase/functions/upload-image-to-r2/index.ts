@@ -1,29 +1,87 @@
 // Proxy upload: app sends image as base64, function uploads to R2 and returns public URL.
-// transform "event-banner" letterboxes to 1200×750 (same as cadmin).
-// processOnly returns letterboxed base64 without uploading (for storage fallbacks).
+// processOnly returns validated base64 without uploading (for storage fallbacks).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { S3Client, PutObjectCommand } from "npm:@aws-sdk/client-s3@3.700.0";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
-import { Image } from "npm:imagescript@1.3.0";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",
-};
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
 const MAX_BODY_BYTES = 6 * 1024 * 1024; // 6MB
-const BANNER_W = 1200;
-const BANNER_H = 750;
-const BANNER_JPEG_QUALITY = 82;
-/** Matches lib/eventBanner.ts EVENT_BANNER_LETTERBOX_BG */
-const BANNER_FILL = 0x0c1f3dff;
 
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "Content-Type": "application/json", ...headers },
   });
+}
+
+const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const EVENT_KEY_PATTERN = new RegExp(`^event-photos/(${UUID_SOURCE})/(.+)$`, "i");
+const AVATAR_KEY_PATTERN = new RegExp(`^avatars/(${UUID_SOURCE})/avatar_\\d+\\.(?:jpe?g|png)$`, "i");
+const ALLOWED_CONTENT_TYPES = new Set(["image/jpeg", "image/png"]);
+
+async function authorizeR2Upload(
+  client: SupabaseClient,
+  userId: string,
+  key: string,
+  contentType: string,
+): Promise<{ allowed: boolean; reason?: string }> {
+  if (
+    !key || key.length > 500 || key.includes("..") || key.startsWith("/") ||
+    key.includes("\\") || !ALLOWED_CONTENT_TYPES.has(contentType)
+  ) {
+    return { allowed: false, reason: "Invalid image path or content type." };
+  }
+  const avatarMatch = key.match(AVATAR_KEY_PATTERN);
+  if (avatarMatch) {
+    return avatarMatch[1]?.toLowerCase() === userId.toLowerCase()
+      ? { allowed: true }
+      : { allowed: false, reason: "Avatar path must belong to the signed-in user." };
+  }
+  const eventMatch = key.match(EVENT_KEY_PATTERN);
+  if (!eventMatch) return { allowed: false, reason: "Unsupported image path." };
+
+  const eventId = eventMatch[1]!;
+  const relativePath = eventMatch[2]!;
+  const escapedUserId = userId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const ownedFile = `${escapedUserId}_\\d+\\.(?:jpe?g|png)`;
+  const memberPath = new RegExp(
+    `^(?:${ownedFile}|(?:chat|group-chat|vendor-logos|registration-headshots)/${ownedFile})$`,
+    "i",
+  );
+  const registrantPath = new RegExp(`^(?:vendor-logos|registration-headshots)/${ownedFile}$`, "i");
+  const adminPath = new RegExp(
+    `^(?:banner_\\d+\\.jpe?g|badge_banner_\\d+\\.jpe?g|portal_banner_\\d+\\.jpe?g|${ownedFile}|(?:chat|group-chat|vendor-logos|registration-headshots|sponsor-logos)/${ownedFile})$`,
+    "i",
+  );
+  const [
+    { data: platformAdmin },
+    { data: eventAdmin },
+    { data: membership },
+    { data: registration },
+    { data: matchmakingSettings },
+  ] = await Promise.all([
+    client.rpc("is_platform_admin", { p_user_id: userId }),
+    client.rpc("is_event_admin", { p_event_id: eventId }),
+    client.from("event_members").select("user_id").eq("event_id", eventId).eq("user_id", userId).maybeSingle(),
+    client.from("event_registration_submissions").select("id").eq("event_id", eventId).eq("user_id", userId).limit(1).maybeSingle(),
+    client
+      .from("event_matchmaking_settings")
+      .select("registration_open")
+      .eq("event_id", eventId)
+      .maybeSingle(),
+  ]);
+  if (platformAdmin === true || eventAdmin === true) {
+    return adminPath.test(relativePath) ? { allowed: true } : { allowed: false, reason: "Image path is not allowed for this event." };
+  }
+  if (membership) {
+    return memberPath.test(relativePath) ? { allowed: true } : { allowed: false, reason: "Image path is not allowed for event members." };
+  }
+  if (registration || (matchmakingSettings as { registration_open?: boolean } | null)?.registration_open) {
+    return registrantPath.test(relativePath)
+      ? { allowed: true }
+      : { allowed: false, reason: "Registration uploads must use the assigned event folder." };
+  }
+  return { allowed: false, reason: "You do not have access to upload images for this event." };
 }
 
 function base64ToUint8Array(base64: string): Uint8Array {
@@ -42,63 +100,45 @@ function uint8ArrayToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function sampleEdgeColor(img: Image): number {
-  const w = img.width;
-  const h = img.height;
-  const points: [number, number][] = [
-    [1, 1],
-    [w, 1],
-    [1, h],
-    [w, h],
-    [Math.max(1, Math.floor(w / 2)), 1],
-    [Math.max(1, Math.floor(w / 2)), h],
-  ];
-  let r = 0;
-  let g = 0;
-  let b = 0;
-  for (const [x, y] of points) {
-    const p = img.getPixelAt(x, y);
-    r += (p >> 24) & 0xff;
-    g += (p >> 16) & 0xff;
-    b += (p >> 8) & 0xff;
+/** Reject non-image payloads even if Content-Type claims jpeg/png. */
+function detectImageMime(bytes: Uint8Array): "image/jpeg" | "image/png" | null {
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
   }
-  const n = points.length;
-  return (((Math.round(r / n) << 24) | (Math.round(g / n) << 16) | (Math.round(b / n) << 8) | 0xff) >>> 0);
-}
-
-async function letterboxEventBanner(bytes: Uint8Array): Promise<Uint8Array> {
-  const img = await Image.decode(bytes);
-  const scale = Math.min(BANNER_W / img.width, BANNER_H / img.height);
-  const drawW = Math.round(img.width * scale);
-  const drawH = Math.round(img.height * scale);
-  const dx = Math.round((BANNER_W - drawW) / 2);
-  const dy = Math.round((BANNER_H - drawH) / 2);
-  const fill =
-    Math.abs(drawW - BANNER_W) < 2 && Math.abs(drawH - BANNER_H) < 2 ? BANNER_FILL : sampleEdgeColor(img);
-  const canvas = new Image(BANNER_W, BANNER_H);
-  canvas.fill(fill);
-  const resized = img.resize(drawW, drawH);
-  canvas.composite(resized, dx, dy);
-  return await canvas.encodeJPEG(BANNER_JPEG_QUALITY);
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47 &&
+    bytes[4] === 0x0d &&
+    bytes[5] === 0x0a &&
+    bytes[6] === 0x1a &&
+    bytes[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+  return null;
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return json({ error: "Authorization required" }, 401);
+    return json({ error: "Authorization required" }, 401, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   if (!supabaseUrl || !anonKey) {
-    return json({ error: "Server configuration error" }, 500);
+    return json({ error: "Server configuration error" }, 500, ch);
   }
 
   const client = createClient(supabaseUrl, anonKey, {
@@ -106,7 +146,13 @@ Deno.serve(async (req: Request) => {
   });
   const { data: { user } } = await client.auth.getUser(authHeader.slice(7));
   if (!user?.id) {
-    return json({ error: "Invalid token" }, 401);
+    return json({ error: "Invalid token" }, 401, ch);
+  }
+  const { data: accountActive } = await client.rpc("is_account_active", {
+    p_user_id: user.id,
+  });
+  if (accountActive !== true) {
+    return json({ error: "Account is deactivated" }, 403, ch);
   }
 
   let body: {
@@ -119,7 +165,7 @@ Deno.serve(async (req: Request) => {
   try {
     body = await req.json();
   } catch {
-    return json({ error: "Invalid JSON body" }, 400);
+    return json({ error: "Invalid JSON body" }, 400, ch);
   }
 
   const processOnly = body.processOnly === true;
@@ -129,36 +175,35 @@ Deno.serve(async (req: Request) => {
   const transform = typeof body.transform === "string" ? body.transform.trim() : "";
 
   if (!base64) {
-    return json({ error: "Missing base64 image" }, 400);
+    return json({ error: "Missing base64 image" }, 400, ch);
   }
   if (processOnly && transform !== "event-banner") {
-    return json({ error: "processOnly requires event-banner transform" }, 400);
-  }
-  if (!processOnly && (!key || key.includes("..") || key.startsWith("/"))) {
-    return json({ error: "Invalid key" }, 400);
+    return json({ error: "processOnly requires event-banner transform" }, 400, ch);
   }
 
   let bytes: Uint8Array;
   try {
     bytes = base64ToUint8Array(base64);
   } catch {
-    return json({ error: "Invalid base64" }, 400);
+    return json({ error: "Invalid base64" }, 400, ch);
   }
   if (bytes.length > MAX_BODY_BYTES) {
-    return json({ error: "Image too large" }, 413);
+    return json({ error: "Image too large" }, 413, ch);
   }
 
-  if (transform === "event-banner") {
-    try {
-      bytes = await letterboxEventBanner(bytes);
-    } catch (err) {
-      console.error("Banner letterbox error:", err);
-      return json({ error: "Could not process banner image" }, 400);
-    }
+  const detected = detectImageMime(bytes);
+  if (!detected) {
+    return json({ error: "File must be a JPEG or PNG image" }, 400, ch);
   }
+  const resolvedType = detected;
 
   if (processOnly) {
-    return json({ base64: uint8ArrayToBase64(bytes) });
+    return json({ base64: uint8ArrayToBase64(bytes), contentType: resolvedType });
+  }
+
+  const authorization = await authorizeR2Upload(client, user.id, key, resolvedType);
+  if (!authorization.allowed) {
+    return json({ error: authorization.reason ?? "Upload is not allowed" }, 403, ch);
   }
 
   const accountId = Deno.env.get("R2_ACCOUNT_ID");
@@ -167,7 +212,7 @@ Deno.serve(async (req: Request) => {
   const bucket = Deno.env.get("R2_BUCKET_NAME");
   const publicBaseUrl = Deno.env.get("R2_PUBLIC_URL");
   if (!accountId || !accessKeyId || !secretAccessKey || !bucket || !publicBaseUrl) {
-    return json({ error: "R2 not configured" }, 503);
+    return json({ error: "R2 not configured" }, 503, ch);
   }
 
   const endpoint = `https://${accountId}.r2.cloudflarestorage.com`;
@@ -183,13 +228,14 @@ Deno.serve(async (req: Request) => {
         Bucket: bucket,
         Key: key,
         Body: bytes,
-        ContentType: contentType,
+        ContentType: resolvedType,
+        ContentLength: bytes.length,
       })
     );
     const publicUrl = `${publicBaseUrl.replace(/\/$/, "")}/${key}`;
     return json({ publicUrl });
   } catch (err) {
     console.error("R2 upload error:", err);
-    return json({ error: "Failed to upload to R2" }, 500);
+    return json({ error: "Failed to upload to R2" }, 500, ch);
   }
 });

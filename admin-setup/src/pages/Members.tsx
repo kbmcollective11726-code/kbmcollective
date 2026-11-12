@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase, supabaseUrl, edgeFunctionHeaders } from '../lib/supabase';
 import { adminResetUserPassword } from '../lib/adminResetUserPassword';
+import { setAccountActive } from '../lib/setAccountActive';
 import TransferMeetingsModal from '../components/TransferMeetingsModal';
 import type { MemberPickOption } from '../components/MemberSearchSelect';
 import type { Event } from '../lib/types';
@@ -12,13 +13,33 @@ type MemberRow = {
   full_name: string;
   email: string;
   role: string;
+  /** Full membership roles (e.g. attendee + speaker). */
+  roles: string[];
   last_login_at: string | null;
+  is_active: boolean;
+  is_platform_admin: boolean;
   title: string | null;
   company: string | null;
   phone: string | null;
   linkedin_url: string | null;
   bio: string | null;
 };
+
+const PRIMARY_ROLES = ['attendee', 'vendor', 'admin'] as const;
+
+/** Prefer registration/admin primary; keep speaker as overlay when both apply. */
+function computePrimaryRole(roles: string[]): string {
+  if (roles.includes('admin')) return 'admin';
+  if (roles.includes('vendor')) return 'vendor';
+  if (roles.includes('attendee')) return 'attendee';
+  if (roles.includes('speaker')) return 'speaker';
+  return roles[0] ?? 'attendee';
+}
+
+function normalizeMemberRoles(primary: string, roles: string[] | null | undefined): string[] {
+  const list = [...new Set([primary, ...(roles ?? [])].filter(Boolean))];
+  return list.length > 0 ? list : [primary || 'attendee'];
+}
 
 /** Fewer pages for long rosters; search still narrows the full list before slicing */
 const PAGE_SIZE = 20;
@@ -237,16 +258,19 @@ export type CsvMemberRow = {
   roles?: string[];
 };
 
-/** Parse role cell into valid roles (deduped, order preserved). Empty → [fallback]. */
+/** Parse role cell into valid roles (deduped, order preserved). Empty → [fallback].
+ *  Accepts `delegate` as an alias for `attendee`. */
 function rolesFromCsvCell(roleCellRaw: string, fallback: string): string[] {
   const fb = ROLES.includes(fallback as (typeof ROLES)[number]) ? fallback : 'attendee';
   const cell = roleCellRaw.trim().toLowerCase();
   if (!cell) return [fb];
   const parts = cell.split(',').map((p) => p.trim().toLowerCase()).filter(Boolean);
-  const valid = parts.filter((p) => ROLES.includes(p as (typeof ROLES)[number]));
+  const mapped = parts.map((p) => (p === 'delegate' ? 'attendee' : p));
+  const valid = mapped.filter((p) => ROLES.includes(p as (typeof ROLES)[number]));
   const deduped = [...new Set(valid)];
   if (deduped.length > 0) return deduped;
-  if (ROLES.includes(cell as (typeof ROLES)[number])) return [cell];
+  const single = cell === 'delegate' ? 'attendee' : cell;
+  if (ROLES.includes(single as (typeof ROLES)[number])) return [single];
   return [fb];
 }
 
@@ -376,6 +400,8 @@ type JoinedUser = {
   full_name: string;
   email: string;
   last_login_at: string | null;
+  is_active?: boolean | null;
+  is_platform_admin?: boolean | null;
   title: string | null;
   company: string | null;
   phone: string | null;
@@ -386,17 +412,26 @@ type JoinedUser = {
 type JoinedMemberRow = {
   user_id: string;
   role: string;
+  roles?: string[] | null;
+  is_active?: boolean | null;
   users: JoinedUser | JoinedUser[];
 };
 
 function memberRowFromJoin(r: JoinedMemberRow): MemberRow {
   const u = Array.isArray(r.users) ? r.users[0] : r.users;
+  const roles = normalizeMemberRoles(r.role, r.roles);
+  const membershipActive = r.is_active !== false;
+  const accountActive = u?.is_active !== false;
   return {
     user_id: r.user_id,
     full_name: u?.full_name ?? '',
     email: u?.email ?? '',
-    role: r.role,
+    role: r.role || computePrimaryRole(roles),
+    roles,
     last_login_at: u?.last_login_at ?? null,
+    // Event roster toggle reflects membership access (not global Auth ban).
+    is_active: membershipActive && accountActive,
+    is_platform_admin: u?.is_platform_admin === true,
     title: u?.title ?? null,
     company: u?.company ?? null,
     phone: u?.phone ?? null,
@@ -422,10 +457,30 @@ function formatLastLoginCell(lastLoginAt: string | null): string {
 }
 
 async function fetchEventMembersWithOptionalLastLogin(eventId: string) {
+  const withMembershipActive = await supabase
+    .from('event_members')
+    .select(
+      'user_id, role, roles, is_active, users!inner(full_name, email, last_login_at, is_active, is_platform_admin, title, company, linkedin_url, bio)'
+    )
+    .eq('event_id', eventId)
+    .order('role');
+
+  if (!withMembershipActive.error) return withMembershipActive;
+
+  const withActive = await supabase
+    .from('event_members')
+    .select(
+      'user_id, role, roles, users!inner(full_name, email, last_login_at, is_active, is_platform_admin, title, company, linkedin_url, bio)'
+    )
+    .eq('event_id', eventId)
+    .order('role');
+
+  if (!withActive.error) return withActive;
+
   const withLastLogin = await supabase
     .from('event_members')
     .select(
-      'user_id, role, users!inner(full_name, email, last_login_at, title, company, phone, linkedin_url, bio)'
+      'user_id, role, roles, users!inner(full_name, email, last_login_at, title, company, linkedin_url, bio)'
     )
     .eq('event_id', eventId)
     .order('role');
@@ -436,10 +491,30 @@ async function fetchEventMembersWithOptionalLastLogin(eventId: string) {
   return supabase
     .from('event_members')
     .select(
-      'user_id, role, users!inner(full_name, email, title, company, phone, linkedin_url, bio)'
+      'user_id, role, roles, users!inner(full_name, email, title, company, linkedin_url, bio)'
     )
     .eq('event_id', eventId)
     .order('role');
+}
+
+/** Phone is not directly SELECT-able on users; hydrate via networking contact RPC. */
+async function attachMemberPhones(list: MemberRow[]): Promise<MemberRow[]> {
+  if (list.length === 0) return list;
+  const phones = await Promise.all(
+    list.map(async (m) => {
+      const { data } = await supabase.rpc('get_user_networking_contact', { p_user_id: m.user_id });
+      const row = Array.isArray(data) ? data[0] : data;
+      return (row as { phone?: string | null } | null)?.phone ?? null;
+    }),
+  );
+  return list.map((m, i) => ({ ...m, phone: phones[i] ?? null }));
+}
+
+async function loadMemberRows(eventId: string): Promise<MemberRow[]> {
+  const { data: rows, error } = await fetchEventMembersWithOptionalLastLogin(eventId);
+  if (error) throw error;
+  const list = (rows ?? []).map((r) => memberRowFromJoin(r as JoinedMemberRow));
+  return attachMemberPhones(list);
 }
 
 export default function Members() {
@@ -469,7 +544,8 @@ export default function Members() {
   const [updatingRole, setUpdatingRole] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
   const [memberSearch, setMemberSearch] = useState('');
-  const [loginFilter, setLoginFilter] = useState<'all' | 'never'>('all');
+  const [loginFilter, setLoginFilter] = useState<'all' | 'never' | 'deactivated'>('all');
+  const [accountStatusBusy, setAccountStatusBusy] = useState<string | null>(null);
   const [page, setPage] = useState(1);
   const [editingMember, setEditingMember] = useState<MemberRow | null>(null);
   const [transferSource, setTransferSource] = useState<MemberRow | null>(null);
@@ -593,6 +669,8 @@ export default function Members() {
     let list = members;
     if (loginFilter === 'never') {
       list = list.filter((m) => !m.last_login_at);
+    } else if (loginFilter === 'deactivated') {
+      list = list.filter((m) => !m.is_active);
     }
     const q = memberSearch.trim().toLowerCase();
     if (!q) return list;
@@ -601,7 +679,9 @@ export default function Members() {
         m.full_name.toLowerCase().includes(q) ||
         m.email.toLowerCase().includes(q) ||
         m.role.toLowerCase().includes(q) ||
-        m.user_id.toLowerCase().includes(q)
+        m.roles.some((r) => r.toLowerCase().includes(q)) ||
+        m.user_id.toLowerCase().includes(q) ||
+        (!m.is_active && 'deactivated'.includes(q))
     );
   }, [members, memberSearch, loginFilter]);
 
@@ -633,23 +713,52 @@ export default function Members() {
     membersListStartRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, [page, totalPages]);
 
-  const handleRoleChange = async (userId: string, newRole: string) => {
+  const saveMemberRoles = async (userId: string, nextRoles: string[]) => {
     if (!eventId) return;
-    const role = ROLES.includes(newRole as (typeof ROLES)[number]) ? newRole : 'attendee';
+    const roles = normalizeMemberRoles(computePrimaryRole(nextRoles), nextRoles);
+    const role = computePrimaryRole(roles);
     setUpdatingRole(userId);
     try {
       const { error } = await supabase
         .from('event_members')
-        .update({ role, roles: [role] })
+        .update({ role, roles })
         .eq('event_id', eventId)
         .eq('user_id', userId);
       if (error) throw error;
-      setMembers((prev) => prev.map((m) => (m.user_id === userId ? { ...m, role } : m)));
+      setMembers((prev) =>
+        prev.map((m) => (m.user_id === userId ? { ...m, role, roles } : m))
+      );
     } catch {
       alert('Failed to update role');
     } finally {
       setUpdatingRole(null);
     }
+  };
+
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    const member = members.find((m) => m.user_id === userId);
+    if (!member) return;
+    const role = ROLES.includes(newRole as (typeof ROLES)[number]) ? newRole : 'attendee';
+    const keepSpeaker = member.roles.includes('speaker') && role !== 'speaker';
+    const nextRoles =
+      role === 'speaker'
+        ? ['speaker']
+        : keepSpeaker
+          ? [role, 'speaker']
+          : [role];
+    await saveMemberRoles(userId, nextRoles);
+  };
+
+  const handleSpeakerToggle = async (userId: string) => {
+    const member = members.find((m) => m.user_id === userId);
+    if (!member) return;
+    const isSpeaker = member.roles.includes('speaker');
+    if (isSpeaker) {
+      const without = member.roles.filter((r) => r !== 'speaker');
+      await saveMemberRoles(userId, without.length > 0 ? without : [member.role === 'speaker' ? 'attendee' : member.role]);
+      return;
+    }
+    await saveMemberRoles(userId, [...member.roles, 'speaker']);
   };
 
   const handleRemoveMember = async (userId: string, fullName: string) => {
@@ -666,6 +775,45 @@ export default function Members() {
     }
   };
 
+  const handleAccountActiveToggle = async (m: MemberRow) => {
+    if (m.is_platform_admin) {
+      alert('Platform admin accounts can only be changed under Platform → All users.');
+      return;
+    }
+    const makeActive = !m.is_active;
+    const label = m.full_name || m.email;
+    if (makeActive) {
+      if (
+        !confirm(
+          `Restore "${label}" to this event?\n\nThey will regain access to this event only (not a global account unlock).`
+        )
+      ) {
+        return;
+      }
+    } else if (
+      !confirm(
+        `Suspend "${label}" from this event?\n\nThey lose access to this event only. Their account stays active elsewhere until a platform admin deactivates it globally.`
+      )
+    ) {
+      return;
+    }
+    setAccountStatusBusy(m.user_id);
+    try {
+      await setAccountActive({
+        userId: m.user_id,
+        isActive: makeActive,
+        eventId,
+      });
+      setMembers((prev) =>
+        prev.map((row) => (row.user_id === m.user_id ? { ...row, is_active: makeActive } : row))
+      );
+    } catch (e) {
+      alert(e instanceof Error ? e.message : 'Could not update account status');
+    } finally {
+      setAccountStatusBusy(null);
+    }
+  };
+
   useEffect(() => {
     if (!eventId) return;
     let cancelled = false;
@@ -673,11 +821,10 @@ export default function Members() {
       try {
         const { data: eventData } = await supabase.from('events').select('id, name').eq('id', eventId).single();
         if (eventData && !cancelled) setEvent(eventData as Event);
-        const { data: rows, error } = await fetchEventMembersWithOptionalLastLogin(eventId);
-        if (error) throw error;
-        const list: MemberRow[] = (rows ?? []).map((r) => memberRowFromJoin(r as JoinedMemberRow));
+        const list = await loadMemberRows(eventId);
         if (!cancelled) setMembers(list);
-      } catch {
+      } catch (err) {
+        console.error('[Members] failed to load roster:', err);
         if (!cancelled) setMembers([]);
       } finally {
         if (!cancelled) setLoading(false);
@@ -688,9 +835,12 @@ export default function Members() {
 
   const reloadMembers = async () => {
     if (!eventId) return;
-    const { data: rows } = await fetchEventMembersWithOptionalLastLogin(eventId);
-    const list: MemberRow[] = (rows ?? []).map((r) => memberRowFromJoin(r as JoinedMemberRow));
-    setMembers(list);
+    try {
+      const list = await loadMemberRows(eventId);
+      setMembers(list);
+    } catch (err) {
+      console.error('[Members] failed to reload roster:', err);
+    }
   };
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -973,7 +1123,8 @@ export default function Members() {
               </li>
               <li>
                 <strong>Optional:</strong> <code>full_name</code>, <code>title</code>, <code>company</code>,{' '}
-                <code>role</code> (e.g. attendee, speaker, vendor, admin — comma-separated for multiple roles)
+                <code>role</code> (e.g. attendee, speaker, vendor, admin — comma-separated for multiple roles;
+                use <code>attendee,speaker</code> or <code>delegate,speaker</code> for a speaking delegate)
               </li>
               <li>If the <code>role</code> column is missing or empty, the default role below is used for each row.</li>
               <li>New emails get the default password. Existing emails are linked to this event (password unchanged).</li>
@@ -1259,15 +1410,19 @@ export default function Members() {
               />
             </div>
             <label className={styles.loginFilterLabel}>
-              <span className={styles.loginFilterLabelText}>Login</span>
+              <span className={styles.loginFilterLabelText}>Filter</span>
               <select
                 className={styles.loginFilterSelect}
                 value={loginFilter}
-                onChange={(e) => setLoginFilter(e.target.value === 'never' ? 'never' : 'all')}
-                aria-label="Filter members by login"
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setLoginFilter(v === 'never' || v === 'deactivated' ? v : 'all');
+                }}
+                aria-label="Filter members"
               >
                 <option value="all">All members</option>
                 <option value="never">Never logged in</option>
+                <option value="deactivated">Suspended from event</option>
               </select>
             </label>
           </div>
@@ -1290,6 +1445,8 @@ export default function Members() {
         <p className={styles.empty}>
           {loginFilter === 'never' && !memberSearch.trim()
             ? 'Everyone on this event has logged in at least once.'
+            : loginFilter === 'deactivated' && !memberSearch.trim()
+              ? 'No deactivated accounts on this event.'
             : memberSearch.trim()
               ? `No members match your search and filters (including "${memberSearch.trim()}").`
               : 'No members match the current filters.'}
@@ -1301,9 +1458,16 @@ export default function Members() {
               <li key={m.user_id} className={styles.item}>
                 <div className={styles.itemRow}>
                   <div className={styles.itemInfo}>
-                    <span className={styles.itemName}>{m.full_name}</span>
+                    <span className={styles.itemName}>
+                      {m.full_name}
+                      {!m.is_active ? (
+                        <span className={styles.deactivatedBadge} title="Cannot sign in until reactivated">
+                          Suspended
+                        </span>
+                      ) : null}
+                    </span>
                     <span className={styles.itemMeta}>
-                      {m.email} · {m.role}
+                      {m.email} · {m.roles.join(', ')}
                       {m.title || m.company ? (
                         <>
                           <br />
@@ -1316,6 +1480,25 @@ export default function Members() {
                     <button type="button" className={styles.editBtn} onClick={() => setEditingMember(m)}>
                       Edit
                     </button>
+                    {!m.is_platform_admin ? (
+                      <button
+                        type="button"
+                        className={m.is_active ? styles.deactivateBtn : styles.reactivateBtn}
+                        onClick={() => void handleAccountActiveToggle(m)}
+                        disabled={accountStatusBusy === m.user_id}
+                        title={
+                          m.is_active
+                            ? 'Block sign-in for this account (they stay on the roster)'
+                            : 'Allow this account to sign in again'
+                        }
+                      >
+                        {accountStatusBusy === m.user_id
+                          ? '…'
+                          : m.is_active
+                            ? 'Suspend from event'
+                            : 'Restore to event'}
+                      </button>
+                    ) : null}
                     <button
                       type="button"
                       className={styles.transferBtn}
@@ -1326,14 +1509,36 @@ export default function Members() {
                     </button>
                     <select
                       className={styles.roleSelect}
-                      value={m.role}
+                      value={PRIMARY_ROLES.includes(m.role as (typeof PRIMARY_ROLES)[number]) ? m.role : m.roles.find((r) => PRIMARY_ROLES.includes(r as (typeof PRIMARY_ROLES)[number])) || m.role}
                       onChange={(e) => handleRoleChange(m.user_id, e.target.value)}
                       disabled={!!updatingRole}
+                      aria-label="Primary role"
+                      title="Primary role (delegate = attendee)"
                     >
-                      {ROLES.map((r) => (
-                        <option key={r} value={r}>{r}</option>
+                      {PRIMARY_ROLES.map((r) => (
+                        <option key={r} value={r}>
+                          {r === 'attendee' ? 'attendee (delegate)' : r}
+                        </option>
                       ))}
+                      {!PRIMARY_ROLES.includes(m.role as (typeof PRIMARY_ROLES)[number]) &&
+                      !m.roles.some((r) => PRIMARY_ROLES.includes(r as (typeof PRIMARY_ROLES)[number])) ? (
+                        <option value={m.role}>{m.role}</option>
+                      ) : null}
                     </select>
+                    <button
+                      type="button"
+                      className={m.roles.includes('speaker') ? styles.speakerTagOn : styles.speakerTagOff}
+                      onClick={() => void handleSpeakerToggle(m.user_id)}
+                      disabled={!!updatingRole}
+                      aria-pressed={m.roles.includes('speaker')}
+                      title={
+                        m.roles.includes('speaker')
+                          ? 'Remove speaker tag — they will leave Community Speakers'
+                          : 'Tag as speaker — shows in Community Speakers in the app'
+                      }
+                    >
+                      {m.roles.includes('speaker') ? 'Speaker ✓' : 'Tag speaker'}
+                    </button>
                     <button
                       type="button"
                       className={styles.removeBtn}

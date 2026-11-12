@@ -6,8 +6,8 @@ import {
 } from './registrationDefaultVisibility';
 
 /**
- * Stage 2 Registration Details — Master Build Spec §5–§6 defaults plus admin custom questions.
- * Respects admin `is_hidden` from Matchmaking setup.
+ * Stage 2 Registration Details — all non-hidden form questions (custom and default).
+ * Respects admin Hide; excludes terms / username / always-hidden leftovers only.
  */
 export function filterRegistrationDetailsQuestions(
   audience: MatchmakingAudience,

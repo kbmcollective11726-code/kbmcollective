@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -22,11 +22,14 @@ import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useBlockStore } from '../../../../stores/blockStore';
 import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
-import { createNotificationAndPush } from '../../../../lib/notifications';
+import { registerRefetchOnSessionRefreshed } from '../../../../lib/onSessionRefreshed';
+import { sendPushToUser } from '../../../../lib/pushNotifications';
 import { pickImage } from '../../../../lib/image';
 import { uploadImage } from '../../../../lib/image';
 import { colors } from '../../../../constants/colors';
+import { useEventThemeColor } from '../../../../lib/eventTheme';
 import { format } from 'date-fns';
+import { navigateBackToFrom, userProfileHref } from '../../../../lib/navReturn';
 
 type MessageRow = {
   id: string;
@@ -47,6 +50,7 @@ export default function ChatScreen() {
   const navigation = useNavigation();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
   const fetchBlockedUsers = useBlockStore((s) => s.fetchBlockedUsers);
   const interactionBlocked = useBlockStore((s) =>
     userId ? s.blockedUserIds.has(userId) || s.usersWhoBlockedMeIds.has(userId) : false
@@ -96,7 +100,8 @@ export default function ChatScreen() {
           .update({ is_read: true })
           .eq('event_id', currentEvent.id)
           .eq('receiver_id', user.id)
-          .eq('sender_id', userId);
+          .eq('sender_id', userId)
+          .eq('is_read', false);
       });
     } catch (err) {
       if (__DEV__) console.warn('Messages fetch error:', err);
@@ -108,30 +113,23 @@ export default function ChatScreen() {
   }, [user?.id, userId, currentEvent?.id]);
 
   const goBack = useCallback(() => {
-    const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : null;
-    if (returnPath) {
-      router.replace(returnPath as any);
-    } else {
-      router.back();
-    }
+    navigateBackToFrom(router, from, '/(tabs)/feed');
   }, [from, router]);
 
   useEffect(() => {
-    if (from && typeof from === 'string') {
-      navigation.setOptions({
-        headerBackVisible: false,
-        headerLeft: () => (
-          <TouchableOpacity
-            onPress={goBack}
-            style={{ padding: 8, marginLeft: 4 }}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-          >
-            <ChevronLeft size={24} color={colors.text} />
-          </TouchableOpacity>
-        ),
-      });
-    }
-  }, [from, goBack, navigation]);
+    navigation.setOptions({
+      headerBackVisible: false,
+      headerLeft: () => (
+        <TouchableOpacity
+          onPress={goBack}
+          style={{ padding: 8, marginLeft: 4 }}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+        >
+          <ChevronLeft size={24} color={colors.text} />
+        </TouchableOpacity>
+      ),
+    });
+  }, [goBack, navigation]);
 
   useEffect(() => {
     fetchOtherUser().catch(() => {});
@@ -146,6 +144,13 @@ export default function ChatScreen() {
       }
     }, [user?.id, userId, currentEvent?.id, fetchBlockedUsers, fetchOtherUser, fetchMessages])
   );
+
+  useEffect(() => {
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (user?.id && userId && currentEvent?.id) fetchMessages().catch(() => {});
+    });
+    return unregister;
+  }, [user?.id, userId, currentEvent?.id, fetchMessages]);
 
   const checkConnection = useCallback(async () => {
     if (!user?.id || !userId || !currentEvent?.id) {
@@ -183,17 +188,39 @@ export default function ChatScreen() {
 
   useEffect(() => {
     if (!currentEvent?.id || !user?.id || !userId) return;
+    const myId = user.id;
+    const otherId = userId;
+    const onInsert = (payload: { new?: Record<string, unknown> }) => {
+      const row = (payload?.new ?? {}) as { sender_id?: string; receiver_id?: string; event_id?: string };
+      if (row.event_id && row.event_id !== currentEvent.id) return;
+      const involvesUs =
+        (row.sender_id === myId && row.receiver_id === otherId) ||
+        (row.sender_id === otherId && row.receiver_id === myId);
+      if (!involvesUs) return;
+      fetchMessages().catch(() => {});
+    };
+    // Two filters: Realtime allows one equality filter per listener; cover both directions.
     const channel = supabase
-      .channel(`messages:${currentEvent.id}:${user.id}:${userId}`)
+      .channel(`messages:${currentEvent.id}:${myId}:${otherId}`)
       .on(
         'postgres_changes',
         {
           event: 'INSERT',
           schema: 'public',
           table: 'messages',
-          filter: `event_id=eq.${currentEvent.id}`,
+          filter: `sender_id=eq.${myId}`,
         },
-        () => { fetchMessages().catch(() => {}); }
+        onInsert,
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `receiver_id=eq.${myId}`,
+        },
+        onInsert,
       )
       .subscribe();
     return () => {
@@ -231,14 +258,11 @@ export default function ChatScreen() {
       const senderName = user.full_name ?? 'Someone';
       const notifTitle = `New message from ${senderName}`;
       const notifBody = attachmentUrl && !text ? 'Sent a photo' : (text || '').slice(0, 100);
-      await createNotificationAndPush(
-        userId,
-        currentEvent.id,
-        'message',
-        notifTitle,
-        notifBody || null,
-        { chat_user_id: user.id }
-      );
+      // Device push only — Chat hub + unread badges cover in-app; avoid duplicating DMs in Notifications.
+      await sendPushToUser(userId, notifTitle, notifBody || '', {
+        eventId: currentEvent.id,
+        chatUserId: user.id,
+      });
       await fetchMessages();
     } catch (err) {
       console.error('Send message error:', err);
@@ -261,7 +285,7 @@ export default function ChatScreen() {
     const contentTrimmed = (item.content || '').trim();
     return (
       <View style={[styles.bubbleWrap, isMe ? styles.bubbleWrapMe : styles.bubbleWrapThem]}>
-        <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
+        <View style={[styles.bubble, isMe ? [styles.bubbleMe, { backgroundColor: themeColor }] : styles.bubbleThem]}>
           {hasAttachment ? (
             <TouchableOpacity
               onPress={() => setExpandedImageUrl(item.attachment_url!)}
@@ -294,7 +318,7 @@ export default function ChatScreen() {
     return (
       <SafeAreaView style={styles.container} edges={[]}>
         <View style={styles.placeholder}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
           <Text style={styles.placeholderText}>Loading chat…</Text>
         </View>
       </SafeAreaView>
@@ -307,8 +331,17 @@ export default function ChatScreen() {
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Connect with {otherName || 'this user'} first to message.</Text>
           <TouchableOpacity
-            style={styles.connectFirstButton}
-            onPress={() => router.replace(`/feed/user/${userId}` as any)}
+            style={[styles.connectFirstButton, { backgroundColor: themeColor }]}
+            onPress={() => {
+              const profileReturn = decodeURIComponent(
+                typeof from === 'string' ? from : from?.[0] ?? ''
+              ).trim();
+              const href =
+                profileReturn.startsWith('/feed/user/') || profileReturn.startsWith('/(tabs)/feed/user/')
+                  ? (profileReturn.startsWith('/(tabs)') ? profileReturn : `/(tabs)${profileReturn}`)
+                  : userProfileHref(userId);
+              router.replace(href as never);
+            }}
           >
             <Text style={styles.connectFirstButtonText}>View profile & connect</Text>
           </TouchableOpacity>
@@ -329,7 +362,7 @@ export default function ChatScreen() {
               setLoading(true);
               fetchMessages();
             }}
-            style={styles.retryBtn}
+            style={[styles.retryBtn, { backgroundColor: themeColor }]}
             activeOpacity={0.8}
           >
             <Text style={styles.retryBtnText}>Try again</Text>
@@ -370,7 +403,7 @@ export default function ChatScreen() {
           <View style={styles.previewRow}>
             <Image source={{ uri: imageUri }} style={styles.previewThumb} resizeMode="cover" />
             <TouchableOpacity onPress={() => setImageUri(null)} style={styles.removePreviewBtn}>
-              <Text style={styles.removePreviewText}>Remove</Text>
+              <Text style={[styles.removePreviewText, { color: themeColor }]}>Remove</Text>
             </TouchableOpacity>
           </View>
         ) : null}
@@ -388,7 +421,7 @@ export default function ChatScreen() {
             style={styles.attachButton}
             hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
           >
-            <ImageIcon size={24} color={interactionBlocked ? colors.textMuted : colors.primary} />
+            <ImageIcon size={24} color={interactionBlocked ? colors.textMuted : themeColor} />
           </TouchableOpacity>
           <TextInput
             style={styles.input}
@@ -401,7 +434,7 @@ export default function ChatScreen() {
             editable={!sending && !interactionBlocked}
           />
           <TouchableOpacity
-            style={[styles.sendButton, (!canSend) && styles.sendButtonDisabled]}
+            style={[styles.sendButton, { backgroundColor: themeColor }, (!canSend) && styles.sendButtonDisabled]}
             onPress={sendMessage}
             disabled={!canSend}
           >
@@ -449,7 +482,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingVertical: 12,
     paddingHorizontal: 24,
-    backgroundColor: colors.primary,
     borderRadius: 10,
   },
   retryBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
@@ -457,7 +489,6 @@ const styles = StyleSheet.create({
     marginTop: 16,
     paddingVertical: 12,
     paddingHorizontal: 20,
-    backgroundColor: colors.primary,
     borderRadius: 12,
   },
   connectFirstButtonText: {
@@ -494,7 +525,6 @@ const styles = StyleSheet.create({
     borderBottomRightRadius: 4,
   },
   bubbleMe: {
-    backgroundColor: colors.primary,
     borderBottomRightRadius: 16,
     borderBottomLeftRadius: 4,
   },
@@ -546,7 +576,6 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -590,7 +619,6 @@ const styles = StyleSheet.create({
   },
   removePreviewText: {
     fontSize: 14,
-    color: colors.primary,
     fontWeight: '600',
   },
   modalBackdrop: {

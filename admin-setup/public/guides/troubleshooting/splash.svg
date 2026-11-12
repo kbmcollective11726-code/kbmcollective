@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" viewBox="0 0 320 200">
+  <rect width="320" height="200" rx="16" fill="#f1f3f5"/>
+  
+    <g>
+    <rect x="28" y="28" width="84" height="144" rx="14" fill="#1a2332"/>
+    <rect x="33" y="33" width="74" height="134" rx="10" fill="#ffffff"/>
+    <rect x="58" y="37" width="24" height="3" rx="1.5" fill="#1a2332" opacity="0.22"/>
+    
+      <rect x="33" y="33" width="74" height="134" rx="10" fill="#1a2332"/>
+      <circle cx="70" cy="96" r="16" fill="#c9a961"/>
+      <text x="70" y="102" text-anchor="middle" fill="#1a2332" font-family="Georgia, serif" font-size="16" font-weight="700">K</text>
+    
+  </g>
+    <path d="M128 100h28" stroke="#c9a961" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 92l10 8-10 8" fill="#c9a961"/>
+    <g>
+    <rect x="176" y="28" width="112" height="144" rx="14" fill="#1a2332"/>
+    <rect x="181" y="33" width="102" height="134" rx="10" fill="#ffffff"/>
+    <rect x="220" y="37" width="24" height="3" rx="1.5" fill="#1a2332" opacity="0.22"/>
+    
+      <rect x="188" y="46" width="88" height="28" rx="6" fill="#1a2332"/>
+      <text x="198" y="65" fill="#fff" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700">Info</text>
+      <rect x="188" y="84" width="88" height="36" rx="6" fill="#f1f3f5"/>
+      <rect x="196" y="92" width="48" height="6" rx="3" fill="#c9a961"/>
+      <rect x="196" y="104" width="64" height="5" rx="2" fill="#1a2332" opacity="0.2"/>
+    
+  </g>
+  
+</svg>

@@ -1,4 +1,4 @@
-import { supabaseAnonKey, supabaseUrl } from '../lib/supabase';
+import { edgeFunctionHeaders, supabase, supabaseUrl } from '../lib/supabase';
 
 export type RegistrationSetupEmailPayload = {
   event_id: string;
@@ -8,13 +8,16 @@ export type RegistrationSetupEmailPayload = {
 };
 
 export async function sendRegistrationSetupEmail(payload: RegistrationSetupEmailPayload): Promise<void> {
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
+  if (!session?.access_token || !supabaseUrl) {
+    throw new Error('Not signed in.');
+  }
+
   const res = await fetch(`${supabaseUrl}/functions/v1/send-registration-setup-email`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: supabaseAnonKey,
-      Authorization: `Bearer ${supabaseAnonKey}`,
-    },
+    headers: edgeFunctionHeaders(session.access_token),
     body: JSON.stringify(payload),
   });
 

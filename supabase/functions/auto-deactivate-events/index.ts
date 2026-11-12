@@ -2,27 +2,23 @@
 // Matches app: lib/eventAccess.ts EVENT_ACCESS_DAYS_AFTER_END = 90. Invoke via cron daily. Use x-cron-secret if set.
 const DAYS_AFTER_END_UNTIL_DEACTIVATE = 90;
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, x-cron-secret",
-};
-
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
@@ -30,10 +26,10 @@ Deno.serve(async (req: Request) => {
   const cronSecret = Deno.env.get("CRON_SECRET");
 
   if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500);
+    return json({ error: "Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY" }, 500, ch);
   }
-  if (cronSecret && req.headers.get("x-cron-secret") !== cronSecret) {
-    return json({ error: "Unauthorized" }, 401);
+  if (!cronSecret || req.headers.get("x-cron-secret") !== cronSecret) {
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey);
@@ -51,7 +47,7 @@ Deno.serve(async (req: Request) => {
 
   if (error) {
     console.error("auto-deactivate-events error:", error);
-    return json({ error: error.message }, 500);
+    return json({ error: error.message }, 500, ch);
   }
 
   const count = data?.length ?? 0;

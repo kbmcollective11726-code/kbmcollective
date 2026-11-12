@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   INTEREST_LEVEL_OPTIONS,
   loadMeetingRequestTargetProfile,
@@ -12,6 +12,40 @@ interface Props {
   submissionId: string;
   target: MeetingRequestTarget | null;
   onClose: () => void;
+}
+
+function groupProfileAnswers(answers: MeetingRequestTargetProfile['answers']) {
+  const groups: Array<{ sectionLabel: string | null; answers: MeetingRequestTargetProfile['answers'] }> = [];
+  const indexByKey = new Map<string, number>();
+
+  for (const answer of answers) {
+    const sectionLabel = answer.section_label?.trim() || null;
+    const key = sectionLabel?.toLowerCase() ?? '__general__';
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex === undefined) {
+      indexByKey.set(key, groups.length);
+      groups.push({ sectionLabel, answers: [answer] });
+    } else {
+      groups[existingIndex]!.answers.push(answer);
+    }
+  }
+
+  return groups;
+}
+
+function renderAnswerValue(answer: MeetingRequestTargetProfile['answers'][number]) {
+  const value = answer.value?.trim() || '—';
+  const promptNorm = answer.prompt.trim().toLowerCase();
+  const isPhotoField =
+    promptNorm.includes('headshot') || promptNorm.includes('photo') || promptNorm.includes('logo');
+  if (isPhotoField && value !== '—' && /^https?:\/\//i.test(value)) {
+    return (
+      <a href={value} target="_blank" rel="noreferrer">
+        <img src={value} alt="" className={styles.profilePhoto} />
+      </a>
+    );
+  }
+  return <span className={styles.profileFieldValue}>{value}</span>;
 }
 
 export default function MeetingRequestProfileModal({ eventId, submissionId, target, onClose }: Props) {
@@ -41,6 +75,11 @@ export default function MeetingRequestProfileModal({ eventId, submissionId, targ
       cancelled = true;
     };
   }, [eventId, submissionId, target]);
+
+  const answerSections = useMemo(
+    () => (profile ? groupProfileAnswers(profile.answers) : []),
+    [profile],
+  );
 
   if (!target) return null;
 
@@ -85,16 +124,18 @@ export default function MeetingRequestProfileModal({ eventId, submissionId, targ
                   </div>
                 </section>
               ) : null}
-              {profile.answers.map((answer) => (
-                <section key={`${answer.section_label ?? 'general'}-${answer.prompt}`}>
-                  {answer.section_label ? (
-                    <h4 className={styles.modalSectionTitle}>{answer.section_label}</h4>
+              {answerSections.map((section) => (
+                <section key={section.sectionLabel ?? 'general'}>
+                  {section.sectionLabel ? (
+                    <h4 className={styles.modalSectionTitle}>{section.sectionLabel}</h4>
                   ) : null}
                   <div className={styles.profileGrid}>
-                    <div>
-                      <span className={styles.profileFieldLabel}>{answer.prompt}</span>
-                      <span className={styles.profileFieldValue}>{answer.value || '—'}</span>
-                    </div>
+                    {section.answers.map((answer) => (
+                      <div key={answer.prompt}>
+                        <span className={styles.profileFieldLabel}>{answer.prompt}</span>
+                        {renderAnswerValue(answer)}
+                      </div>
+                    ))}
                   </div>
                 </section>
               ))}

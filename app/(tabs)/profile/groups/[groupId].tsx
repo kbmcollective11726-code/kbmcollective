@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -18,19 +18,21 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { Send, ImageIcon, Users, UserPlus, UserMinus } from 'lucide-react-native';
+import { Send, ImageIcon, Users, UserPlus, UserMinus, Trash2 } from 'lucide-react-native';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useRolePreviewContext } from '../../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../../lib/supabase';
-import { createNotification, createNotificationAndPush } from '../../../../lib/notifications';
+import { createNotificationAndPush } from '../../../../lib/notifications';
 import { sendAnnouncementPush } from '../../../../lib/pushNotifications';
 import { pickImage } from '../../../../lib/image';
 import { uploadImage } from '../../../../lib/image';
 import { colors } from '../../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../../lib/eventTheme';
 import { format } from 'date-fns';
 import Avatar from '../../../../components/Avatar';
 import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
+import { groupsListHref, navigateBackToFrom } from '../../../../lib/navReturn';
 
 type GroupMessageRow = {
   id: string;
@@ -50,13 +52,27 @@ function isValidGroupId(id: string): boolean {
 }
 
 export default function GroupChatScreen() {
-  const params = useLocalSearchParams<{ groupId: string }>();
+  const params = useLocalSearchParams<{ groupId: string; from?: string }>();
   const rawGroupId = typeof params.groupId === 'string' ? params.groupId : params.groupId?.[0] ?? '';
   const groupId = isValidGroupId(rawGroupId) ? rawGroupId : '';
+  const from = typeof params.from === 'string' ? params.from : params.from?.[0];
   const router = useRouter();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
   const { applyEventAdmin } = useRolePreviewContext();
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
+
+  const goBack = useCallback(() => {
+    navigateBackToFrom(router, from, '/(tabs)/profile/groups');
+  }, [router, from]);
+
+  // `/groups/index` can match this dynamic route with groupId="index" — bounce to the list.
+  useEffect(() => {
+    if (rawGroupId === 'index' || rawGroupId === 'new') {
+      router.replace(groupsListHref(from) as never);
+    }
+  }, [rawGroupId, from, router]);
   const [groupName, setGroupName] = useState('');
   const [messages, setMessages] = useState<GroupMessageRow[]>([]);
   const [input, setInput] = useState('');
@@ -70,12 +86,13 @@ export default function GroupChatScreen() {
   const [manageMembers, setManageMembers] = useState<{ user_id: string; full_name: string; avatar_url: string | null }[]>([]);
   const [addableMembers, setAddableMembers] = useState<{ user_id: string; full_name: string; avatar_url: string | null }[]>([]);
   const [manageLoading, setManageLoading] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [savingName, setSavingName] = useState(false);
+  const [deletingGroup, setDeletingGroup] = useState(false);
 
   const fetchGroupAndMembership = useCallback(async () => {
     if (!groupId || !user?.id) return;
     try {
-      // groupId is validated so we never call APIs with "index" or invalid UUID
-      // Fetch event admin first so we can treat admins as members
       let isEventAdminResult = false;
       if (currentEvent?.id) {
         const { data: roleData } = await supabase
@@ -83,7 +100,7 @@ export default function GroupChatScreen() {
           .select('role, roles')
           .eq('event_id', currentEvent.id)
           .eq('user_id', user.id)
-          .single();
+          .maybeSingle();
         const row = roleData as { role?: string; roles?: string[] } | null;
         const role = row?.role ?? 'attendee';
         const roles = Array.isArray(row?.roles) ? row.roles : [];
@@ -95,28 +112,42 @@ export default function GroupChatScreen() {
         isEventAdminResult = applyEventAdmin(isEventAdminResult);
         setIsEventAdmin(isEventAdminResult);
       }
-      const { data: groupData } = await supabase
+      const { data: groupData, error: groupError } = await supabase
         .from('chat_groups')
         .select('name, created_by')
         .eq('id', groupId)
-        .single();
+        .maybeSingle();
+      if (groupError) throw groupError;
       const group = groupData as { name: string; created_by: string | null } | null;
-      if (group) setGroupName(group.name ?? '');
+      if (!group) {
+        setIsMember(false);
+        setLoading(false);
+        return;
+      }
+      setGroupName(group.name ?? '');
+      const isCreator = group.created_by === user.id;
+
+      // Creators and event admins can open the chat immediately (don't block on members-table RLS).
+      if (isCreator || isEventAdminResult) {
+        setIsMember(true);
+        void supabase
+          .from('chat_group_members')
+          .insert({ group_id: groupId, user_id: user.id })
+          .then(() => {}, () => {});
+        return;
+      }
+
       const { data: memberData } = await supabase
         .from('chat_group_members')
         .select('id')
         .eq('group_id', groupId)
         .eq('user_id', user.id)
         .maybeSingle();
-      const isInTable = !!memberData;
-      const isCreator = group?.created_by === user.id;
-      const member = isInTable || isCreator || isEventAdminResult;
+      const member = !!memberData;
       setIsMember(member);
       if (!member) setLoading(false);
-      if ((isCreator || isEventAdminResult) && !isInTable) {
-        void supabase.from('chat_group_members').insert({ group_id: groupId, user_id: user.id }).then(() => {}, () => {});
-      }
-    } catch (_) {
+    } catch (err) {
+      console.error('Group membership fetch error:', err);
       setIsMember(false);
       setLoading(false);
     }
@@ -138,20 +169,22 @@ export default function GroupChatScreen() {
       if (error) throw error;
       const rows = (data ?? []) as GroupMessageRow[];
       const senderIds = [...new Set(rows.map((r) => r.sender_id))];
-      const { data: usersData } = await supabase
-        .from('users')
-        .select('id, full_name, avatar_url')
-        .in('id', senderIds);
-      const userMap = new Map(
-        (usersData ?? []).map((u: { id: string; full_name: string; avatar_url: string | null }) => [u.id, u])
-      );
-      rows.forEach((r) => {
-        const u = userMap.get(r.sender_id);
-        if (u) {
-          r.sender_name = (u as { full_name: string }).full_name;
-          r.sender_avatar = (u as { avatar_url: string | null }).avatar_url;
-        }
-      });
+      if (senderIds.length > 0) {
+        const { data: usersData } = await supabase
+          .from('users')
+          .select('id, full_name, avatar_url')
+          .in('id', senderIds);
+        const userMap = new Map(
+          (usersData ?? []).map((u: { id: string; full_name: string; avatar_url: string | null }) => [u.id, u])
+        );
+        rows.forEach((r) => {
+          const u = userMap.get(r.sender_id);
+          if (u) {
+            r.sender_name = (u as { full_name: string }).full_name;
+            r.sender_avatar = (u as { avatar_url: string | null }).avatar_url;
+          }
+        });
+      }
       setMessages(rows);
     } catch (err) {
       console.error('Group messages fetch error:', err);
@@ -173,9 +206,8 @@ export default function GroupChatScreen() {
     useCallback(() => {
       if (groupId && user?.id) {
         fetchGroupAndMembership().catch(() => {});
-        fetchMessages().catch(() => {});
       }
-    }, [groupId, user?.id, fetchGroupAndMembership, fetchMessages])
+    }, [groupId, user?.id, fetchGroupAndMembership])
   );
 
   const fetchManageData = useCallback(async () => {
@@ -216,6 +248,54 @@ export default function GroupChatScreen() {
     if (manageVisible) fetchManageData();
   }, [manageVisible, fetchManageData]);
 
+  useEffect(() => {
+    if (manageVisible) setRenameDraft(groupName);
+  }, [manageVisible, groupName]);
+
+  const handleRenameGroup = async () => {
+    const trimmed = renameDraft.trim();
+    if (!trimmed || !groupId || !isEventAdmin) return;
+    if (trimmed === groupName) return;
+    setSavingName(true);
+    try {
+      const { error } = await supabase.from('chat_groups').update({ name: trimmed }).eq('id', groupId);
+      if (error) throw error;
+      setGroupName(trimmed);
+    } catch (err) {
+      Alert.alert('Error', err instanceof Error ? err.message : 'Could not rename group.');
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const handleDeleteGroup = () => {
+    if (!groupId || !isEventAdmin) return;
+    Alert.alert(
+      'Delete group?',
+      `Delete "${groupName || 'this group'}"? All messages will be removed. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingGroup(true);
+            try {
+              const { error } = await supabase.from('chat_groups').delete().eq('id', groupId);
+              if (error) throw error;
+              setManageVisible(false);
+              router.replace('/(tabs)/profile/groups' as any);
+            } catch (err) {
+              Alert.alert('Error', err instanceof Error ? err.message : 'Could not delete group.');
+            } finally {
+              setDeletingGroup(false);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const addMemberToGroup = async (uid: string) => {
     if (!groupId) return;
     const { error } = await supabase.from('chat_group_members').insert({ group_id: groupId, user_id: uid });
@@ -227,7 +307,7 @@ export default function GroupChatScreen() {
     createNotificationAndPush(
       uid,
       currentEvent?.id ?? null,
-      'message',
+      'system',
       title,
       'Tap to open the group.',
       { group_id: groupId }
@@ -243,8 +323,24 @@ export default function GroupChatScreen() {
   };
 
   useEffect(() => {
-    if (isMember === true) fetchMessages();
+    if (isMember !== true) return;
+    fetchMessages().catch(() => {});
   }, [isMember, fetchMessages]);
+
+  useEffect(() => {
+    if (isMember !== null || !groupId) return;
+    const timer = setTimeout(() => {
+      setIsMember((current) => {
+        if (current === null) {
+          console.warn('Group chat membership check timed out');
+          setLoading(false);
+          return false;
+        }
+        return current;
+      });
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [isMember, groupId]);
 
   useEffect(() => {
     if (!groupId || !user?.id || isMember !== true) return;
@@ -283,7 +379,7 @@ export default function GroupChatScreen() {
       if (error) throw error;
       await fetchMessages();
 
-      // Notify other group members (in-app + push)
+      // Notify other group members via device push only (Chat hub covers in-app).
       const { data: members } = await supabase
         .from('chat_group_members')
         .select('user_id')
@@ -293,9 +389,6 @@ export default function GroupChatScreen() {
         const senderName = (user as { full_name?: string })?.full_name ?? 'Someone';
         const title = `${senderName} in ${groupName || 'Group'}`;
         const body = (text || (attachmentUrl ? 'Photo' : '')).slice(0, 100) || 'New message';
-        recipientIds.forEach((uid: string) => {
-          createNotification(uid, currentEvent.id, 'message', title, body, { group_id: groupId }).catch(() => {});
-        });
         const { data: { session } } = await supabase.auth.getSession();
         if (session?.access_token) {
           sendAnnouncementPush(session.access_token, currentEvent.id, title, body, recipientIds, { groupId }).catch(() => {});
@@ -344,7 +437,7 @@ export default function GroupChatScreen() {
             {item.sender_name}
           </Text>
         ) : null}
-        <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem]}>
+        <View style={[styles.bubble, isMe ? styles.bubbleMe : styles.bubbleThem, isMe && { backgroundColor: themeColor }]}>
           {hasAttachment ? (
             <TouchableOpacity
               onPress={() => setExpandedImageUrl(item.attachment_url!)}
@@ -368,9 +461,28 @@ export default function GroupChatScreen() {
   if (!groupId || !user?.id) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <ProfileStackScreenHeader variant="back" title="Group" onBack={() => router.back()} />
+        <ProfileStackScreenHeader variant="back" title="Group" onBack={goBack} />
         <View style={styles.placeholder}>
-          <Text style={styles.placeholderText}>Invalid group.</Text>
+          <Text style={styles.placeholderText}>
+            {rawGroupId === 'index' || rawGroupId === 'new'
+              ? 'Opening groups…'
+              : 'Invalid group.'}
+          </Text>
+          {rawGroupId !== 'index' && rawGroupId !== 'new' ? (
+            <TouchableOpacity
+              style={{
+                marginTop: 16,
+                paddingVertical: 12,
+                paddingHorizontal: 20,
+                borderRadius: 10,
+                backgroundColor: themeColor,
+              }}
+              onPress={goBack}
+              activeOpacity={0.8}
+            >
+              <Text style={{ color: colors.textOnPrimary, fontWeight: '600', fontSize: 16 }}>Back to groups</Text>
+            </TouchableOpacity>
+          ) : null}
         </View>
       </SafeAreaView>
     );
@@ -379,9 +491,9 @@ export default function GroupChatScreen() {
   if (isMember === null || (isMember === true && loading && messages.length === 0)) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <ProfileStackScreenHeader variant="back" title={groupName || 'Group'} onBack={() => router.back()} />
+        <ProfileStackScreenHeader variant="back" title={groupName || 'Group'} onBack={goBack} />
         <View style={styles.placeholder}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
           <Text style={styles.placeholderText}>Loading…</Text>
         </View>
       </SafeAreaView>
@@ -391,7 +503,7 @@ export default function GroupChatScreen() {
   if (isMember === false) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <ProfileStackScreenHeader variant="back" title={groupName || 'Group'} onBack={() => router.back()} />
+        <ProfileStackScreenHeader variant="back" title={groupName || 'Group'} onBack={goBack} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>You’re not a member of this group.</Text>
         </View>
@@ -404,7 +516,7 @@ export default function GroupChatScreen() {
       <ProfileStackScreenHeader
         variant="back"
         title={groupName || 'Group'}
-        onBack={() => router.back()}
+        onBack={goBack}
         right={
           isEventAdmin && isMember ? (
             <TouchableOpacity
@@ -412,7 +524,7 @@ export default function GroupChatScreen() {
               style={{ padding: 8 }}
               hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             >
-              <Users size={22} color={colors.primary} />
+              <Users size={22} color={themeColor} />
             </TouchableOpacity>
           ) : undefined
         }
@@ -428,16 +540,63 @@ export default function GroupChatScreen() {
         <View style={styles.manageModalBackdrop}>
           <View style={styles.manageModal}>
             <View style={styles.manageModalHeader}>
-              <Text style={styles.manageModalTitle}>Manage members</Text>
+              <Text style={styles.manageModalTitle}>Manage group</Text>
               <TouchableOpacity onPress={() => setManageVisible(false)} hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}>
-                <Text style={styles.manageModalClose}>Done</Text>
+                <Text style={[styles.manageModalClose, { color: themeColor }]}>Done</Text>
               </TouchableOpacity>
             </View>
             {manageLoading ? (
-              <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 24 }} />
+              <ActivityIndicator size="small" color={themeColor} style={{ marginVertical: 24 }} />
             ) : (
-              <ScrollView style={styles.manageScroll} contentContainerStyle={styles.manageScrollContent}>
-                <Text style={styles.manageSectionTitle}>In this group</Text>
+              <>
+                <View style={styles.manageTopPanel}>
+                  <Text style={styles.manageSectionTitle}>Edit group name</Text>
+                  <TextInput
+                    style={[styles.renameInput, { borderColor: themeColorWithAlpha(themeColor, '30') }]}
+                    value={renameDraft}
+                    onChangeText={setRenameDraft}
+                    placeholder="Group name"
+                    placeholderTextColor={colors.textMuted}
+                    editable={!savingName && !deletingGroup}
+                    maxLength={80}
+                    returnKeyType="done"
+                    onSubmitEditing={handleRenameGroup}
+                  />
+                  <View style={styles.manageActionRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.renameSaveBtn,
+                        styles.manageActionBtn,
+                        { backgroundColor: themeColor },
+                        (savingName || !renameDraft.trim() || renameDraft.trim() === groupName) && styles.renameSaveBtnDisabled,
+                      ]}
+                      onPress={handleRenameGroup}
+                      disabled={savingName || deletingGroup || !renameDraft.trim() || renameDraft.trim() === groupName}
+                    >
+                      {savingName ? (
+                        <ActivityIndicator size="small" color={colors.textOnPrimary} />
+                      ) : (
+                        <Text style={styles.renameSaveBtnText}>Save name</Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[styles.deleteGroupBtn, styles.manageActionBtn, deletingGroup && styles.deleteGroupBtnDisabled]}
+                      onPress={handleDeleteGroup}
+                      disabled={deletingGroup || savingName}
+                    >
+                      {deletingGroup ? (
+                        <ActivityIndicator size="small" color={colors.danger} />
+                      ) : (
+                        <>
+                          <Trash2 size={18} color={colors.danger} />
+                          <Text style={styles.deleteGroupBtnText}>Delete group</Text>
+                        </>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+                <ScrollView style={styles.manageScroll} contentContainerStyle={styles.manageScrollContent}>
+                  <Text style={styles.manageSectionTitle}>In this group</Text>
                 {manageMembers.map((m) => (
                   <View key={m.user_id} style={styles.manageRow}>
                     <Avatar uri={m.avatar_url} name={m.full_name} size={40} />
@@ -461,13 +620,14 @@ export default function GroupChatScreen() {
                       <Avatar uri={m.avatar_url} name={m.full_name} size={40} />
                       <Text style={styles.manageRowName} numberOfLines={1}>{m.full_name}</Text>
                       <TouchableOpacity onPress={() => addMemberToGroup(m.user_id)} style={styles.manageAddBtn}>
-                        <UserPlus size={20} color={colors.primary} />
-                        <Text style={styles.manageAddText}>Add</Text>
+                        <UserPlus size={20} color={themeColor} />
+                        <Text style={[styles.manageAddText, { color: themeColor }]}>Add</Text>
                       </TouchableOpacity>
                     </View>
                   ))
                 )}
-              </ScrollView>
+                </ScrollView>
+              </>
             )}
           </View>
         </View>
@@ -492,13 +652,13 @@ export default function GroupChatScreen() {
           <View style={styles.previewRow}>
             <Image source={{ uri: imageUri }} style={styles.previewThumb} resizeMode="cover" />
             <TouchableOpacity onPress={() => setImageUri(null)} style={styles.removePreviewBtn}>
-              <Text style={styles.removePreviewText}>Remove</Text>
+              <Text style={[styles.removePreviewText, { color: themeColor }]}>Remove</Text>
             </TouchableOpacity>
           </View>
         ) : null}
         <View style={styles.inputRow}>
           <TouchableOpacity onPress={handlePickImage} disabled={sending} style={styles.attachButton} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
-            <ImageIcon size={24} color={colors.primary} />
+            <ImageIcon size={24} color={themeColor} />
           </TouchableOpacity>
           <TextInput
             style={styles.input}
@@ -511,7 +671,7 @@ export default function GroupChatScreen() {
             editable={!sending}
           />
           <TouchableOpacity
-            style={[styles.sendButton, !canSend && styles.sendButtonDisabled]}
+            style={[styles.sendButton, { backgroundColor: themeColor }, !canSend && styles.sendButtonDisabled]}
             onPress={sendMessage}
             disabled={!canSend}
           >
@@ -614,7 +774,17 @@ const styles = StyleSheet.create({
   manageModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 1, borderBottomColor: colors.border },
   manageModalTitle: { fontSize: 18, fontWeight: '600', color: colors.text },
   manageModalClose: { fontSize: 16, color: colors.primary, fontWeight: '600' },
-  manageScroll: { maxHeight: 400 },
+  manageTopPanel: {
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  manageActionRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+  manageActionBtn: { flex: 1, marginBottom: 0 },
+  manageScroll: { maxHeight: 360 },
   manageScrollContent: { padding: 16, paddingBottom: 24 },
   manageSectionTitle: { fontSize: 14, fontWeight: '600', color: colors.textMuted, marginBottom: 12 },
   manageRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, gap: 12, borderBottomWidth: 1, borderBottomColor: colors.border },
@@ -625,4 +795,39 @@ const styles = StyleSheet.create({
   manageAddBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   manageAddText: { fontSize: 14, color: colors.primary, fontWeight: '600' },
   manageHint: { fontSize: 14, color: colors.textMuted, marginTop: 4 },
+  renameInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: colors.text,
+    backgroundColor: colors.background,
+    marginBottom: 10,
+  },
+  renameSaveBtn: {
+    paddingVertical: 12,
+    borderRadius: 10,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 46,
+  },
+  renameSaveBtnDisabled: { opacity: 0.5 },
+  renameSaveBtnText: { fontSize: 15, fontWeight: '600', color: colors.textOnPrimary },
+  deleteGroupBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.danger,
+    backgroundColor: '#fef2f2',
+    minHeight: 46,
+  },
+  deleteGroupBtnDisabled: { opacity: 0.6 },
+  deleteGroupBtnText: { fontSize: 15, fontWeight: '600', color: colors.danger },
 });

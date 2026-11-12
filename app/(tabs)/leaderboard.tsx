@@ -1,5 +1,5 @@
 import { useEffect, useState, useLayoutEffect, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -11,19 +11,24 @@ import {
   ScrollView,
   Modal,
   Pressable,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useNavigation } from 'expo-router';
 import { Trophy, RefreshCw, X, User } from 'lucide-react-native';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
-import { supabase, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
+import { supabase, withRetryAndRefresh } from '../../lib/supabase';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
+import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
+import { loadCachedLeaderboard, saveCachedLeaderboard } from '../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../stores/connectivityStore';
 import { colors } from '../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../lib/eventTheme';
 import Avatar from '../../components/Avatar';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
+import EmptyState from '../../components/ui/EmptyState';
+import PressScale from '../../components/ui/PressScale';
+import SectionHeader from '../../components/ui/SectionHeader';
 
 type LeaderboardRow = {
   user_id: string;
@@ -54,11 +59,19 @@ const ACTION_LABELS: Record<string, string> = {
   b2b_feedback: 'Leave feedback for a 1:1 / vendor meeting',
 };
 
+const PODIUM_RING: Record<string, string> = {
+  '1st': '#D4AF37',
+  '2nd': '#C0C0C0',
+  '3rd': '#CD7F32',
+};
+
 export default function LeaderboardScreen() {
   const router = useRouter();
   const navigation = useNavigation();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
   const [rows, setRows] = useState<LeaderboardRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -99,12 +112,22 @@ export default function LeaderboardScreen() {
           rank: i + 1,
         }));
         setRows(list);
+        await saveCachedLeaderboard(currentEvent.id, list);
       });
       setFetchError(null);
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       if (__DEV__) console.warn('Leaderboard fetch error:', err);
-      setRows([]);
-      setFetchError('Error - page not loading');
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedLeaderboard(currentEvent.id);
+      if (cached && cached.length > 0) {
+        setRows(cached);
+        setFetchError(null);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setRows([]);
+        setFetchError('Error - page not loading');
+      }
     } finally {
       setLoading(false);
     }
@@ -134,14 +157,10 @@ export default function LeaderboardScreen() {
   );
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && currentEvent?.id && user?.id) {
-        refreshSessionIfNeeded()
-          .catch(() => {})
-          .finally(() => fetchLeaderboard().catch(() => {}));
-      }
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (currentEvent?.id && user?.id) fetchLeaderboard().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [currentEvent?.id, user?.id]);
 
   const loadingStartRef = useRef<number | null>(null);
@@ -153,12 +172,25 @@ export default function LeaderboardScreen() {
     loadingStartRef.current = Date.now();
     const t = setTimeout(() => {
       if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= 40000) {
-        setLoading(false);
-        setFetchError('Error - page not loading');
+        void (async () => {
+          const eventId = currentEvent?.id;
+          if (eventId) {
+            const cached = await loadCachedLeaderboard(eventId);
+            if (cached && cached.length > 0) {
+              setRows(cached);
+              setFetchError(null);
+              useConnectivityStore.getState().setShowingCachedData(true);
+              setLoading(false);
+              return;
+            }
+          }
+          setLoading(false);
+          setFetchError('Error - page not loading');
+        })();
       }
     }, 40000);
     return () => clearTimeout(t);
-  }, [loading]);
+  }, [loading, currentEvent?.id]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -230,39 +262,52 @@ export default function LeaderboardScreen() {
       headerRight: () => (
         <View style={styles.headerRight}>
           <TouchableOpacity onPress={onRefresh} disabled={refreshing} style={styles.refreshBtn} hitSlop={12}>
-            <RefreshCw size={22} color={colors.primary} />
+            <RefreshCw size={22} color={themeColor} />
           </TouchableOpacity>
           <HeaderNotificationBell />
           <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={styles.profileBtn} hitSlop={12}>
-            <User size={24} color={colors.primary} strokeWidth={2} />
+            <User size={24} color={themeColor} strokeWidth={2} />
           </TouchableOpacity>
         </View>
       ),
     });
-  }, [navigation, refreshing, onRefresh, router]);
+  }, [navigation, refreshing, onRefresh, router, themeColor]);
 
   const renderPodiumRow = (entry: LeaderboardRow | undefined, label: string, size: number) => {
     if (!entry) return <View style={[styles.podiumSlot, { width: size, height: size }]} />;
     const isMe = user?.id === entry.user_id;
+    const ringColor = PODIUM_RING[label] ?? colors.border;
     return (
-      <TouchableOpacity
+      <PressScale
         style={[styles.podiumSlot, { width: size }]}
         onPress={() => openUserProfile(entry.user_id)}
-        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel={`${entry.full_name}, ${label}`}
       >
-        <View style={[styles.podiumAvatarWrap, { width: size, height: size, borderRadius: size / 2 }]}>
+        <View
+          style={[
+            styles.podiumAvatarWrap,
+            {
+              width: size,
+              height: size,
+              borderRadius: size / 2,
+              borderWidth: 3,
+              borderColor: ringColor,
+            },
+          ]}
+        >
           {entry.avatar_url ? (
-            <Avatar uri={entry.avatar_url} name={entry.full_name} size={size} />
+            <Avatar uri={entry.avatar_url} name={entry.full_name} size={size - 6} />
           ) : (
-            <View style={[styles.podiumInitials, { width: size, height: size, borderRadius: size / 2 }]}>
-              <Text style={[styles.podiumInitialsText, { fontSize: size * 0.35 }]}>{getInitials(entry.full_name)}</Text>
+            <View style={[styles.podiumInitials, { width: size - 6, height: size - 6, borderRadius: (size - 6) / 2 }]}>
+              <Text style={[styles.podiumInitialsText, { fontSize: (size - 6) * 0.35 }]}>{getInitials(entry.full_name)}</Text>
             </View>
           )}
         </View>
         <Text style={[styles.podiumName, label === '1st' && styles.podiumNameFirst]} numberOfLines={1}>{entry.full_name}</Text>
-        <Text style={[styles.podiumPts, label === '1st' && styles.podiumPtsFirst, isMe && styles.podiumPtsMe]}>{entry.points} pts</Text>
+        <Text style={[styles.podiumPts, label === '1st' && styles.podiumPtsFirst, isMe && { color: themeColor }]}>{entry.points} pts</Text>
         <Text style={[styles.podiumLabel, label === '1st' && styles.podiumLabelFirst]}>{label}</Text>
-      </TouchableOpacity>
+      </PressScale>
     );
   };
 
@@ -271,10 +316,11 @@ export default function LeaderboardScreen() {
     const displayRank = index + 4;
     const isAlt = index % 2 === 1;
     return (
-      <TouchableOpacity
-        style={[styles.restRow, isAlt && styles.restRowAlt, isMe && styles.restRowMe]}
+      <PressScale
+        style={[styles.restRow, isAlt && styles.restRowAlt, isMe && { backgroundColor: themeFaded, borderColor: themeColor }]}
         onPress={() => openUserProfile(item.user_id)}
-        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel={`${item.full_name}, rank ${displayRank}`}
       >
         <Text style={styles.restRank}>{displayRank}</Text>
         {item.avatar_url ? (
@@ -286,10 +332,10 @@ export default function LeaderboardScreen() {
         )}
         <View style={styles.restNameCell}>
           <Text style={[styles.restName, isMe && styles.restNameMe]} numberOfLines={1}>{item.full_name}</Text>
-          {isMe && <Text style={styles.youLabel}>You</Text>}
+          {isMe && <Text style={[styles.youLabel, { color: themeColor }]}>You</Text>}
         </View>
-        <Text style={[styles.restPts, isMe && styles.restPtsMe]}>{item.points} pts</Text>
-      </TouchableOpacity>
+        <Text style={[styles.restPts, isMe && { color: themeColor }]}>{item.points} pts</Text>
+      </PressScale>
     );
   };
 
@@ -312,14 +358,14 @@ export default function LeaderboardScreen() {
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24 }}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
           }
         >
           <View style={styles.placeholder}>
             <Trophy size={48} color={colors.textMuted} />
             {loading ? (
               <>
-                <ActivityIndicator size="large" color={colors.primary} style={{ marginVertical: 12 }} />
+                <ActivityIndicator size="large" color={themeColor} style={{ marginVertical: 12 }} />
                 <Text style={styles.title}>Rank</Text>
                 <Text style={styles.subtitle}>Loading leaderboard…</Text>
               </>
@@ -333,7 +379,7 @@ export default function LeaderboardScreen() {
                     setLoading(true);
                     fetchLeaderboard();
                   }}
-                  style={({ pressed }) => [styles.retryBtn, pressed && { opacity: 0.85 }]}
+                  style={[styles.retryBtn, { backgroundColor: themeColor }]}
                 >
                   <Text style={styles.retryBtnText}>Try again</Text>
                 </Pressable>
@@ -350,17 +396,17 @@ export default function LeaderboardScreen() {
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
         }
         showsVerticalScrollIndicator={false}
       >
         {rows.length === 0 ? (
-          <View style={styles.placeholder}>
-            <Text style={styles.subtitle}>No members yet. Join the event and start earning points!</Text>
-            <TouchableOpacity style={[styles.howToBtn, styles.howToBtnSmall, { marginTop: 20 }]} onPress={openPointsModal}>
-              <Text style={[styles.howToBtnText, styles.howToBtnSmallText]}>How to earn points</Text>
-            </TouchableOpacity>
-          </View>
+          <EmptyState
+            title="The board is empty"
+            subtitle="Join the event, share photos, and earn points — your name could be up here first."
+            ctaLabel="How to earn points"
+            onCtaPress={openPointsModal}
+          />
         ) : (
           <>
             <View style={styles.podium}>
@@ -370,17 +416,17 @@ export default function LeaderboardScreen() {
             </View>
 
             <View style={styles.howToWrap}>
-              <TouchableOpacity style={[styles.howToBtn, styles.howToBtnSmall]} onPress={openPointsModal}>
+              <PressScale style={[styles.howToBtn, styles.howToBtnSmall, { backgroundColor: themeColor }]} onPress={openPointsModal}>
                 <Text style={[styles.howToBtnText, styles.howToBtnSmallText]}>How to earn points</Text>
-              </TouchableOpacity>
+              </PressScale>
             </View>
             {!user && (
-              <Text style={styles.loginHint}>Log in to start earning points</Text>
+              <Text style={[styles.loginHint, { color: themeColor }]}>Log in to start earning points</Text>
             )}
 
             {rest.length > 0 && (
               <View style={styles.restSection}>
-                <Text style={styles.restSectionTitle}>Rankings</Text>
+                <SectionHeader title="Rankings" style={styles.restSectionHeader} />
                 <View style={styles.restList}>
                   {rest.map((item, index) => (
                     <View key={item.user_id}>
@@ -410,7 +456,7 @@ export default function LeaderboardScreen() {
             </View>
             {pointsModalLoading ? (
               <View style={styles.modalBody}>
-                <ActivityIndicator size="large" color={colors.primary} />
+                <ActivityIndicator size="large" color={themeColor} />
               </View>
             ) : pointRules.length === 0 ? (
               <View style={styles.modalBody}>
@@ -422,7 +468,7 @@ export default function LeaderboardScreen() {
                   <View key={rule.id ?? rule.action} style={styles.ruleRow}>
                     <Text style={styles.ruleLabel}>{getActionLabel(rule)}</Text>
                     <View style={styles.rulePointsWrap}>
-                      <Text style={styles.rulePoints}>{rule.points_value} pts</Text>
+                      <Text style={[styles.rulePoints, { color: themeColor }]}>{rule.points_value} pts</Text>
                       {rule.max_per_day != null && (
                         <Text style={styles.ruleLimit}>max {rule.max_per_day}/day</Text>
                       )}
@@ -446,7 +492,7 @@ export default function LeaderboardScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: 'transparent' },
   placeholder: {
     flex: 1,
     justifyContent: 'center',
@@ -475,7 +521,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'flex-end',
   },
-  podiumAvatarWrap: { overflow: 'hidden' },
+  podiumAvatarWrap: {
+    overflow: 'hidden',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+  },
   podiumInitials: {
     backgroundColor: colors.gold,
     alignItems: 'center',
@@ -516,7 +567,11 @@ const styles = StyleSheet.create({
   },
   retryBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
   loginHint: { fontSize: 13, color: colors.primary, textAlign: 'center', marginBottom: 20 },
-  restSection: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 24 },
+  restSection: { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 24 },
+  restSectionHeader: {
+    marginTop: 4,
+    marginBottom: 14,
+  },
   restSectionTitle: {
     fontSize: 13,
     fontWeight: '600',

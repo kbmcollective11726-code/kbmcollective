@@ -3,14 +3,26 @@ import { View, Text, ActivityIndicator, StyleSheet, TouchableOpacity } from 'rea
 import * as Linking from 'expo-linking';
 import { useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { supabase, supabaseAuthNative } from '../../lib/supabase';
-import { consumePendingPasswordRecoveryUrl } from '../../lib/pendingRecoveryUrl';
+import { supabase, supabaseAuthNative, supabaseAnonKey, supabaseUrl } from '../../lib/supabase';
+import { useAuthStore } from '../../stores/authStore';
+import type { Session } from '@supabase/supabase-js';
+import {
+  clearPendingPasswordRecoveryUrl,
+  peekPendingPasswordRecoveryUrl,
+} from '../../lib/pendingRecoveryUrl';
 import { isPasswordRecoveryLaunchUrl } from '../../lib/passwordRecoveryLaunchUrl';
+import {
+  isPasswordRecoveryHandoffComplete,
+  markPasswordRecoveryHandoffComplete,
+} from '../../lib/passwordRecoveryHandoff';
+import {
+  friendlyPasswordRecoveryError,
+  PASSWORD_RECOVERY_MESSAGES,
+} from '../../lib/passwordRecoveryUserMessage';
 import { colors } from '../../constants/colors';
 
-/**
- * Cold start: RN getInitialURL() is often null after Expo consumes the link; getLinkingURL() + retries help.
- */
+let lastSuccessfulRecoveryUrl: string | null = null;
+
 async function resolveRecoveryLaunchUrl(): Promise<string | null> {
   const attempts = 22;
   const gapMs = 100;
@@ -18,7 +30,7 @@ async function resolveRecoveryLaunchUrl(): Promise<string | null> {
     if (i > 0) await new Promise<void>((r) => setTimeout(r, gapMs));
     const fromExpo = Linking.getLinkingURL();
     if (isPasswordRecoveryLaunchUrl(fromExpo ?? undefined)) return fromExpo as string;
-    const fromPending = consumePendingPasswordRecoveryUrl();
+    const fromPending = peekPendingPasswordRecoveryUrl();
     if (isPasswordRecoveryLaunchUrl(fromPending ?? undefined)) return fromPending as string;
     const initial = await Linking.getInitialURL();
     if (isPasswordRecoveryLaunchUrl(initial ?? undefined)) return initial as string;
@@ -37,7 +49,6 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   ]);
 }
 
-/** Parse Supabase recovery redirect: tokens in hash (#) or query (?). */
 function parseAuthParamsFromUrl(url: string): Record<string, string> {
   const out: Record<string, string> = {};
   try {
@@ -62,32 +73,136 @@ function parseAuthParamsFromUrl(url: string): Record<string, string> {
   return out;
 }
 
+async function verifyRecoveryInApp(tokenHash: string): Promise<Session | null> {
+  try {
+    const { data, error } = await withTimeout(
+      supabaseAuthNative.auth.verifyOtp({
+        token_hash: tokenHash,
+        type: 'recovery',
+      }),
+      AUTH_SET_SESSION_MS,
+      'Verification timed out',
+    );
+    if (!error && data.session) return data.session;
+  } catch {
+    /* try native fetch */
+  }
+
+  if (!supabaseUrl || supabaseUrl.includes('placeholder') || !supabaseAnonKey) return null;
+  const endpoint = `${supabaseUrl.replace(/\/+$/, '')}/auth/v1/verify`;
+  try {
+    const res = await globalThis.fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: supabaseAnonKey,
+        Authorization: `Bearer ${supabaseAnonKey}`,
+      },
+      body: JSON.stringify({ token_hash: tokenHash, type: 'recovery' }),
+    });
+    const body = (await res.json()) as {
+      access_token?: string;
+      refresh_token?: string;
+      error?: string;
+      error_description?: string;
+    };
+    if (!res.ok || !body.access_token || !body.refresh_token) {
+      throw new Error(body.error_description || body.error || 'Verification failed');
+    }
+    const { data, error } = await supabaseAuthNative.auth.setSession({
+      access_token: body.access_token,
+      refresh_token: body.refresh_token,
+    });
+    if (error || !data.session) {
+      throw new Error(error?.message || 'Could not start reset session');
+    }
+    return data.session;
+  } catch {
+    return null;
+  }
+}
+
+async function adoptRecoverySession(session: Session | null | undefined): Promise<void> {
+  if (session?.user) {
+    useAuthStore.setState({ session, isAuthenticated: true });
+    return;
+  }
+  const {
+    data: { session: stored },
+  } = await supabase.auth.getSession();
+  if (stored?.user) {
+    useAuthStore.setState({ session: stored, isAuthenticated: true });
+  }
+}
+
+async function finishRecoveryHandoff(router: ReturnType<typeof useRouter>, url: string): Promise<void> {
+  lastSuccessfulRecoveryUrl = url;
+  markPasswordRecoveryHandoffComplete();
+  clearPendingPasswordRecoveryUrl();
+  await adoptRecoverySession(useAuthStore.getState().session);
+  router.replace('/(auth)/change-password');
+}
+
 export default function ResetPasswordDeepLinkScreen() {
   const router = useRouter();
   const expoLinkingUrl = Linking.useLinkingURL();
   const handleInFlight = useRef(false);
-  const [message, setMessage] = useState('Opening reset link…');
+  const unmounted = useRef(false);
+  const [message, setMessage] = useState<string>(PASSWORD_RECOVERY_MESSAGES.opening);
   const [failed, setFailed] = useState(false);
   const [hasAttempted, setHasAttempted] = useState(false);
+
+  const fail = useCallback((userMessage: string) => {
+    setFailed(true);
+    setMessage(userMessage);
+    setHasAttempted(true);
+  }, []);
 
   const handleUrl = useCallback(
     async (url: string | null) => {
       if (!url) return;
       if (handleInFlight.current) return;
+      if (lastSuccessfulRecoveryUrl === url || isPasswordRecoveryHandoffComplete()) {
+        await finishRecoveryHandoff(router, url);
+        return;
+      }
+
       handleInFlight.current = true;
       try {
         const params = parseAuthParamsFromUrl(url);
+        const token_hash = params.token_hash;
+        const recoveryType = params.type;
         const access_token = params.access_token;
         const refresh_token = params.refresh_token;
         const code = params.code;
 
-        if (access_token && refresh_token) {
-          setMessage('Signing you in…');
+        if (token_hash && recoveryType === 'recovery') {
+          setMessage(PASSWORD_RECOVERY_MESSAGES.verifying);
           setFailed(false);
           try {
-            // Clear any half-restored session so setSession does not block on storage races with cold-start getSession().
-            await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
-            const { error } = await withTimeout(
+            const session = await verifyRecoveryInApp(token_hash);
+            if (!session) {
+              fail(PASSWORD_RECOVERY_MESSAGES.linkExpired);
+              return;
+            }
+            await adoptRecoverySession(session);
+            if (unmounted.current) return;
+            await finishRecoveryHandoff(router, url);
+            return;
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            fail(friendlyPasswordRecoveryError(msg));
+            return;
+          } finally {
+            setHasAttempted(true);
+          }
+        }
+
+        if (access_token && refresh_token) {
+          setMessage(PASSWORD_RECOVERY_MESSAGES.signingIn);
+          setFailed(false);
+          try {
+            const { data, error } = await withTimeout(
               supabaseAuthNative.auth.setSession({
                 access_token,
                 refresh_token,
@@ -96,20 +211,28 @@ export default function ResetPasswordDeepLinkScreen() {
               'Sign-in timed out',
             );
             if (error) {
-              setFailed(true);
-              setMessage(`Could not complete reset: ${error.message}`);
+              fail(friendlyPasswordRecoveryError(error.message));
               return;
             }
-            router.replace('/(auth)/change-password');
+            await adoptRecoverySession(data.session);
+            if (unmounted.current) return;
+            await finishRecoveryHandoff(router, url);
             return;
           } catch (e) {
-            setFailed(true);
             const msg = e instanceof Error ? e.message : String(e);
-            setMessage(
-              msg.includes('timed out') || msg.includes('Sign-in timed out')
-                ? 'Could not reach the server in time. Check Wi‑Fi or mobile data, then open the reset link from your email again.'
-                : `Could not complete reset: ${msg}`,
-            );
+            try {
+              const {
+                data: { session },
+              } = await supabaseAuthNative.auth.getSession();
+              if (session) {
+                if (unmounted.current) return;
+                await finishRecoveryHandoff(router, url);
+                return;
+              }
+            } catch {
+              /* fall through */
+            }
+            fail(friendlyPasswordRecoveryError(msg));
             return;
           } finally {
             setHasAttempted(true);
@@ -117,100 +240,87 @@ export default function ResetPasswordDeepLinkScreen() {
         }
 
         if (code) {
-          setMessage('Verifying reset code…');
-          setFailed(false);
-          try {
-            const { error } = await withTimeout(
-              supabaseAuthNative.auth.exchangeCodeForSession(code),
-              AUTH_SET_SESSION_MS,
-              'Verification timed out',
-            );
-            if (error) {
-              setFailed(true);
-              setMessage(`Could not complete reset: ${error.message}`);
-              return;
-            }
-            router.replace('/(auth)/change-password');
-            return;
-          } catch (e) {
-            setFailed(true);
-            const msg = e instanceof Error ? e.message : String(e);
-            setMessage(
-              msg.includes('timed out') || msg.includes('Verification timed out')
-                ? 'Could not reach the server in time. Check your connection, then open the reset link from your email again.'
-                : `Could not complete reset: ${msg}`,
-            );
-            return;
-          } finally {
-            setHasAttempted(true);
-          }
-        }
-
-        if (params.error) {
-          setFailed(true);
-          setMessage(params.error_description || params.error || 'This reset link is invalid or expired.');
+          fail(PASSWORD_RECOVERY_MESSAGES.linkTooOld);
           return;
         }
 
-        setFailed(true);
-        setMessage(
-          'No login tokens in this link. If you opened the email in a browser and saw localhost, add your app redirect URL in Supabase (see app docs: PASSWORD-RESET-SUPABASE.md).',
-        );
-        setHasAttempted(true);
+        if (params.error) {
+          fail(friendlyPasswordRecoveryError(params.error_description || params.error));
+          return;
+        }
+
+        fail(PASSWORD_RECOVERY_MESSAGES.linkMissing);
       } finally {
         handleInFlight.current = false;
       }
     },
-    [router],
+    [fail, router],
   );
 
-  // Expo’s native linking URL can arrive shortly after mount (after getInitialURL was already null).
   useEffect(() => {
     if (!expoLinkingUrl || !isPasswordRecoveryLaunchUrl(expoLinkingUrl)) return;
+    if (isPasswordRecoveryHandoffComplete()) return;
     void handleUrl(expoLinkingUrl);
   }, [expoLinkingUrl, handleUrl]);
 
   useEffect(() => {
+    unmounted.current = false;
     let alive = true;
 
     (async () => {
-      const launch = await resolveRecoveryLaunchUrl();
-      if (alive && launch) await handleUrl(launch);
-      if (alive && !launch) {
-        setHasAttempted(true);
-        setFailed(true);
-        setMessage('Reset link not found in app. Open the newest reset email link again from your mail app.');
+      if (isPasswordRecoveryHandoffComplete()) {
+        router.replace('/(auth)/change-password');
+        return;
       }
+
+      const launch = await resolveRecoveryLaunchUrl();
+      if (!alive) return;
+      if (launch) {
+        await handleUrl(launch);
+        return;
+      }
+      fail(PASSWORD_RECOVERY_MESSAGES.linkNotFound);
     })();
 
     const sub = Linking.addEventListener('url', ({ url }) => {
+      if (isPasswordRecoveryHandoffComplete()) return;
       void handleUrl(url);
     });
 
     return () => {
       alive = false;
+      unmounted.current = true;
       sub.remove();
     };
-  }, [handleUrl]);
+  }, [fail, handleUrl, router]);
 
-  // Do not run this while setSession is in progress — that step can exceed 12s on slow networks.
   useEffect(() => {
     if (failed || hasAttempted) return;
-    if (message === 'Signing you in…' || message.startsWith('Verifying reset')) return;
+    if (
+      message === PASSWORD_RECOVERY_MESSAGES.signingIn ||
+      message === PASSWORD_RECOVERY_MESSAGES.verifying
+    ) {
+      return;
+    }
     const t = setTimeout(() => {
-      setFailed(true);
-      setMessage('Reset link is taking too long. Go back to email and open the newest reset link again.');
+      fail(PASSWORD_RECOVERY_MESSAGES.takingTooLong);
     }, 12000);
     return () => clearTimeout(t);
-  }, [failed, hasAttempted, message]);
+  }, [fail, failed, hasAttempted, message]);
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-      <ActivityIndicator size="large" color={colors.primary} style={styles.spinner} />
+      {!failed ? (
+        <ActivityIndicator size="large" color={colors.primary} style={styles.spinner} />
+      ) : null}
       <Text style={styles.text}>{message}</Text>
       {failed ? (
-        <TouchableOpacity style={styles.button} onPress={() => router.replace('/(auth)/login')} activeOpacity={0.8}>
-          <Text style={styles.buttonText}>Back to sign in</Text>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={() => router.replace('/(auth)/login?requestReset=1')}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.buttonText}>Get a new reset email</Text>
         </TouchableOpacity>
       ) : null}
     </SafeAreaView>

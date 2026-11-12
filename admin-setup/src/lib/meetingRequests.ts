@@ -1,5 +1,11 @@
 import { supabase } from './supabase';
-import type { EventMeetingInterestRequest, MeetingInterestLevel } from './types';
+import type {
+  EventMeetingInterestRequest,
+  MeetingInterestLevel,
+  MeetingRequestResponseStatus,
+  ParticipantMatchmakingMeeting,
+  ReceivedMeetingRequest,
+} from './types';
 
 export interface MeetingRequestTarget {
   id: string;
@@ -110,15 +116,14 @@ export async function updateMeetingRequestInterest(requestId: string, interestLe
 }
 
 export async function updateMeetingRequestPriorities(
-  rows: Array<{ id: string; priority: number }>,
+  submissionId: string,
+  requestIds: string[],
 ): Promise<void> {
-  for (const row of rows) {
-    const { error } = await supabase
-      .from('event_meeting_interest_requests')
-      .update({ priority: row.priority })
-      .eq('id', row.id);
-    if (error) throw error;
-  }
+  const { error } = await supabase.rpc('set_my_meeting_request_priorities', {
+    p_submission_id: submissionId,
+    p_request_ids: requestIds,
+  });
+  if (error) throw error;
 }
 
 export async function deleteMeetingRequest(requestId: string): Promise<void> {
@@ -136,4 +141,85 @@ export function requestForTarget(
 export function nextMeetingRequestPriority(requests: EventMeetingInterestRequest[]): number {
   if (requests.length === 0) return 0;
   return Math.max(...requests.map((r) => r.priority)) + 1;
+}
+
+export type PortalMatchSuggestion = {
+  candidate_id: string;
+  score: number;
+  category_overlap: number;
+};
+
+/** Plain-language why for portal suggestions — form fit only (never interest/request leakage). */
+export function formatPortalMatchWhy(score: number, categoryOverlap: number): string {
+  const parts: string[] = [];
+  if (categoryOverlap > 0) {
+    parts.push(
+      categoryOverlap === 1
+        ? 'Same solution category'
+        : `${categoryOverlap} shared solution categories`,
+    );
+  }
+  const categoryCap = Math.min(40, categoryOverlap * 8);
+  if (score > categoryCap + 15) {
+    parts.push('plus form fit (goals, seniority, or company size)');
+  } else if (score > 0 && parts.length === 0) {
+    parts.push('Form fit (goals, seniority, or company size)');
+  }
+  if (score <= 0) return 'No strong match signals yet';
+  if (parts.length === 0) return 'Overall profile fit';
+  const head = parts[0]!.charAt(0).toUpperCase() + parts[0]!.slice(1);
+  return [head, ...parts.slice(1)].join(' · ');
+}
+
+export async function loadPortalMatchSuggestions(
+  eventId: string,
+  submissionId: string,
+  limit = 8,
+): Promise<PortalMatchSuggestion[]> {
+  const { data, error } = await supabase.rpc('rank_my_portal_match_suggestions', {
+    p_event_id: eventId,
+    p_submission_id: submissionId,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  return ((data as PortalMatchSuggestion[]) ?? []).map((row) => ({
+    candidate_id: row.candidate_id,
+    score: Number(row.score) || 0,
+    category_overlap: Number(row.category_overlap) || 0,
+  }));
+}
+
+export async function loadReceivedMeetingRequests(
+  eventId: string,
+  submissionId: string,
+): Promise<ReceivedMeetingRequest[]> {
+  const { data, error } = await supabase.rpc('list_my_received_meeting_requests', {
+    p_event_id: eventId,
+    p_submission_id: submissionId,
+  });
+  if (error) throw error;
+  return (data as ReceivedMeetingRequest[]) ?? [];
+}
+
+export async function respondToMeetingRequest(
+  requestId: string,
+  responseStatus: Exclude<MeetingRequestResponseStatus, 'pending'>,
+): Promise<void> {
+  const { error } = await supabase.rpc('respond_to_meeting_request', {
+    p_request_id: requestId,
+    p_response_status: responseStatus,
+  });
+  if (error) throw error;
+}
+
+export async function loadParticipantMatchmakingSchedule(
+  eventId: string,
+  submissionId: string,
+): Promise<ParticipantMatchmakingMeeting[]> {
+  const { data, error } = await supabase.rpc('list_my_matchmaking_schedule', {
+    p_event_id: eventId,
+    p_submission_id: submissionId,
+  });
+  if (error) throw error;
+  return (data as ParticipantMatchmakingMeeting[]) ?? [];
 }

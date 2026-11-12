@@ -11,6 +11,7 @@ import {
   updateMeetingRequestInterest,
   updateMeetingRequestPriorities,
 } from '../../lib/meetingRequests';
+import MeetingRequestPriorityList from './MeetingRequestPriorityList';
 import MeetingRequestProfileModal, { MeetingRequestEditInterestModal } from './MeetingRequestProfileModal';
 import styles from './MeetingRequests.module.css';
 
@@ -74,7 +75,9 @@ export default function MeetingSentRequests({
             company_name: profile.company_name,
             first_name: profile.first_name,
             last_name: profile.last_name,
-            logo_url: profile.answers.find((a) => a.prompt.toLowerCase().includes('company logo'))?.value ?? null,
+            logo_url:
+              profile.answers.find((a) => a.prompt.toLowerCase().includes('company logo'))?.value ??
+              null,
           });
         }
       } catch {
@@ -100,39 +103,15 @@ export default function MeetingSentRequests({
     );
   }
 
-  const moveToTop = async (row: EventMeetingInterestRequest) => {
-    const others = sortedRows.filter((r) => r.id !== row.id);
-    const next = [{ id: row.id, priority: 0 }, ...others.map((r, idx) => ({ id: r.id, priority: idx + 1 }))];
-    try {
-      await updateMeetingRequestPriorities(next);
-      await reload();
-    } catch (e) {
-      setError(postgrestErrorMessage(e) || 'Could not update rank');
-    }
-  };
-
-  const updateRank = async (rowId: string, rank: number) => {
-    const clamped = Math.max(1, Math.min(sortedRows.length, rank));
-    const currentIndex = sortedRows.findIndex((r) => r.id === rowId);
-    if (currentIndex < 0) return;
-    const reordered = [...sortedRows];
-    const [item] = reordered.splice(currentIndex, 1);
-    if (!item) return;
-    reordered.splice(clamped - 1, 0, item);
-    try {
-      await updateMeetingRequestPriorities(reordered.map((r, idx) => ({ id: r.id, priority: idx })));
-      await reload();
-    } catch (e) {
-      setError(postgrestErrorMessage(e) || 'Could not update rank');
-    }
-  };
-
   const cancelRequest = async (requestId: string) => {
     if (!window.confirm('Cancel this meeting request?')) return;
     try {
       await deleteMeetingRequest(requestId);
       const remaining = sortedRows.filter((r) => r.id !== requestId);
-      await updateMeetingRequestPriorities(remaining.map((r, idx) => ({ id: r.id, priority: idx })));
+      await updateMeetingRequestPriorities(
+        submissionId,
+        remaining.map((item) => item.id),
+      );
       await reload();
     } catch (e) {
       setError(postgrestErrorMessage(e) || 'Could not cancel request');
@@ -164,7 +143,10 @@ export default function MeetingSentRequests({
     <div className={styles.card}>
       <h1>Sent Requests</h1>
       <ul className={styles.leadList}>
-        <li>Rank your sent requests in priority order — highest-ranked targets are scheduled first.</li>
+        <li>
+          Drag to reorder, or use ↑ ↓ / Top. Whoever is on top is <strong>#1</strong> for
+          scheduling.
+        </li>
         <li>Update interest level (Low, Medium, High) to reflect how strongly you want each meeting.</li>
       </ul>
       <p className={styles.toolbar}>
@@ -175,78 +157,81 @@ export default function MeetingSentRequests({
       {!loading && sortedRows.length === 0 ? (
         <p className={styles.hint}>
           You have not submitted any meeting requests yet.{' '}
-          <Link to={requestPath}>Browse {`participants`}</Link>.
+          <Link to={requestPath}>Browse participants</Link>.
         </p>
       ) : null}
+
       {!loading && sortedRows.length > 0 ? (
-        <div className={styles.tableWrap}>
-          <table className={styles.listTable}>
-            <thead>
-              <tr>
-                <th>Rank</th>
-                <th>Name</th>
-                <th>Date</th>
-                <th>Interest Level</th>
-                <th>Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedRows.map((row, index) => (
-                <tr key={row.id}>
-                  <td>
-                    <div className={styles.actions}>
-                      <input
-                        className={styles.rankInput}
-                        type="number"
-                        min={1}
-                        max={sortedRows.length}
-                        value={index + 1}
-                        onChange={(e) => void updateRank(row.id, Number(e.target.value))}
-                      />
-                      {index > 0 ? (
-                        <button type="button" className={styles.linkBtn} onClick={() => void moveToTop(row)}>
-                          TOP
+        <>
+          <MeetingRequestPriorityList
+            submissionId={submissionId}
+            requests={rows}
+            onChanged={reload}
+            onError={setError}
+          />
+
+          <h2 className={styles.subheading}>Request details</h2>
+          <div className={styles.tableWrap}>
+            <table className={styles.listTable}>
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Name</th>
+                  <th>Date</th>
+                  <th>Interest Level</th>
+                  <th>Status</th>
+                  <th>Action</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedRows.map((row, index) => (
+                  <tr key={row.id}>
+                    <td>
+                      <span className={styles.rankBadge}>#{index + 1}</span>
+                    </td>
+                    <td>
+                      {row.target_submission_id ? (
+                        <button
+                          type="button"
+                          className={styles.nameBtn}
+                          onClick={() => setProfileTargetId(row.target_submission_id)}
+                        >
+                          {row.target_company_name ?? '—'}
                         </button>
-                      ) : null}
-                    </div>
-                  </td>
-                  <td>
-                    {row.target_submission_id ? (
+                      ) : (
+                        row.target_company_name ?? '—'
+                      )}
+                    </td>
+                    <td>{row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}</td>
+                    <td>
                       <button
                         type="button"
-                        className={styles.nameBtn}
-                        onClick={() => setProfileTargetId(row.target_submission_id)}
+                        className={`${styles.linkBtn} ${interestClass(row.interest_level)}`}
+                        onClick={() => setEditRow(row)}
                       >
-                        {row.target_company_name ?? '—'}
+                        {interestLevelLabel(row.interest_level)}
                       </button>
-                    ) : (
-                      row.target_company_name ?? '—'
-                    )}
-                  </td>
-                  <td>{row.created_at ? new Date(row.created_at).toLocaleDateString() : '—'}</td>
-                  <td>
-                    <button
-                      type="button"
-                      className={`${styles.linkBtn} ${interestClass(row.interest_level)}`}
-                      onClick={() => setEditRow(row)}
-                    >
-                      {interestLevelLabel(row.interest_level)}
-                    </button>
-                  </td>
-                  <td>
-                    <button
-                      type="button"
-                      className={`${styles.linkBtn} ${styles.linkBtnDanger}`}
-                      onClick={() => void cancelRequest(row.id)}
-                    >
-                      Cancel
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    </td>
+                    <td>
+                      <span className={`${styles.statusPill} ${styles[`status${row.response_status}`]}`}>
+                        {row.response_status}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        type="button"
+                        className={`${styles.linkBtn} ${styles.linkBtnDanger}`}
+                        onClick={() => void cancelRequest(row.id)}
+                      >
+                        Cancel
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
       ) : null}
 
       <MeetingRequestProfileModal

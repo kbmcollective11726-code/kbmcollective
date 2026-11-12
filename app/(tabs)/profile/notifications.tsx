@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useFocusEffect, useIsFocused } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -10,8 +10,6 @@ import {
   ActivityIndicator,
   Alert,
   Dimensions,
-  AppState,
-  AppStateStatus,
   Switch,
 } from 'react-native';
 import Toast from 'react-native-toast-message';
@@ -21,10 +19,14 @@ import { ChevronLeft, Check, X } from 'lucide-react-native';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh, refreshSessionIfNeeded, getErrorMessage } from '../../../lib/supabase';
+import { registerRefetchOnSessionRefreshed } from '../../../lib/onSessionRefreshed';
 import { addDebugLog } from '../../../lib/debugLog';
 import { setAppBadgeCount } from '../../../lib/pushNotifications';
 import { ensureCurrentEventForId } from '../../../lib/ensureEventForNotification';
 import { colors, notificationIcons } from '../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme';
+import { chatHref, groupChatHref } from '../../../lib/navReturn';
+import type { User } from '../../../lib/types';
 import { format } from 'date-fns';
 
 type NotificationRow = {
@@ -71,16 +73,17 @@ function dataPick(data: Record<string, string>, ...keys: string[]): string | und
   return undefined;
 }
 
-const RESUME_REFETCH_DEBOUNCE_MS = 12000;
 
 function NotificationsTopBar({
   onBack,
   onReadAll,
   unreadCount,
+  themeColor,
 }: {
   onBack: () => void;
   onReadAll: () => void;
   unreadCount: number;
+  themeColor: string;
 }) {
   const readAllDisabled = unreadCount === 0;
   return (
@@ -108,10 +111,16 @@ function NotificationsTopBar({
         >
           <Check
             size={20}
-            color={!readAllDisabled ? colors.primary : colors.textMuted}
+            color={!readAllDisabled ? themeColor : colors.textMuted}
             strokeWidth={2}
           />
-          <Text style={[styles.topBarReadAllText, readAllDisabled && styles.readAllTextDisabled]}>
+          <Text
+            style={[
+              styles.topBarReadAllText,
+              { color: themeColor },
+              readAllDisabled && styles.readAllTextDisabled,
+            ]}
+          >
             Read all
           </Text>
         </TouchableOpacity>
@@ -126,7 +135,8 @@ export default function NotificationsScreen() {
   const { from } = useLocalSearchParams<{ from?: string }>();
   const { user, updateProfile, refreshUser } = useAuthStore();
   const currentEvent = useEventStore((s) => s.currentEvent);
-  const lastResumeRefetchAt = useRef<number>(0);
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '22');
 
   useEffect(() => {
     if (__DEV__) console.log('[Notifications] component did mount');
@@ -156,12 +166,15 @@ export default function NotificationsScreen() {
   const [reminderPrefBusy, setReminderPrefBusy] = useState(false);
 
   const skipSameRoomReminders = user?.session_reminder_skip_same_room !== false;
+  const savedOnlyReminders = user?.session_reminder_saved_only !== false;
 
-  const onToggleSkipSameRoom = async (value: boolean) => {
+  const saveReminderPref = async (
+    updates: Pick<User, 'session_reminder_skip_same_room' | 'session_reminder_saved_only'>
+  ) => {
     if (!user?.id) return;
     setReminderPrefBusy(true);
     try {
-      const { error } = await updateProfile({ session_reminder_skip_same_room: value });
+      const { error } = await updateProfile(updates);
       if (error) {
         Toast.show({ type: 'error', text1: 'Could not save', text2: error, visibilityTime: 4000 });
       } else {
@@ -173,8 +186,6 @@ export default function NotificationsScreen() {
   };
 
   const fetchInProgressRef = useRef(false);
-  const autoRetryScheduledRef = useRef(false);
-  const mountedRef = useRef(false);
   const fetchNotifications = useCallback(async () => {
     if (!user?.id) {
       if (__DEV__) console.log('[Notifications] fetch skipped — no user (session null or expired)');
@@ -210,14 +221,16 @@ export default function NotificationsScreen() {
           .limit(50);
         if (__DEV__) console.log('[Notifications] Supabase notifications query — data:', notifRes.data, 'error:', notifRes.error);
         if (notifRes.error) throw notifRes.error;
-        return (notifRes.data ?? []).map((row: NotificationRow & { data?: unknown }) => ({
-          ...row,
-          data: parseNotificationData(row.data),
-        }));
+        return (notifRes.data ?? [])
+          .map((row: NotificationRow & { data?: unknown }) => ({
+            ...row,
+            data: parseNotificationData(row.data),
+          }))
+          // Chat content lives in Chat hub — don't list DM/group message rows here.
+          .filter((row) => row.type !== 'message');
       });
       if (__DEV__) console.log('[Notifications] Supabase query returned data (count):', all?.length ?? 0);
       setItems(all);
-      autoRetryScheduledRef.current = false;
       setFetchError(null);
       setFetchErrorDetail(null);
       const unread = all.filter((n) => !n.is_read).length;
@@ -235,56 +248,19 @@ export default function NotificationsScreen() {
     }
   }, [user?.id, currentEvent?.id]);
 
-  // Up to 3 attempts (immediate, +2s, +5s) so transient failures often recover. Only on first mount.
-  useEffect(() => {
-    if (!user?.id) {
-      setLoading(false);
-      return;
-    }
-    if (mountedRef.current) return;
-    mountedRef.current = true;
-    let cancelled = false;
-    const retry = (attemptIndex: number) => {
-      if (cancelled) return;
-      fetchNotifications().catch(() => {
-        if (cancelled) return;
-        if (attemptIndex === 0) setTimeout(() => retry(1), 2000);
-        else if (attemptIndex === 1) setTimeout(() => retry(2), 5000);
-      });
-    };
-    retry(0);
-    return () => { cancelled = true; };
-  }, [fetchNotifications]);
-
-  // Switching the active event should reload the list (event-scoped notifications only).
-  useEffect(() => {
-    if (!user?.id || !currentEvent?.id) return;
-    fetchInProgressRef.current = false;
-    fetchNotifications().catch(() => {});
-  }, [currentEvent?.id, user?.id, fetchNotifications]);
-
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
-        fetchInProgressRef.current = false;
         fetchNotifications().catch(() => {});
       }
     }, [user?.id, fetchNotifications])
   );
 
-  // When app comes back from background: wait for root’s refresh, then load.
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state !== 'active' || !user?.id) return;
-      const now = Date.now();
-      if (now - lastResumeRefetchAt.current < RESUME_REFETCH_DEBOUNCE_MS) return;
-      lastResumeRefetchAt.current = now;
-      fetchInProgressRef.current = false;
-      refreshSessionIfNeeded()
-        .catch(() => {})
-        .finally(() => fetchNotifications().catch(() => {}));
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (user?.id) fetchNotifications().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [user?.id, fetchNotifications]);
 
   const screenLoadTimeoutMs = 30000;
@@ -298,14 +274,9 @@ export default function NotificationsScreen() {
     const t = setTimeout(() => {
       if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= screenLoadTimeoutMs) {
         addDebugLog('Notifications', 'Load timed out', 'Request never completed — check network or Supabase');
-        fetchInProgressRef.current = false;
         setLoading(false);
         setFetchError('Error - page not loading');
         setFetchErrorDetail('Timed out');
-        if (!autoRetryScheduledRef.current && user?.id) {
-          autoRetryScheduledRef.current = true;
-          setTimeout(() => fetchNotifications().catch(() => {}), 2000);
-        }
       }
     }, screenLoadTimeoutMs);
     return () => clearTimeout(t);
@@ -383,12 +354,12 @@ export default function NotificationsScreen() {
     // Direct message (not group invite — those use group_id below)
     if (item.type === 'message' && dataPick(data, 'chat_user_id', 'chatUserId')) {
       const uid = dataPick(data, 'chat_user_id', 'chatUserId')!;
-      router.push(`/profile/chat/${uid}${FROM_NOTIFICATIONS}` as any);
+      router.push(chatHref(uid, NOTIFICATIONS_PATH) as never);
       return;
     }
     if (dataPick(data, 'group_id', 'groupId')) {
       const gid = dataPick(data, 'group_id', 'groupId')!;
-      router.push(`/profile/groups/${gid}${FROM_NOTIFICATIONS}` as any);
+      router.push(groupChatHref(gid, NOTIFICATIONS_PATH) as never);
       return;
     }
     if ((item.type === 'like' || item.type === 'comment') && dataPick(data, 'post_id', 'postId')) {
@@ -413,7 +384,7 @@ export default function NotificationsScreen() {
     }
     if (item.type === 'system' && dataPick(data, 'chat_user_id', 'chatUserId')) {
       const uid = dataPick(data, 'chat_user_id', 'chatUserId')!;
-      router.push(`/profile/chat/${uid}${FROM_NOTIFICATIONS}` as any);
+      router.push(chatHref(uid, NOTIFICATIONS_PATH) as never);
       return;
     }
     if (item.type === 'meeting' && dataPick(data, 'booth_id', 'boothId')) {
@@ -422,7 +393,7 @@ export default function NotificationsScreen() {
         await ensureCurrentEventForId(item.event_id, user?.is_platform_admin === true);
       }
       const slotId = dataPick(data, 'slot_id', 'slotId');
-      const fromEnc = encodeURIComponent('/(tabs)/schedule');
+      const fromEnc = encodeURIComponent(NOTIFICATIONS_PATH);
       const rateParam = slotId ? `&rate_slot_id=${encodeURIComponent(slotId)}` : '';
       router.push(`/(tabs)/expo/${boothId}?from=${fromEnc}${rateParam}` as any);
       return;
@@ -464,8 +435,12 @@ export default function NotificationsScreen() {
   };
 
   const renderItem = ({ item }: { item: NotificationRow }) => (
-    <View style={[styles.row, !item.is_read && styles.rowUnread]}>
-      <TouchableOpacity
+    <View
+      style={[
+        styles.row,
+        !item.is_read && { backgroundColor: themeFaded, borderColor: themeColor },
+      ]}
+    >      <TouchableOpacity
         style={styles.rowTouchable}
         onPress={() => handleNotificationPress(item)}
         activeOpacity={0.7}
@@ -498,7 +473,7 @@ export default function NotificationsScreen() {
   if (!currentEvent?.id) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={0} />
+        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={0} themeColor={themeColor} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>
             Join or select an event to see notifications for that event only.
@@ -511,9 +486,9 @@ export default function NotificationsScreen() {
   if (loading) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={0} />
+        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={0} themeColor={themeColor} />
         <View style={styles.placeholder}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
           <Text style={styles.placeholderText}>Loading notifications…</Text>
         </View>
       </SafeAreaView>
@@ -523,7 +498,7 @@ export default function NotificationsScreen() {
   if (fetchError) {
     return (
       <SafeAreaView style={styles.container} edges={['top']}>
-        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={unreadCount} />
+        <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={unreadCount} themeColor={themeColor} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Error - page not loading</Text>
           {fetchErrorDetail ? (
@@ -545,7 +520,7 @@ export default function NotificationsScreen() {
               await refreshSessionIfNeeded();
               await fetchNotifications();
             }}
-            style={styles.retryBtn}
+            style={[styles.retryBtn, { backgroundColor: themeColor }]}
             activeOpacity={0.8}
           >
             <Text style={styles.retryBtnText}>Try again</Text>
@@ -557,31 +532,50 @@ export default function NotificationsScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={unreadCount} />
+      <NotificationsTopBar onBack={goBack} onReadAll={markAllAsRead} unreadCount={unreadCount} themeColor={themeColor} />
       <FlatList
         style={{ flex: 1 }}
         data={items}
         keyExtractor={(item) => item.id}
         renderItem={renderItem}
         ListHeaderComponent={
-          <View style={styles.prefCard}>
-            <Text style={styles.prefTitle}>Agenda reminders</Text>
-            <View style={styles.prefRow}>
-              <View style={styles.prefTextCol}>
-                <Text style={styles.prefLabel}>Skip same-room alerts</Text>
-                <Text style={styles.prefHint}>
-                  When on, you will not get a starting-soon push if your previous bookmarked session that day was in the
-                  same room. Turn off to always get reminders.
-                </Text>
+          <View>
+            <View style={styles.prefCard}>
+              <Text style={styles.prefTitle}>Agenda reminders</Text>
+              <View style={[styles.prefRow, styles.prefRowSpaced]}>
+                <View style={styles.prefTextCol}>
+                  <Text style={styles.prefLabel}>Only sessions I saved</Text>
+                  <Text style={styles.prefHint}>
+                    When on, you only get a starting-soon alert for sessions you saved in the Agenda. Turn off to get one
+                    for every session.
+                  </Text>
+                </View>
+                <Switch
+                  value={savedOnlyReminders}
+                  onValueChange={(v) => void saveReminderPref({ session_reminder_saved_only: v })}
+                  disabled={reminderPrefBusy}
+                  trackColor={{ false: colors.border, true: themeFaded }}
+                  thumbColor={savedOnlyReminders ? themeColor : colors.textMuted}
+                />
               </View>
-              <Switch
-                value={skipSameRoomReminders}
-                onValueChange={(v) => void onToggleSkipSameRoom(v)}
-                disabled={reminderPrefBusy}
-                trackColor={{ false: colors.border, true: colors.primaryFaded }}
-                thumbColor={skipSameRoomReminders ? colors.primary : colors.textMuted}
-              />
+              <View style={styles.prefRow}>
+                <View style={styles.prefTextCol}>
+                  <Text style={styles.prefLabel}>Skip same-room alerts</Text>
+                  <Text style={styles.prefHint}>
+                    When on, you will not get a starting-soon push if your previous bookmarked session that day was in the
+                    same room. Turn off to always get reminders.
+                  </Text>
+                </View>
+                <Switch
+                  value={skipSameRoomReminders}
+                  onValueChange={(v) => void saveReminderPref({ session_reminder_skip_same_room: v })}
+                  disabled={reminderPrefBusy}
+                  trackColor={{ false: colors.border, true: themeFaded }}
+                  thumbColor={skipSameRoomReminders ? themeColor : colors.textMuted}
+                />
+              </View>
             </View>
+            <Text style={styles.chatHint}>Chats are under Chat in the menu — not listed here.</Text>
           </View>
         }
         contentContainerStyle={[styles.list, (items.length === 0 || items.length < 5) && styles.listGrow, { minHeight: Dimensions.get('window').height + 2 }]}
@@ -591,10 +585,11 @@ export default function NotificationsScreen() {
         ListEmptyComponent={
           <View style={styles.placeholder}>
             <Text style={styles.placeholderText}>No notifications yet.</Text>
+            <Text style={styles.emptyChatHint}>New messages show under Chat in the hamburger menu.</Text>
           </View>
         }
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
         }
       />
     </SafeAreaView>
@@ -637,7 +632,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     paddingHorizontal: 4,
   },
-  topBarReadAllText: { fontSize: 14, color: colors.primary, fontWeight: '500' },
+  topBarReadAllText: { fontSize: 14, fontWeight: '500' },
   readAllTextDisabled: { color: colors.textMuted },
   container: {
     flex: 1,
@@ -666,6 +661,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  prefRowSpaced: {
+    marginBottom: 16,
+  },
   prefTextCol: {
     flex: 1,
     paddingRight: 12,
@@ -679,6 +677,21 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textSecondary,
     marginTop: 6,
+    lineHeight: 18,
+  },
+  chatHint: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginBottom: 12,
+    paddingHorizontal: 8,
+    lineHeight: 18,
+  },
+  emptyChatHint: {
+    fontSize: 13,
+    color: colors.textMuted,
+    textAlign: 'center',
+    marginTop: 8,
     lineHeight: 18,
   },
   listGrow: {
@@ -706,7 +719,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     paddingVertical: 12,
     paddingHorizontal: 24,
-    backgroundColor: colors.primary,
     borderRadius: 10,
   },
   retryBtnText: { fontSize: 16, fontWeight: '600', color: '#fff' },
@@ -721,10 +733,6 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     borderWidth: 1,
     borderColor: colors.border,
-  },
-  rowUnread: {
-    backgroundColor: colors.primaryFaded,
-    borderColor: colors.primary,
   },
   rowTouchable: {
     flex: 1,

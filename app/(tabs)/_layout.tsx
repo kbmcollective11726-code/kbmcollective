@@ -1,12 +1,11 @@
-import { useEffect, useState, useRef } from 'react';
-import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Text, AppState, AppStateStatus } from 'react-native';
+import { useEffect, useState } from 'react';
+import { View, TouchableOpacity, StyleSheet, ActivityIndicator, Text } from 'react-native';
 import { Tabs, useRouter, usePathname, useRootNavigationState } from 'expo-router';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as SplashScreen from 'expo-splash-screen';
 import { Home, Calendar, User, ImageIcon, Trophy, Users, Store } from 'lucide-react-native';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
-import { supabase } from '../../lib/supabase';
-import { notifyAfterSessionRefreshed } from '../../lib/onSessionRefreshed';
+import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import JoinEventGate from '../../components/JoinEventGate';
 import { colors } from '../../constants/colors';
 import { flatNativeStackHeaderStyle } from '../../constants/headerStyle';
@@ -14,6 +13,7 @@ import PostFAB from '../../components/PostFAB';
 import HamburgerMenu from '../../components/HamburgerMenu';
 import AnnouncementBanner from '../../components/AnnouncementBanner';
 import RolePreviewBanner from '../../components/RolePreviewBanner';
+import OfflineBanner from '../../components/OfflineBanner';
 import { useRolePreviewStore } from '../../stores/rolePreviewStore';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
 import { isAppMenuItemVisible } from '../../lib/effectiveEventMenu';
@@ -21,9 +21,19 @@ import DeepLinkHandler from '../../components/DeepLinkHandler';
 import { safeRouterReplace } from '../../lib/safeNavigate';
 import { isBadgeScanPath } from '../../lib/openBadgeDeepLink';
 import { peekPendingBadgeToken } from '../../lib/pendingBadgeUrl';
+import {
+  PLATFORM_ADMIN_ALL_EVENTS_HREF,
+  consumePlatformAdminAllEventsLanding,
+  isPlatformAdminAllEventsPath,
+  peekPlatformAdminAllEventsLanding,
+} from '../../lib/platformAdminNav';
+import FloatingTabBar from '../../components/FloatingTabBar';
+import ScreenAtmosphere from '../../components/ScreenAtmosphere';
+import { useEventThemeColor } from '../../lib/eventTheme';
 
 function HeaderProfileButton() {
   const router = useRouter();
+  const themeColor = useEventThemeColor();
   return (
     <TouchableOpacity
       onPress={() => router.push('/(tabs)/profile')}
@@ -31,7 +41,7 @@ function HeaderProfileButton() {
       hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
       activeOpacity={0.85}
     >
-      <User size={24} color={colors.primary} strokeWidth={2} />
+      <User size={22} color={themeColor} strokeWidth={1.75} />
     </TouchableOpacity>
   );
 }
@@ -49,7 +59,10 @@ const headerStyles = StyleSheet.create({
   },
 });
 
-const tabIcons: Record<string, (props: { color: string; size: number }) => React.ReactNode> = {
+const tabIcons: Record<
+  string,
+  (props: { color: string; size: number; strokeWidth?: number }) => React.ReactNode
+> = {
   index: Home,
   home: Home,
   feed: ImageIcon,
@@ -109,32 +122,23 @@ export default function TabsLayout() {
   const pathname = usePathname();
   const rootNavigationState = useRootNavigationState();
   const navigationReady = !!rootNavigationState?.key;
-  const insets = useSafeAreaInsets();
   const { user, isLoading: authLoading, isAuthenticated, session, refreshUser } = useAuthStore();
   const { currentEvent, memberships, fetchMyMemberships } = useEventStore();
   const hydrateRolePreview = useRolePreviewStore((s) => s.hydrate);
   const rolePreviewHydrated = useRolePreviewStore((s) => s.hydrated);
   const [eventCheckDone, setEventCheckDone] = useState(false);
-  const lastMembershipRefreshAt = useRef(0);
-  const MEMBERSHIP_REFRESH_DEBOUNCE_MS = 5000;
 
   useEffect(() => {
     if (!rolePreviewHydrated) void hydrateRolePreview();
   }, [rolePreviewHydrated, hydrateRolePreview]);
 
-  // When app comes back from background:
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state !== 'active' || !user?.id) return;
-      const now = Date.now();
-      if (now - lastMembershipRefreshAt.current < MEMBERSHIP_REFRESH_DEBOUNCE_MS) return;
-      lastMembershipRefreshAt.current = now;
-      supabase.auth.refreshSession().finally(() => {
-        fetchMyMemberships(user.id, user?.is_platform_admin).then(() => setEventCheckDone(true));
-        notifyAfterSessionRefreshed();
-      });
+    if (!user?.id) return;
+    return registerRefetchOnSessionRefreshed(() => {
+      fetchMyMemberships(user.id, user.is_platform_admin)
+        .then(() => setEventCheckDone(true))
+        .catch(() => {});
     });
-    return () => sub.remove();
   }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
 
   // If session ends while on tabs, go to login. Use isAuthenticated — not `user` (profile row):
@@ -173,7 +177,11 @@ export default function TabsLayout() {
   }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
 
   const hideAgendaTab = !isAppMenuItemVisible(currentEvent, 'menu_show_agenda');
-  const bypassEventGate = isBadgeScanPath(pathname) || peekPendingBadgeToken() !== null;
+  const isPlatformAdmin = user?.is_platform_admin === true;
+  const bypassEventGate =
+    isBadgeScanPath(pathname) ||
+    peekPendingBadgeToken() !== null ||
+    (isPlatformAdmin && isPlatformAdminAllEventsPath(pathname));
 
   // If Agenda is disabled for this event, leave the tab screen (same flag as hamburger).
   useEffect(() => {
@@ -181,17 +189,40 @@ export default function TabsLayout() {
     safeRouterReplace(router, '/(tabs)/home' as any);
   }, [hideAgendaTab, pathname, router, navigationReady]);
 
-  const tabBarPaddingBottom = Math.max(insets.bottom, 8);
-  const topPadding = 0;
-  // No exception: anyone with no current event must enter an event code (including new signups and platform admins).
-  const needsEventCode = eventCheckDone && user && !currentEvent;
+  // Platform admins land on All events after sign-in, even if a previous event is still selected.
+  useEffect(() => {
+    if (!navigationReady || !isPlatformAdmin) return;
+    if (isBadgeScanPath(pathname) || peekPendingBadgeToken()) return;
+    if (isPlatformAdminAllEventsPath(pathname)) {
+      consumePlatformAdminAllEventsLanding();
+      return;
+    }
+    const landOnAllEvents = peekPlatformAdminAllEventsLanding() || !currentEvent;
+    if (!landOnAllEvents) return;
+    consumePlatformAdminAllEventsLanding();
+    safeRouterReplace(router, PLATFORM_ADMIN_ALL_EVENTS_HREF);
+  }, [navigationReady, isPlatformAdmin, currentEvent, pathname, router]);
+
+  // Anyone else with no current event must enter an event code.
+  const needsEventCode = eventCheckDone && user && !currentEvent && !isPlatformAdmin;
   // Hide post FAB in DMs, group chat, and feed user profile — avoids opening /post when sharing to chat.
   const showPostFAB =
     !pathname?.includes('/chat/') &&
     !pathname?.includes('/groups/') &&
     !pathname?.includes('/feed/user/');
 
-  if (user && !eventCheckDone && !bypassEventGate) {
+  const waitingForEventCheck = !!user && !eventCheckDone && !bypassEventGate && !isPlatformAdmin;
+
+  // Native splash stays up from cold start until tabs can draw real content (app/_layout has an 8s failsafe).
+  useEffect(() => {
+    if (waitingForEventCheck) return;
+    const frame = requestAnimationFrame(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [waitingForEventCheck]);
+
+  if (waitingForEventCheck) {
     return (
       <>
         <DeepLinkHandler />
@@ -215,8 +246,9 @@ export default function TabsLayout() {
   return (
     <>
     <DeepLinkHandler />
-    <View style={{ flex: 1, paddingTop: topPadding, backgroundColor: colors.background }}>
+    <ScreenAtmosphere>
       <Tabs
+        tabBar={(props) => <FloatingTabBar {...props} />}
         screenOptions={({ route }) => {
           const name = route.name === 'index' ? 'index' : route.name;
           const Icon = tabIcons[name] ?? User;
@@ -254,25 +286,26 @@ export default function TabsLayout() {
             // Hidden tabs (href null) should not render an icon; belt-and-suspenders if a slot still appears on a device.
             tabBarIcon: isHidden
               ? () => null
-              : ({ color, size }: { color: string; size: number }) => <Icon color={color} size={size} />,
+              : ({ color, size, focused }) => (
+                  <Icon
+                    color={String(color)}
+                    size={size}
+                    strokeWidth={focused ? 2 : 1.5}
+                  />
+                ),
             tabBarActiveTintColor: colors.primary,
             tabBarInactiveTintColor: colors.textMuted,
             tabBarStyle: {
-              backgroundColor: colors.surface,
-              borderTopColor: colors.border,
-              paddingBottom: tabBarPaddingBottom,
-              minHeight: 56 + tabBarPaddingBottom,
+              backgroundColor: 'transparent',
+              borderTopWidth: 0,
+              elevation: 0,
             },
             tabBarLabelStyle: { fontSize: 12, fontWeight: '500' },
-            // When Feed tab pressed: go to main feed (not feed/user/xxx). popToTopOnBlur pops when leaving.
-            ...(route.name === 'feed' && { popToTopOnBlur: true }),
-            ...(route.name === 'feed' && {
-              listeners: {
-                tabPress: (e: { preventDefault: () => void }) => {
-                  e.preventDefault();
-                  safeRouterReplace(router, '/(tabs)/feed' as any);
-                },
-              },
+            sceneStyle: { backgroundColor: 'transparent' },
+            // Drop nested children when leaving stacked tabs so the next visit is clean.
+            // Feed / Expo / Profile tab presses also force root via FloatingTabBar.
+            ...((route.name === 'feed' || route.name === 'expo' || route.name === 'profile') && {
+              popToTopOnBlur: true,
             }),
           };
         }}
@@ -296,7 +329,8 @@ export default function TabsLayout() {
       <RolePreviewBanner />
       {/* After Tabs/FAB so Android draws on top (zIndex + elevation); same blue banner as iOS */}
       <AnnouncementBanner />
-    </View>
+      <OfflineBanner />
+    </ScreenAtmosphere>
     </>
   );
 }

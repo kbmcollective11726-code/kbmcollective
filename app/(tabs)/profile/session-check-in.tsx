@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -17,6 +17,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { ChevronRight, ClipboardCheck, Search } from 'lucide-react-native';
 import ProfileStackScreenHeader from '../../../components/ProfileStackScreenHeader';
 import { colors } from '../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme';
 import { useAuthStore } from '../../../stores/authStore';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase } from '../../../lib/supabase';
@@ -48,6 +49,8 @@ export default function SessionCheckInPickerScreen() {
   const params = useLocalSearchParams<{ from?: string }>();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
   const isPlatformAdmin = user?.is_platform_admin === true;
   const previewRole = useRolePreviewStore((s) => s.previewRole);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
@@ -269,12 +272,12 @@ export default function SessionCheckInPickerScreen() {
               if (item) openScan(item);
             }}
           >
-            <Text style={styles.jumpLinkText}>Scan current / next session →</Text>
+            <Text style={[styles.jumpLinkText, { color: themeColor }]}>Scan current / next session →</Text>
           </TouchableOpacity>
         ) : null}
       </View>
     ),
-    [focusSessionId, loading, filteredSessions, openScan]
+    [focusSessionId, loading, filteredSessions, openScan, themeColor]
   );
 
   useEffect(() => {
@@ -304,7 +307,7 @@ export default function SessionCheckInPickerScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <ProfileStackScreenHeader variant="back" title="Session check-in" onBack={goBack} />
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
         </View>
       </SafeAreaView>
     );
@@ -348,15 +351,15 @@ export default function SessionCheckInPickerScreen() {
                   <View
                     style={[
                       styles.dateChipCircle,
-                      active && styles.dateChipCircleSelected,
-                      isToday && !active && styles.dateChipCircleToday,
+                      active && [styles.dateChipCircleSelected, { backgroundColor: themeColor, borderColor: themeColor }],
+                      isToday && !active && [styles.dateChipCircleToday, { borderColor: themeColor }],
                     ]}
                   >
                     <Text
                       style={[
                         styles.dateChipDayNum,
                         active && styles.dateChipDayNumSelected,
-                        isToday && !active && styles.dateChipDayNumToday,
+                        isToday && !active && [styles.dateChipDayNumToday, { color: themeColor }],
                       ]}
                     >
                       {display?.dayOfMonth ?? index + 1}
@@ -365,8 +368,8 @@ export default function SessionCheckInPickerScreen() {
                   <Text
                     style={[
                       styles.dateChipWeekday,
-                      active && styles.dateChipWeekdaySelected,
-                      isToday && !active && styles.dateChipWeekdayToday,
+                      active && [styles.dateChipWeekdaySelected, { color: themeColor }],
+                      isToday && !active && [styles.dateChipWeekdayToday, { color: themeColor }],
                     ]}
                   >
                     {display?.weekday ?? `DAY ${d}`}
@@ -396,14 +399,14 @@ export default function SessionCheckInPickerScreen() {
 
       {error ? <Text style={styles.error}>{error}</Text> : null}
       {loading ? (
-        <ActivityIndicator style={styles.listLoader} color={colors.primary} />
+        <ActivityIndicator style={styles.listLoader} color={themeColor} />
       ) : (
         <FlatList
           ref={listRef}
           style={styles.listFlex}
           data={filteredSessions}
           keyExtractor={(item) => item.id}
-          refreshControl={<RefreshControl refreshing={loading} onRefresh={load} />}
+          refreshControl={<RefreshControl refreshing={loading} onRefresh={load} colors={[themeColor]} />}
           contentContainerStyle={styles.list}
           ListHeaderComponent={listHeader}
           keyboardShouldPersistTaps="handled"
@@ -425,10 +428,14 @@ export default function SessionCheckInPickerScreen() {
             const isLive = isSessionLiveNow(item, selectedDateKey, agendaTimeZone);
             return (
               <TouchableOpacity
-                style={[styles.row, isFocus && styles.rowFocus, isLive && styles.rowLive]}
+                style={[
+                  styles.row,
+                  isFocus && [styles.rowFocus, { borderColor: themeColor }],
+                  isLive && styles.rowLive,
+                ]}
                 onPress={() => openScan(item)}
               >
-                <ClipboardCheck size={22} color={isLive ? colors.success : colors.primary} />
+                <ClipboardCheck size={22} color={isLive ? colors.success : themeColor} />
                 <View style={styles.rowText}>
                   <View style={styles.titleRow}>
                     <Text style={styles.rowTitle} numberOfLines={2}>
@@ -439,8 +446,8 @@ export default function SessionCheckInPickerScreen() {
                         <Text style={styles.liveBadgeText}>NOW</Text>
                       </View>
                     ) : isFocus ? (
-                      <View style={styles.nextBadge}>
-                        <Text style={styles.nextBadgeText}>NEXT</Text>
+                      <View style={[styles.nextBadge, { backgroundColor: themeFaded }]}>
+                        <Text style={[styles.nextBadgeText, { color: themeColor }]}>NEXT</Text>
                       </View>
                     ) : null}
                   </View>
@@ -450,7 +457,7 @@ export default function SessionCheckInPickerScreen() {
                       {[item.room, item.location].filter(Boolean).join(' · ')}
                     </Text>
                   ) : null}
-                  <Text style={styles.count}>{item.check_in_count} checked in</Text>
+                  <Text style={[styles.count, { color: themeColor }]}>{item.check_in_count} checked in</Text>
                 </View>
                 <ChevronRight size={20} color={colors.textMuted} />
               </TouchableOpacity>
@@ -491,17 +498,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dateChipCircleSelected: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
+  dateChipCircleSelected: {},
   dateChipCircleToday: {
-    borderColor: colors.primary,
     borderWidth: 2,
   },
   dateChipDayNum: { fontSize: 14, fontWeight: '700', color: colors.text },
   dateChipDayNumSelected: { color: colors.textOnPrimary },
-  dateChipDayNumToday: { color: colors.primary },
+  dateChipDayNumToday: {},
   dateChipWeekday: {
     fontSize: 9,
     fontWeight: '700',
@@ -509,8 +512,8 @@ const styles = StyleSheet.create({
     marginTop: 4,
     letterSpacing: 0.3,
   },
-  dateChipWeekdaySelected: { color: colors.primary },
-  dateChipWeekdayToday: { color: colors.primary },
+  dateChipWeekdaySelected: {},
+  dateChipWeekdayToday: {},
   toolbar: {
     paddingHorizontal: 16,
     paddingTop: 8,
@@ -536,7 +539,7 @@ const styles = StyleSheet.create({
   listLoader: { marginTop: 32 },
   listHeader: { paddingTop: 4, paddingBottom: 2 },
   jumpLink: { paddingVertical: 4, paddingHorizontal: 16 },
-  jumpLinkText: { fontSize: 13, fontWeight: '600', color: colors.primary },
+  jumpLinkText: { fontSize: 13, fontWeight: '600' },
   error: { color: colors.danger, paddingHorizontal: 16, marginBottom: 4 },
   muted: { color: colors.textMuted, padding: 20, textAlign: 'center' },
   list: { paddingHorizontal: 16, paddingBottom: 32 },
@@ -552,7 +555,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     marginBottom: 10,
   },
-  rowFocus: { borderColor: colors.primary, borderWidth: 2 },
+  rowFocus: { borderWidth: 2 },
   rowLive: { borderColor: colors.success, backgroundColor: '#f0fdf4' },
   rowText: { flex: 1, minWidth: 0 },
   titleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
@@ -565,12 +568,11 @@ const styles = StyleSheet.create({
   },
   liveBadgeText: { fontSize: 10, fontWeight: '800', color: '#fff' },
   nextBadge: {
-    backgroundColor: colors.primaryFaded,
     paddingHorizontal: 6,
     paddingVertical: 2,
     borderRadius: 4,
   },
-  nextBadgeText: { fontSize: 10, fontWeight: '800', color: colors.primary },
+  nextBadgeText: { fontSize: 10, fontWeight: '800' },
   rowMeta: { fontSize: 13, color: colors.textSecondary, marginTop: 2 },
-  count: { fontSize: 12, fontWeight: '600', color: colors.primary, marginTop: 6 },
+  count: { fontSize: 12, fontWeight: '600', marginTop: 6 },
 });

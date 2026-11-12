@@ -430,6 +430,39 @@
   color: var(--color-text);
 }
 
+.speakerTagOff,
+.speakerTagOn {
+  padding: 6px 10px;
+  border-radius: var(--radius);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.speakerTagOff {
+  border: 1px solid var(--color-border);
+  background: #fff;
+  color: var(--color-text-secondary);
+}
+
+.speakerTagOff:hover:not(:disabled) {
+  border-color: #94a3b8;
+  color: var(--color-text);
+}
+
+.speakerTagOn {
+  border: 1px solid #2563eb;
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.speakerTagOff:disabled,
+.speakerTagOn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .removeBtn {
   padding: 6px 12px;
   font-size: 13px;
@@ -454,6 +487,54 @@
   border-radius: var(--radius);
   cursor: pointer;
   font-weight: 500;
+}
+
+.deactivatedBadge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  vertical-align: middle;
+  color: #991b1b;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 999px;
+}
+
+.deactivateBtn,
+.reactivateBtn {
+  padding: 6px 12px;
+  font-size: 13px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.deactivateBtn {
+  background: transparent;
+  color: #b45309;
+  border: 1px solid #f59e0b;
+}
+
+.deactivateBtn:hover:not(:disabled) {
+  background: #fffbeb;
+}
+
+.reactivateBtn {
+  background: #ecfdf5;
+  color: #047857;
+  border: 1px solid #34d399;
+}
+
+.reactivateBtn:hover:not(:disabled) {
+  background: #d1fae5;
+}
+
+.deactivateBtn:disabled,
+.reactivateBtn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .editBtn:hover {

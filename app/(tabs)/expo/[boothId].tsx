@@ -18,7 +18,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { Store, MapPin, ExternalLink, ChevronLeft, Calendar, UserPlus, ChevronDown, Clock, Star, CheckCircle, History } from 'lucide-react-native';
 import { format } from 'date-fns';
 import {
@@ -895,7 +895,15 @@ export default function BoothDetailScreen() {
                 key={r.user_id}
                 style={s.repRow}
                 activeOpacity={0.75}
-                onPress={() => router.push(`/(tabs)/feed/user/${r.user_id}` as any)}
+                onPress={() =>
+                  router.push(
+                    `/(tabs)/feed/user/${r.user_id}?from=${encodeURIComponent(
+                      from && from.trim()
+                        ? `/expo/${boothId}?from=${encodeURIComponent(from)}`
+                        : '/(tabs)/expo'
+                    )}` as never
+                  )
+                }
               >
                 <Text style={s.repRowName}>
                   {r.full_name}

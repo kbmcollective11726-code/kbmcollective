@@ -10,16 +10,25 @@ import DelegateMeetingSent from './pages/delegate-portal/DelegateMeetingSent';
 import DelegateSetPassword from './pages/delegate-portal/DelegateSetPassword';
 import VendorPortalLayout from './pages/vendor-portal/VendorPortalLayout';
 import VendorWelcome from './pages/vendor-portal/VendorWelcome';
+import VendorHotel from './pages/vendor-portal/VendorHotel';
 import VendorRegistrationDetails from './pages/vendor-portal/VendorRegistrationDetails';
 import VendorMeetingRequest from './pages/vendor-portal/VendorMeetingRequest';
 import VendorMeetingSent from './pages/vendor-portal/VendorMeetingSent';
 import VendorSetPassword from './pages/vendor-portal/VendorSetPassword';
 import RegistrationPortal from './pages/RegistrationPortal';
+import PublicEventSite from './pages/public-site/PublicEventSite';
+import MeetingAvailability from './components/meeting-requests/MeetingAvailability';
+import MeetingReceivedPage from './components/meeting-requests/MeetingReceivedPage';
+import MeetingTimesPage from './components/meeting-requests/MeetingTimesPage';
 
 /** Route elements for registration + delegate/vendor portal (no cadmin MFA). */
 export function portalRouteElements() {
   return (
     <>
+      <Route path="/e/:slug" element={<PublicEventSite />} />
+      <Route path="/e/:slug/register" element={<RegistrationPortal />} />
+      <Route path="/e/:slug/:page" element={<PublicEventSite />} />
+      <Route path="/register/:eventId/:audience/:formSlug" element={<RegistrationPortal />} />
       <Route path="/register/:eventId/:audience" element={<RegistrationPortal />} />
       <Route path="/portal/:eventId/delegate/login" element={<DelegateLogin />} />
       <Route path="/portal/:eventId/delegate/set-password" element={<DelegateSetPassword />} />
@@ -28,17 +37,24 @@ export function portalRouteElements() {
         <Route path="welcome" element={<DelegateWelcome />} />
         <Route path="hotel" element={<DelegateHotel />} />
         <Route path="registration" element={<DelegateRegistrationDetails />} />
+        <Route path="availability" element={<MeetingAvailability role="delegate" />} />
         <Route path="meetings/request" element={<DelegateMeetingRequest />} />
+        <Route path="meetings/received" element={<MeetingReceivedPage />} />
         <Route path="meetings/sent" element={<DelegateMeetingSent />} />
+        <Route path="meetings/times" element={<MeetingTimesPage />} />
       </Route>
       <Route path="/portal/:eventId/vendor/login" element={<VendorLogin />} />
       <Route path="/portal/:eventId/vendor/set-password" element={<VendorSetPassword />} />
       <Route path="/portal/:eventId/vendor" element={<VendorPortalLayout />}>
         <Route index element={<Navigate to="welcome" replace />} />
         <Route path="welcome" element={<VendorWelcome />} />
+        <Route path="hotel" element={<VendorHotel />} />
         <Route path="registration" element={<VendorRegistrationDetails />} />
+        <Route path="availability" element={<MeetingAvailability role="vendor" />} />
         <Route path="meetings/request" element={<VendorMeetingRequest />} />
+        <Route path="meetings/received" element={<MeetingReceivedPage />} />
         <Route path="meetings/sent" element={<VendorMeetingSent />} />
+        <Route path="meetings/times" element={<MeetingTimesPage />} />
       </Route>
     </>
   );

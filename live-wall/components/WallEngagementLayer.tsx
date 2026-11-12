@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import type { WallHeartBurst, WallHeroEvent } from '../lib/wallEngagement';
+import { HEART_BURST_MS, type WallHeartBurst, type WallHeroEvent } from '../lib/wallEngagement';
 
 const CHAMPAGNE = '#c9a961';
 const CHAMPAGNE_SOFT = '#d4b574';
@@ -55,7 +55,7 @@ function ConfettiBurst({ active, intense }: { active: boolean; intense?: boolean
             background: p.color,
             borderRadius: 1,
             opacity: 0.9,
-            animation: `wall-confetti-fall 2.8s ease-in ${p.delay} forwards`,
+            animation: `wall-confetti-fall 6.5s ease-in ${p.delay} forwards`,
             transform: `rotate(${p.rotate})`,
           }}
         />
@@ -79,7 +79,11 @@ function HeroBanner({ hero }: { hero: WallHeroEvent }) {
         pointerEvents: 'none',
         maxWidth: isCenter ? 'min(760px, 92vw)' : 'min(560px, 90vw)',
         textAlign: 'center',
-        animation: isPhotoOfHour ? 'wall-hero-photo-hour 0.55s ease-out' : 'wall-hero-in 0.45s ease-out',
+        animation: isPhotoOfHour
+          ? `wall-hero-photo-hour-lifecycle ${hero.durationMs}ms ease-in-out forwards`
+          : isCenter
+            ? `wall-hero-center-lifecycle ${hero.durationMs}ms ease-in-out forwards`
+            : `wall-hero-lifecycle ${hero.durationMs}ms ease-in-out forwards`,
       }}
     >
       <div
@@ -155,7 +159,7 @@ export function WallHeartBursts({ hearts }: { hearts: WallHeartBurst[] }) {
             lineHeight: 1,
             pointerEvents: 'none',
             zIndex: 20,
-            animation: 'wall-heart-burst 1.5s ease-out forwards',
+            animation: `wall-heart-burst ${HEART_BURST_MS}ms ease-out forwards`,
             filter: 'drop-shadow(0 4px 12px rgba(0,0,0,0.35))',
           }}
         >
@@ -169,6 +173,7 @@ export function WallHeartBursts({ hearts }: { hearts: WallHeartBurst[] }) {
 export function PhotoOfHourBadge() {
   return (
     <div
+      className="wall-poh-badge"
       style={{
         position: 'absolute',
         top: 12,
@@ -201,7 +206,7 @@ export default function WallEngagementLayer({
   useEffect(() => {
     if (hero?.confetti) {
       setShowConfetti(true);
-      const t = setTimeout(() => setShowConfetti(false), 3000);
+      const t = setTimeout(() => setShowConfetti(false), 7500);
       return () => clearTimeout(t);
     }
     return undefined;
@@ -216,28 +221,49 @@ export default function WallEngagementLayer({
           __html: `
         @keyframes wall-confetti-fall {
           0% { transform: translateY(0) rotate(0deg); opacity: 1; }
+          70% { opacity: 0.9; }
           100% { transform: translateY(100vh) rotate(720deg); opacity: 0; }
         }
-        @keyframes wall-hero-in {
+        @keyframes wall-hero-lifecycle {
           0% { opacity: 0; transform: translateX(-50%) translateY(-12px) scale(0.96); }
-          100% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+          5% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+          86% { opacity: 1; transform: translateX(-50%) translateY(0) scale(1); }
+          100% { opacity: 0; transform: translateX(-50%) translateY(-8px) scale(0.98); }
         }
-        @keyframes wall-hero-photo-hour {
+        @keyframes wall-hero-center-lifecycle {
+          0% { opacity: 0; transform: translate(-50%, -50%) scale(0.94); }
+          5% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          86% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          100% { opacity: 0; transform: translate(-50%, -52%) scale(0.98); }
+        }
+        @keyframes wall-hero-photo-hour-lifecycle {
           0% { opacity: 0; transform: translate(-50%, -50%) scale(0.88); }
-          60% { opacity: 1; transform: translate(-50%, -50%) scale(1.03); }
-          100% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          5% { opacity: 1; transform: translate(-50%, -50%) scale(1.03); }
+          10% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          88% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          100% { opacity: 0; transform: translate(-50%, -52%) scale(0.98); }
+        }
+        @keyframes wall-poh-badge-in {
+          0% { opacity: 0; transform: translateY(-6px); }
+          100% { opacity: 1; transform: translateY(0); }
+        }
+        .wall-poh-badge {
+          animation: wall-poh-badge-in 0.8s ease-out forwards;
+          box-shadow: 0 2px 12px rgba(201, 169, 97, 0.35);
         }
         @keyframes wall-heart-burst {
           0% { opacity: 0; transform: translate(-50%, -50%) scale(0.3); }
-          20% { opacity: 1; transform: translate(-50%, -50%) scale(1.1); }
-          100% { opacity: 0; transform: translate(-50%, -70%) scale(1.35); }
+          10% { opacity: 1; transform: translate(-50%, -50%) scale(1.12); }
+          18% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+          72% { opacity: 1; transform: translate(-50%, -58%) scale(1.12); }
+          100% { opacity: 0; transform: translate(-50%, -78%) scale(1.35); }
         }
         @keyframes wall-rank-glow {
           0%, 100% { box-shadow: none; background: transparent; }
           50% { box-shadow: 0 0 0 2px rgba(201,169,97,0.55); background: rgba(201,169,97,0.12); }
         }
         .wall-rank-highlight {
-          animation: wall-rank-glow 1.2s ease-in-out 2;
+          animation: wall-rank-glow 2s ease-in-out 5;
           border-radius: 8px;
         }
       `,

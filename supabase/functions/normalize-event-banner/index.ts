@@ -1,23 +1,18 @@
 // Letterbox an event's current banner to 1200×750 and update events.banner_url.
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
 import { Image } from "npm:imagescript@1.3.0";
-
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",
-};
 
 const BANNER_W = 1200;
 const BANNER_H = 750;
 const BANNER_JPEG_QUALITY = 82;
 const BANNER_FILL = 0x0c1f3dff;
 
-function json(body: unknown, status = 200) {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...corsHeaders },
+    headers: { "Content-Type": "application/json", ...headers },
   });
 }
 
@@ -61,36 +56,38 @@ async function letterboxEventBanner(bytes: Uint8Array): Promise<Uint8Array> {
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !anonKey || !serviceRoleKey) {
-    return json({ error: "Server configuration error" }, 500);
+    return json({ error: "Server configuration error" }, 500, ch);
   }
 
   const authHeader = req.headers.get("Authorization");
   if (!authHeader?.startsWith("Bearer ")) {
-    return json({ error: "Authorization required" }, 401);
+    return json({ error: "Authorization required" }, 401, ch);
   }
 
   const bearer = authHeader.slice(7);
   const isServiceRole = bearer === serviceRoleKey;
 
   let callerId: string | null = null;
+  let callerClient: ReturnType<typeof createClient> | null = null;
   if (!isServiceRole) {
-    const callerClient = createClient(supabaseUrl, anonKey, {
+    callerClient = createClient(supabaseUrl, anonKey, {
       global: { headers: { Authorization: authHeader } },
     });
     const { data: { user: caller } } = await callerClient.auth.getUser(bearer);
     if (!caller?.id) {
-      return json({ error: "Invalid token" }, 401);
+      return json({ error: "Invalid token" }, 401, ch);
     }
     callerId = caller.id;
   }
@@ -99,30 +96,23 @@ Deno.serve(async (req: Request) => {
   try {
     body = await req.json();
   } catch {
-    return json({ error: "Invalid JSON body" }, 400);
+    return json({ error: "Invalid JSON body" }, 400, ch);
   }
   const eventId = typeof body.event_id === "string" ? body.event_id.trim() : "";
   if (!eventId) {
-    return json({ error: "event_id required" }, 400);
+    return json({ error: "event_id required" }, 400, ch);
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
-  if (!isServiceRole && callerId) {
-    const { data: profile } = await admin.from("users").select("is_platform_admin").eq("id", callerId).maybeSingle();
-    const isPlatformAdmin = !!(profile as { is_platform_admin?: boolean } | null)?.is_platform_admin;
+  if (!isServiceRole && callerId && callerClient) {
+    const { data: isPlatformAdmin } = await callerClient.rpc("is_platform_admin");
 
-    if (!isPlatformAdmin) {
-      const { data: membership } = await admin
-        .from("event_members")
-        .select("role, roles")
-        .eq("event_id", eventId)
-        .eq("user_id", callerId)
-        .maybeSingle();
-      const roles = (membership as { roles?: string[]; role?: string } | null)?.roles ?? [];
-      const role = (membership as { role?: string } | null)?.role;
-      const isEventAdmin = role === "admin" || roles.includes("admin");
-      if (!isEventAdmin) {
-        return json({ error: "Event admin required" }, 403);
+    if (isPlatformAdmin !== true) {
+      const { data: isEventAdmin } = await callerClient.rpc("is_event_admin", {
+        p_event_id: eventId,
+      });
+      if (isEventAdmin !== true) {
+        return json({ error: "Event admin required" }, 403, ch);
       }
     }
   }
@@ -133,23 +123,23 @@ Deno.serve(async (req: Request) => {
     .eq("id", eventId)
     .single();
   if (eventError || !event) {
-    return json({ error: "Event not found" }, 404);
+    return json({ error: "Event not found" }, 404, ch);
   }
 
   const bannerUrl = (event as { banner_url: string | null }).banner_url?.trim();
   if (!bannerUrl) {
-    return json({ error: "No banner on this event" }, 400);
+    return json({ error: "No banner on this event" }, 400, ch);
   }
 
   let sourceBytes: Uint8Array;
   try {
     const imgRes = await fetch(bannerUrl);
     if (!imgRes.ok) {
-      return json({ error: "Could not download banner" }, 400);
+      return json({ error: "Could not download banner" }, 400, ch);
     }
     sourceBytes = new Uint8Array(await imgRes.arrayBuffer());
   } catch {
-    return json({ error: "Could not download banner" }, 400);
+    return json({ error: "Could not download banner" }, 400, ch);
   }
 
   let jpegBytes: Uint8Array;
@@ -157,20 +147,20 @@ Deno.serve(async (req: Request) => {
     jpegBytes = await letterboxEventBanner(sourceBytes);
   } catch (err) {
     console.error("letterbox failed:", err);
-    return json({ error: "Could not process banner image" }, 400);
+    return json({ error: "Could not process banner image" }, 400, ch);
   }
 
   if (jpegBytes.length < 100) {
-    return json({ error: "Banner processing failed" }, 500);
+    return json({ error: "Banner processing failed" }, 500, ch);
   }
 
   try {
     const verify = await Image.decode(jpegBytes);
     if (verify.width !== BANNER_W || verify.height !== BANNER_H) {
-      return json({ error: `Letterbox size mismatch: ${verify.width}×${verify.height}` }, 500);
+      return json({ error: `Letterbox size mismatch: ${verify.width}×${verify.height}` }, 500, ch);
     }
   } catch {
-    return json({ error: "Could not verify banner output" }, 500);
+    return json({ error: "Could not verify banner output" }, 500, ch);
   }
 
   const storagePath = `${eventId}/banner_${Date.now()}.jpg`;
@@ -180,13 +170,13 @@ Deno.serve(async (req: Request) => {
   });
   if (uploadError) {
     console.error("storage upload:", uploadError);
-    return json({ error: uploadError.message || "Upload failed" }, 500);
+    return json({ error: uploadError.message || "Upload failed" }, 500, ch);
   }
 
   const { data: pub } = admin.storage.from("event-photos").getPublicUrl(storagePath);
   const publicUrl = pub?.publicUrl;
   if (!publicUrl) {
-    return json({ error: "No public URL" }, 500);
+    return json({ error: "No public URL" }, 500, ch);
   }
 
   const { error: updateError } = await admin
@@ -194,7 +184,7 @@ Deno.serve(async (req: Request) => {
     .update({ banner_url: publicUrl, updated_at: new Date().toISOString() })
     .eq("id", eventId);
   if (updateError) {
-    return json({ error: updateError.message || "Failed to update event" }, 500);
+    return json({ error: updateError.message || "Failed to update event" }, 500, ch);
   }
 
   return json({ banner_url: publicUrl, width: BANNER_W, height: BANNER_H });

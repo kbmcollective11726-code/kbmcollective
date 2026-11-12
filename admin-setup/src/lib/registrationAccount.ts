@@ -1,4 +1,7 @@
 import { supabase } from './supabase';
+import { logAuthAttempt } from './logAuthAttempt';
+import { getLoginRateLimitError, recordLoginRateLimitAttempt } from './loginRateLimit';
+import { ACCOUNT_DEACTIVATED_MESSAGE, rejectIfAccountDeactivated } from './accountActive';
 
 export type RegistrationAccountMetadata = {
   full_name: string;
@@ -32,6 +35,11 @@ export async function ensureRegistrationAccount(
   // Clear any stale session (e.g. placeholder user id from a prior failed attempt).
   await supabase.auth.signOut();
 
+  const rateLimitError = await getLoginRateLimitError(normalizedEmail);
+  if (rateLimitError) {
+    return { error: rateLimitError };
+  }
+
   // Sign in first so returning users (e.g. after admin deleted their event registration) can re-register
   // with the same email without hitting signUp placeholder user ids.
   const { data: signInData, error: signInErr } = await supabase.auth.signInWithPassword({
@@ -39,7 +47,44 @@ export async function ensureRegistrationAccount(
     password,
   });
   if (!signInErr && signInData.user?.id) {
+    const deactivated = await rejectIfAccountDeactivated(signInData.user.id);
+    if (deactivated) {
+      recordLoginRateLimitAttempt({
+        email: normalizedEmail,
+        success: false,
+        source: 'portal',
+      });
+      logAuthAttempt({
+        email: normalizedEmail,
+        success: false,
+        source: 'portal',
+        errorMessage: 'account_deactivated',
+        userId: signInData.user.id,
+      });
+      return { error: ACCOUNT_DEACTIVATED_MESSAGE };
+    }
+    recordLoginRateLimitAttempt({
+      email: normalizedEmail,
+      success: true,
+      source: 'portal',
+      accessToken: signInData.session?.access_token,
+    });
+    logAuthAttempt({
+      email: normalizedEmail,
+      success: true,
+      source: 'portal',
+      userId: signInData.user.id,
+      accessToken: signInData.session?.access_token,
+    });
     return { userId: signInData.user.id, signedIn: true };
+  }
+
+  if (signInErr) {
+    recordLoginRateLimitAttempt({
+      email: normalizedEmail,
+      success: false,
+      source: 'portal',
+    });
   }
 
   const { data: signUpData, error: signUpErr } = await supabase.auth.signUp({
@@ -62,12 +107,24 @@ export async function ensureRegistrationAccount(
     }
     const identities = signUpData.user.identities ?? [];
     if (identities.length === 0) {
+      logAuthAttempt({
+        email: normalizedEmail,
+        success: false,
+        source: 'portal',
+        errorMessage: 'Incorrect password for existing registration email',
+      });
       return { error: passwordMismatchMessage() };
     }
     return { userId, signedIn: false };
   }
 
   if (signUpErr && isAlreadyRegisteredError(signUpErr.message)) {
+    logAuthAttempt({
+      email: normalizedEmail,
+      success: false,
+      source: 'portal',
+      errorMessage: signInErr?.message || 'Incorrect password for existing registration email',
+    });
     return { error: passwordMismatchMessage() };
   }
 

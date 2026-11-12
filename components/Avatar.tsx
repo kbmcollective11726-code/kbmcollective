@@ -1,5 +1,6 @@
-import { View, Text, Image, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
 import { colors } from '../constants/colors';
+import PortraitAvatarPhoto from './PortraitAvatarPhoto';
 
 interface AvatarProps {
   uri?: string | null;
@@ -16,9 +17,15 @@ export default function Avatar({ uri, name, size = 40 }: AvatarProps) {
     .toUpperCase() ?? '?';
 
   return (
-    <View style={[styles.ring, { width: size, height: size, borderRadius: size / 2 }]}>
+    <View
+      style={[
+        styles.ring,
+        { width: size, height: size, borderRadius: size / 2 },
+        uri ? styles.ringWithPhoto : null,
+      ]}
+    >
       {uri ? (
-        <Image source={{ uri }} style={[styles.image, { width: size, height: size, borderRadius: size / 2 }]} />
+        <PortraitAvatarPhoto uri={uri} />
       ) : (
         <Text style={[styles.initials, { fontSize: size * 0.4 }]}>{initials}</Text>
       )}
@@ -33,8 +40,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     overflow: 'hidden',
   },
-  image: {
-    resizeMode: 'cover',
+  ringWithPhoto: {
+    backgroundColor: colors.surfaceHover,
   },
   initials: {
     fontWeight: '600',

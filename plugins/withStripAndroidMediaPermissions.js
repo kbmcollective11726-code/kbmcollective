@@ -8,6 +8,7 @@ const STRIP = [
   'android.permission.READ_EXTERNAL_STORAGE',
   'android.permission.WRITE_EXTERNAL_STORAGE',
   'android.permission.RECORD_AUDIO',
+  'android.permission.SYSTEM_ALERT_WINDOW',
 ];
 
 function ensureRemoveEntries(manifest) {
@@ -28,6 +29,16 @@ function ensureRemoveEntries(manifest) {
     }
   }
   root['uses-permission'] = list;
+  const applications = Array.isArray(root.application)
+    ? root.application
+    : root.application
+      ? [root.application]
+      : [];
+  for (const application of applications) {
+    if (application?.$) {
+      delete application.$['android:requestLegacyExternalStorage'];
+    }
+  }
   if (!root.$) root.$ = {};
   root.$['xmlns:tools'] = 'http://schemas.android.com/tools';
   return manifest;

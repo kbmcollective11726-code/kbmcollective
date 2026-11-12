@@ -1,6 +1,6 @@
 import type { StyleProp, ImageStyle } from 'react-native';
+import { Platform, useWindowDimensions } from 'react-native';
 import { Image as ExpoImage } from 'expo-image';
-import { colors } from '../constants/colors';
 
 export type SponsorMarkContentFit = 'cover' | 'contain';
 
@@ -17,14 +17,19 @@ type Props = {
 /**
  * Event sponsor logos: use `expo-image` (Glide / SDWebImage) instead of RN `Image` so Android
  * does not paint black letterboxing under `contain` the way RN `Image` sometimes does.
+ * Remount on Android width changes so rotate landscape→portrait does not blank the logo.
  */
 export function SponsorMark({ uri, style, contentFit = 'contain' }: Props) {
+  const { width } = useWindowDimensions();
   const u = uri.trim();
   if (!u) return null;
+  const layoutKey = Platform.OS === 'android' ? Math.round(width) : 0;
   return (
     <ExpoImage
+      key={`${u}:${layoutKey}`}
+      recyclingKey={u}
       source={{ uri: u }}
-      style={[style, { backgroundColor: colors.background }]}
+      style={[style, { backgroundColor: 'transparent' }]}
       contentFit={contentFit}
       contentPosition="center"
       cachePolicy="memory-disk"

@@ -7,6 +7,7 @@ export function isPasswordRecoveryLaunchUrl(url: string | null | undefined): boo
   if (url.includes('reset-password')) return true;
   if (url.includes('access_token=')) return true;
   if (url.includes('type=recovery')) return true;
+  if (url.includes('token_hash=')) return true;
   // PKCE; avoid matching ?error_code= as code=
   if (/(?:^|[?&#])code=/.test(url)) return true;
   return false;

@@ -1,5 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,14 +10,17 @@ import {
   Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useRolePreviewContext } from '../../../../hooks/useRolePreviewContext';
 import { supabase } from '../../../../lib/supabase';
 import { createNotificationAndPush } from '../../../../lib/notifications';
 import { colors } from '../../../../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../../../../lib/eventTheme';
+import { groupChatHref, navigateBackToFrom } from '../../../../lib/navReturn';
 import Avatar from '../../../../components/Avatar';
+import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
 import { Check } from 'lucide-react-native';
 
 type MemberOption = {
@@ -29,15 +31,23 @@ type MemberOption = {
 
 export default function NewGroupScreen() {
   const router = useRouter();
+  const { from } = useLocalSearchParams<{ from?: string }>();
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
   const { applyEventAdmin } = useRolePreviewContext();
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
   const [name, setName] = useState('');
   const [members, setMembers] = useState<MemberOption[]>([]);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [isAdmin, setIsAdmin] = useState(false);
+  const fetchStarted = useRef(false);
+
+  const goBack = useCallback(() => {
+    navigateBackToFrom(router, from, '/(tabs)/profile/groups');
+  }, [router, from]);
 
   const fetchMembers = useCallback(async () => {
     if (!user?.id || !currentEvent?.id) {
@@ -50,7 +60,7 @@ export default function NewGroupScreen() {
         .select('role, roles')
         .eq('event_id', currentEvent.id)
         .eq('user_id', user.id)
-        .single();
+        .maybeSingle();
       if (roleError) throw roleError;
       const row = roleData as { role?: string; roles?: string[] } | null;
       const role = row?.role ?? 'attendee';
@@ -62,10 +72,7 @@ export default function NewGroupScreen() {
         roles.includes('super_admin');
       const admin = applyEventAdmin(realAdmin);
       setIsAdmin(admin);
-      if (!admin) {
-        setLoading(false);
-        return;
-      }
+      if (!admin) return;
       const { data: memberData, error } = await supabase
         .from('event_members')
         .select('user_id, users!inner(full_name, avatar_url)')
@@ -94,14 +101,10 @@ export default function NewGroupScreen() {
       setLoading(false);
       return;
     }
-    fetchMembers().catch(() => {});
+    if (fetchStarted.current) return;
+    fetchStarted.current = true;
+    void fetchMembers();
   }, [user?.id, currentEvent?.id, fetchMembers]);
-
-  useFocusEffect(
-    useCallback(() => {
-      if (user?.id && currentEvent?.id) fetchMembers().catch(() => {});
-    }, [user?.id, currentEvent?.id, fetchMembers])
-  );
 
   const toggleMember = (id: string) => {
     setSelectedIds((prev) => {
@@ -137,15 +140,15 @@ export default function NewGroupScreen() {
         createNotificationAndPush(
           uid,
           currentEvent.id,
-          'message',
+          'system',
           `You were added to "${trimmed}"`,
           'Tap to open the group.',
           { group_id: groupId }
         ).catch(() => {});
       }
       Alert.alert('Group created', `"${trimmed}" is ready.`, [
-        { text: 'Open', onPress: () => router.replace(`/(tabs)/profile/groups/${groupId}` as any) },
-        { text: 'Back to list', onPress: () => router.back() },
+        { text: 'Open', onPress: () => router.replace(groupChatHref(groupId, from) as never) },
+        { text: 'Back to list', onPress: goBack },
       ]);
     } catch (err: unknown) {
       const e = err as { message?: string; details?: string; code?: string; hint?: string };
@@ -165,7 +168,8 @@ export default function NewGroupScreen() {
 
   if (!user?.id || !currentEvent?.id) {
     return (
-      <SafeAreaView style={styles.container} edges={[]}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="New group" onBack={goBack} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Select an event first.</Text>
         </View>
@@ -175,7 +179,8 @@ export default function NewGroupScreen() {
 
   if (!loading && !isAdmin) {
     return (
-      <SafeAreaView style={styles.container} edges={[]}>
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <ProfileStackScreenHeader variant="back" title="New group" onBack={goBack} />
         <View style={styles.placeholder}>
           <Text style={styles.placeholderText}>Only event admins can create groups.</Text>
         </View>
@@ -183,22 +188,18 @@ export default function NewGroupScreen() {
     );
   }
 
-  if (loading) {
-    return (
-      <SafeAreaView style={styles.container} edges={[]}>
-        <View style={styles.placeholder}>
-          <ActivityIndicator size="large" color={colors.primary} />
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   return (
-    <SafeAreaView style={styles.container} edges={[]}>
+    <SafeAreaView style={styles.container} edges={['top']}>
+      <ProfileStackScreenHeader variant="back" title="New group" onBack={goBack} />
+      {loading ? (
+        <View style={styles.membersLoading}>
+          <ActivityIndicator size="large" color={themeColor} />
+        </View>
+      ) : (
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.label}>Group name</Text>
         <TextInput
-          style={styles.input}
+          style={[styles.input, { borderColor: themeColorWithAlpha(themeColor, '30'), backgroundColor: themeFaded }]}
           value={name}
           onChangeText={setName}
           placeholder="e.g. Speakers & Organizers"
@@ -219,13 +220,18 @@ export default function NewGroupScreen() {
             <Text style={styles.memberName} numberOfLines={1}>
               {m.full_name}
             </Text>
-            <View style={[styles.checkbox, selectedIds.has(m.user_id) && styles.checkboxChecked]}>
-              {selectedIds.has(m.user_id) ? <Check size={16} color="#0f172a" strokeWidth={3} /> : null}
+            <View
+              style={[
+                styles.checkbox,
+                selectedIds.has(m.user_id) && { backgroundColor: themeColor, borderColor: themeColor },
+              ]}
+            >
+              {selectedIds.has(m.user_id) ? <Check size={16} color={colors.textOnPrimary} strokeWidth={3} /> : null}
             </View>
           </TouchableOpacity>
         ))}
         <TouchableOpacity
-          style={[styles.createBtn, saving && styles.createBtnDisabled]}
+          style={[styles.createBtn, { backgroundColor: themeColor }, saving && styles.createBtnDisabled]}
           onPress={handleCreate}
           disabled={saving}
         >
@@ -236,6 +242,7 @@ export default function NewGroupScreen() {
           )}
         </TouchableOpacity>
       </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -244,6 +251,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
   content: { padding: 24, paddingBottom: 48 },
   placeholder: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
+  membersLoading: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 24 },
   placeholderText: { fontSize: 14, color: colors.textSecondary, textAlign: 'center' },
   label: { fontSize: 14, fontWeight: '600', color: colors.text, marginBottom: 8 },
   hint: { fontSize: 13, color: colors.textMuted, marginBottom: 12 },

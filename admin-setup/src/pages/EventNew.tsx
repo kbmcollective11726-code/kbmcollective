@@ -113,8 +113,9 @@ export default function EventNew() {
           setError(
             `Event was created, but the banner failed to upload: ${postgrestErrorMessage(bannerErr) || (bannerErr instanceof Error ? bannerErr.message : 'Unknown error')}. Open Edit event to try again.`
           );
-          await supabase.from('point_rules').insert(
-            DEFAULT_POINT_RULES.map((r) => ({ ...r, event_id: event.id }))
+          await supabase.from('point_rules').upsert(
+            DEFAULT_POINT_RULES.map((r) => ({ ...r, event_id: event.id })),
+            { onConflict: 'event_id,action', ignoreDuplicates: true }
           );
           navigate(`/events/${event.id}/edit`, { replace: true });
           return;
@@ -123,8 +124,9 @@ export default function EventNew() {
         }
       }
 
-      await supabase.from('point_rules').insert(
-        DEFAULT_POINT_RULES.map((r) => ({ ...r, event_id: event.id }))
+      await supabase.from('point_rules').upsert(
+        DEFAULT_POINT_RULES.map((r) => ({ ...r, event_id: event.id })),
+        { onConflict: 'event_id,action', ignoreDuplicates: true }
       );
       navigate(`/events/${event.id}`, { replace: true });
     } catch (e) {

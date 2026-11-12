@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,25 +11,55 @@ import {
   Alert,
   Image,
   ScrollView,
-  Linking,
 } from 'react-native';
-import Toast from 'react-native-toast-message';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { StatusBar } from 'expo-status-bar';
 import { useAuthStore } from '../../stores/authStore';
 import { isSupabaseConfigured } from '../../lib/supabase';
+import { isOtaUpdatesEnabled, syncAppUpdateOnLaunch } from '../../lib/appUpdates';
 import { peekPendingBadgeToken } from '../../lib/pendingBadgeUrl';
+import { markPlatformAdminAllEventsLanding, PLATFORM_ADMIN_ALL_EVENTS_HREF } from '../../lib/platformAdminNav';
+import { openExternalUrl } from '../../lib/openExternalUrl';
 
 const LOGO = require('../../assets/logo-full-transparent.png');
 
 export default function LoginScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ requestReset?: string }>();
+  const resetHelpShown = useRef(false);
   const { login, resetPassword } = useAuthStore();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [resetting, setResetting] = useState(false);
+  const [checkingUpdate, setCheckingUpdate] = useState(isOtaUpdatesEnabled());
+  const otaChecked = useRef(false);
+
+  useEffect(() => {
+    if (!isOtaUpdatesEnabled() || otaChecked.current) return;
+    if (peekPendingBadgeToken()) {
+      setCheckingUpdate(false);
+      return;
+    }
+    otaChecked.current = true;
+    void (async () => {
+      try {
+        await syncAppUpdateOnLaunch({ maxWaitMs: 25_000 });
+      } finally {
+        setCheckingUpdate(false);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (params.requestReset !== '1' || resetHelpShown.current) return;
+    resetHelpShown.current = true;
+    Alert.alert(
+      'Get a new reset email',
+      'You do not need your current password. Enter your email above, then tap Forgot password. Open the new email in your mail app (not Outlook) and tap Reset my password once.',
+    );
+  }, [params.requestReset]);
 
   const handleLogin = async () => {
     if (!email.trim() || !password) {
@@ -69,7 +99,8 @@ export default function LoginScreen() {
       } else {
         const user = useAuthStore.getState().user;
         if (user?.is_platform_admin) {
-          router.replace('/profile/admin-all-events');
+          markPlatformAdminAllEventsLanding();
+          router.replace(PLATFORM_ADMIN_ALL_EVENTS_HREF);
         } else {
           router.replace('/(tabs)/home');
         }
@@ -97,6 +128,13 @@ export default function LoginScreen() {
             <Image source={LOGO} style={styles.logo} resizeMode="contain" />
           </View>
           <Text style={styles.subtitle}>Sign in to your account</Text>
+
+          {checkingUpdate ? (
+            <View style={styles.updateBanner}>
+              <ActivityIndicator color="#d4af37" size="small" />
+              <Text style={styles.updateBannerText}>Checking for app updates…</Text>
+            </View>
+          ) : null}
 
           <TextInput
             style={styles.input}
@@ -147,24 +185,54 @@ export default function LoginScreen() {
                 Alert.alert('Forgot password', 'Enter your email in the field above, then tap "Forgot password?" again to receive a reset link.');
                 return;
               }
-              setResetting(true);
-              const { error } = await resetPassword(email.trim());
-              setResetting(false);
-              if (error) {
-                const smtpHint =
-                  /sending recovery email|error sending recovery/i.test(String(error))
-                    ? '\n\nEmail can’t be sent from the server yet (mail settings). Ask your admin to fix Authentication > Email > SMTP in Supabase.'
-                    : '';
-                Alert.alert('Reset failed', String(error) + smtpHint);
-              } else {
-                // Toast (not a blocking Alert): switching to Mail to open the link won’t leave a modal that feels like it was “caused” by the link.
-                Toast.show({
-                  type: 'success',
-                  text1: 'Check your email',
-                  text2: 'We sent a password reset link to ' + email.trim() + '. Check Junk/Spam too, then open it from your mail app.',
-                  visibilityTime: 5500,
-                });
-              }
+              const normalizedEmail = email.trim().toLowerCase();
+              Alert.alert(
+                'Send reset email?',
+                `We will send a password reset link to ${normalizedEmail} if an account exists for that address.`,
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Send email',
+                    onPress: async () => {
+                      setResetting(true);
+                      const { error, outcome } = await resetPassword(normalizedEmail);
+                      setResetting(false);
+                      if (error) {
+                        Alert.alert(
+                          'Could not send reset email',
+                          'Please try again in a few minutes. If it keeps failing, contact your event organizer for help.',
+                        );
+                        return;
+                      }
+                      if (outcome === 'sent') {
+                        Alert.alert(
+                          'Reset email sent',
+                          `We sent a password reset link to ${normalizedEmail}.\n\nCheck your inbox and Junk/Spam folder. Open the email in your mail app (not Outlook), then tap Reset my password once.`,
+                        );
+                        return;
+                      }
+                      if (outcome === 'rate_limited') {
+                        Alert.alert(
+                          'Check your email',
+                          `A reset email was already sent recently to ${normalizedEmail}.\n\nCheck your inbox and Junk/Spam folder before requesting another. Wait 15 minutes if you do not see it.`,
+                        );
+                        return;
+                      }
+                      if (outcome === 'delivery_failed') {
+                        Alert.alert(
+                          'Email not sent',
+                          'We could not send the reset email right now. Please try again in a few minutes.',
+                        );
+                        return;
+                      }
+                      Alert.alert(
+                        'Check your email',
+                        `If an account exists for ${normalizedEmail}, we sent a reset link.\n\nCheck your inbox and Junk/Spam folder. Use the exact email you registered with.`,
+                      );
+                    },
+                  },
+                ],
+              );
             }}
             disabled={loading || resetting}
           >
@@ -183,7 +251,16 @@ export default function LoginScreen() {
 
           <TouchableOpacity
             style={styles.requestEventLink}
-            onPress={() => Linking.openURL('https://kbmcollective.org/request-event.html')}
+            onPress={() => {
+              void openExternalUrl('https://kbmcollective.org/request-event.html').then((ok) => {
+                if (!ok) {
+                  Alert.alert(
+                    'Could not open link',
+                    'Open https://kbmcollective.org/request-event.html in your browser to request event setup.',
+                  );
+                }
+              });
+            }}
             disabled={loading}
           >
             <Text style={styles.linkText}>
@@ -224,6 +301,23 @@ const styles = StyleSheet.create({
     color: '#94a3b8',
     marginBottom: 16,
     textAlign: 'center',
+  },
+  updateBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    marginBottom: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#1a1a1a',
+    borderWidth: 1,
+    borderColor: '#334155',
+  },
+  updateBannerText: {
+    fontSize: 13,
+    color: '#94a3b8',
   },
   input: {
     height: 48,

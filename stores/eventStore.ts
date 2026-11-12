@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../lib/supabase';
 import { isEventAccessible } from '../lib/eventAccess';
+import { loadCachedEvent, saveCachedEvent } from '../lib/eventOfflineCache';
+import { useConnectivityStore } from './connectivityStore';
 import type { Event, EventMember } from '../lib/types';
 
 const CURRENT_EVENT_KEY = 'collectivelive_current_event_id';
@@ -147,8 +149,21 @@ export const useEventStore = create<EventStore>((set, get) => ({
       const memberships = (data ?? []) as Row[];
       set({ memberships });
 
-      // New user or user with no event memberships must not see a previous user's event
+      // Regular users with no memberships must not keep a previous user's event.
+      // Platform admins often open events from All events without being a member —
+      // never wipe their selection here (that bounced them straight back to All events).
       if (memberships.length === 0) {
+        if (isPlatformAdmin) {
+          if (get().joiningByCode) {
+            set({ currentEvent: null });
+            await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
+          } else {
+            const current = get().currentEvent;
+            if (current?.id) void saveCachedEvent(current);
+          }
+          useConnectivityStore.getState().reportSuccess();
+          return;
+        }
         set({ currentEvent: null });
         await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
         return;
@@ -160,6 +175,8 @@ export const useEventStore = create<EventStore>((set, get) => ({
 
       // Don't overwrite a platform admin's explicit selection of an event they're not a member of
       if (isPlatformAdmin && current && !memberships.some((m) => m.event_id === current.id)) {
+        if (current?.id) void saveCachedEvent(current);
+        useConnectivityStore.getState().reportSuccess();
         return;
       }
 
@@ -169,12 +186,14 @@ export const useEventStore = create<EventStore>((set, get) => ({
           const row = memberships.find((m) => m.event_id === storedId);
           if (row?.events && accessible(row.events)) {
             set({ currentEvent: row.events });
+            void saveCachedEvent(row.events);
           } else if (isPlatformAdmin) {
             // Platform admin may have selected an event they're not a member of (e.g. from All events) — restore it from DB
             const { data: ev } = await supabase.from('events').select('*').eq('id', storedId).maybeSingle();
             const event = ev as Event | null;
             if (event && isEventAccessible(event, true)) {
               set({ currentEvent: event });
+              void saveCachedEvent(event);
             }
             // else leave currentEvent as is (don't clear)
           } else {
@@ -189,11 +208,32 @@ export const useEventStore = create<EventStore>((set, get) => ({
           if (event && accessible(event)) {
             set({ currentEvent: event });
             await AsyncStorage.setItem(CURRENT_EVENT_KEY, event.id);
+            void saveCachedEvent(event);
           }
         }
       }
+      // Keep only the active event cache fresh (avoid N AsyncStorage writes per membership refresh).
+      const active = get().currentEvent;
+      if (active?.id) void saveCachedEvent(active);
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       console.error('Fetch memberships error:', err);
+      useConnectivityStore.getState().reportFailure(err);
+      // Offline fallback: restore last event from device cache.
+      if (!get().currentEvent) {
+        try {
+          const storedId = await AsyncStorage.getItem(CURRENT_EVENT_KEY);
+          if (storedId) {
+            const cached = await loadCachedEvent(storedId);
+            if (cached && isEventAccessible(cached, isPlatformAdmin)) {
+              set({ currentEvent: cached });
+              useConnectivityStore.getState().setShowingCachedData(true);
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
     }
   },
 
@@ -201,6 +241,7 @@ export const useEventStore = create<EventStore>((set, get) => ({
     set({ currentEvent: event, joiningByCode: event ? false : get().joiningByCode });
     if (event) {
       await AsyncStorage.setItem(CURRENT_EVENT_KEY, event.id);
+      void saveCachedEvent(event);
     } else {
       await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
     }
@@ -210,18 +251,38 @@ export const useEventStore = create<EventStore>((set, get) => ({
     try {
       const id = await AsyncStorage.getItem(CURRENT_EVENT_KEY);
       if (!id) return;
-      const { data } = await supabase.from('events').select('*').eq('id', id).single();
-      if (data) {
+      const { data, error } = await supabase.from('events').select('*').eq('id', id).single();
+      if (!error && data) {
         const event = data as Event;
         if (isEventAccessible(event, isPlatformAdmin)) {
           set({ currentEvent: event });
-        } else {
-          set({ currentEvent: null });
-          await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
+          void saveCachedEvent(event);
+          useConnectivityStore.getState().reportSuccess();
+          return;
         }
+        set({ currentEvent: null });
+        await AsyncStorage.removeItem(CURRENT_EVENT_KEY);
+        return;
       }
-    } catch {
-      // ignore
+      const cached = await loadCachedEvent(id);
+      if (cached && isEventAccessible(cached, isPlatformAdmin)) {
+        set({ currentEvent: cached });
+        useConnectivityStore.getState().reportFailure(error ?? undefined);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      }
+    } catch (err) {
+      try {
+        const id = await AsyncStorage.getItem(CURRENT_EVENT_KEY);
+        if (!id) return;
+        const cached = await loadCachedEvent(id);
+        if (cached && isEventAccessible(cached, isPlatformAdmin)) {
+          set({ currentEvent: cached });
+          useConnectivityStore.getState().reportFailure(err);
+          useConnectivityStore.getState().setShowingCachedData(true);
+        }
+      } catch {
+        // ignore
+      }
     }
   },
 
@@ -239,6 +300,7 @@ export const useEventStore = create<EventStore>((set, get) => ({
         event_id: eventId,
         user_id: userId,
         role: 'attendee',
+        roles: ['attendee'],
       }) as unknown as Promise<{ error: { message: string; code?: string } | null }>;
       const { error } = await withTimeout(insertPromise);
       // Already a member (duplicate key) → treat as success and just switch to this event

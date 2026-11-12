@@ -21,6 +21,7 @@ import type { Event } from '../lib/types';
 import type { VendorBooth } from '../lib/types';
 import type { EventRole } from '../lib/types';
 import MemberSearchSelect from '../components/MemberSearchSelect';
+import EventFeatureNavLinks from '../components/EventFeatureNavLinks';
 import styles from './BulkB2BAssign.module.css';
 
 type MemberOption = { user_id: string; role: EventRole; user?: { id: string; full_name: string; email: string } };
@@ -678,6 +679,7 @@ export default function BulkB2BAssign() {
         </Link>
       </div>
       <h1>Meetings — {event?.name ?? 'Event'}</h1>
+      {eventId ? <EventFeatureNavLinks eventId={eventId} variant="page" /> : null}
       <p className={styles.hint}>
         <strong>Pick a vendor booth</strong> to load that booth’s scheduled meetings (the list is per booth, not for the
         whole event). Then add meetings below. When you set a <strong>Start</strong> time, <strong>End</strong> fills with

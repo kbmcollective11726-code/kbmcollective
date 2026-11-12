@@ -26,8 +26,20 @@ export default function EventList() {
     return () => { cancelled = true; };
   }, []);
 
-  if (loading) return <div className={styles.loading}>Loading events…</div>;
-  if (error) return <div className={styles.error}>{error}</div>;
+  if (loading) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.loading}>Loading events…</div>
+      </div>
+    );
+  }
+  if (error) {
+    return (
+      <div className={styles.page}>
+        <div className={styles.error}>{error}</div>
+      </div>
+    );
+  }
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);

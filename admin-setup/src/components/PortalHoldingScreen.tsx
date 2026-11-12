@@ -1,6 +1,8 @@
 import PortalEventSummary from './PortalEventSummary';
+import PortalRichHtml from './PortalRichHtml';
 import styles from '../pages/delegate-portal/DelegatePortal.module.css';
-import { DEFAULT_HOLDING_MESSAGE } from '../lib/registrantPortal';
+import { holdingScheduleMessageForRole } from '../lib/registrantPortal';
+import { hasRichTextContent } from '../lib/sanitizeHtml';
 
 interface Props {
   eventName: string;
@@ -36,8 +38,7 @@ export default function PortalHoldingScreen({
   expectedOpenAt,
   roleLabel = 'delegate',
 }: Props) {
-  const roleName = roleLabel === 'vendor' ? 'vendor' : 'delegate';
-  const customMessage = message?.trim();
+  const hasCustomMessage = hasRichTextContent(message);
   const hasExpectedOpen = Boolean(expectedOpenAt?.trim());
   const greeting = userName?.trim() ? `Hi ${userName.trim()},` : null;
 
@@ -46,17 +47,25 @@ export default function PortalHoldingScreen({
       <PortalEventSummary eventName={eventName} dateRange={dateRange} locationLine={locationLine} />
       <h2 className={styles.welcomeHeading}>Registration Details</h2>
       {greeting ? <p className={styles.holdingGreeting}>{greeting}</p> : null}
-      <p className={styles.hint}>{customMessage || DEFAULT_HOLDING_MESSAGE}</p>
+      {hasCustomMessage ? (
+        <PortalRichHtml html={message} className={styles.richHtml} />
+      ) : (
+        <>
+          <p className={styles.holdingLead}>
+            <span className={styles.holdingLeadAccent}>Your registration is confirmed!</span>
+            <br />
+            Full profile setup opens soon — we will email you when it is ready.
+          </p>
+          {!hasExpectedOpen ? (
+            <p className={styles.holdingSchedule}>{holdingScheduleMessageForRole(roleLabel)}</p>
+          ) : null}
+        </>
+      )}
       {hasExpectedOpen ? (
         <p className={styles.holdingSchedule}>
           <strong>Expected to open:</strong> {formatExpectedOpen(expectedOpenAt!.trim())}
         </p>
-      ) : (
-        <p className={styles.holdingSchedule}>
-          Your event organizer has not released the full {roleName} registration profile yet. We will email you
-          when it is ready to complete.
-        </p>
-      )}
+      ) : null}
       <p className={styles.hint}>
         You are signed in. Visit <strong>Welcome</strong> for event information, then return here once registration
         details are open.

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -23,14 +23,17 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { supabase, supabaseStorage } from '../../lib/supabase';
+import { loadCachedSessions, saveCachedSessions, saveCachedEvent, loadCachedEvent } from '../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../stores/connectivityStore';
 import { useMemo } from 'react';
 import { format, parseISO } from 'date-fns';
 import { useRouter, usePathname } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Calendar, MapPin, X, ChevronDown, ChevronUp, Home, ImageIcon, Trophy, Users, User, Store } from 'lucide-react-native';
 import { colors } from '../../constants/colors';
+import { darkenThemeColor, resolveEventThemeColor, themeColorWithAlpha } from '../../lib/eventTheme';
 import { theme } from '../../constants/theme';
-import type { Event } from '../../lib/types';
+import type { Event, ScheduleSession } from '../../lib/types';
 import { isEventAccessible } from '../../lib/eventAccess';
 import { isAppMenuItemVisible } from '../../lib/effectiveEventMenu';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
@@ -53,6 +56,9 @@ import {
 } from '../../lib/scheduleNowNext';
 import CompactSponsorStrip from '../../components/CompactSponsorStrip';
 import { useResolvedEventSponsors } from '../../lib/useResolvedEventSponsors';
+import AccentCard from '../../components/ui/AccentCard';
+import SectionHeader from '../../components/ui/SectionHeader';
+import PressScale from '../../components/ui/PressScale';
 
 type PointRuleDisplay = { action: string; points_value: number; description: string | null };
 const DISPLAY_ACTIONS = [
@@ -255,28 +261,55 @@ export default function HomeScreen() {
   }, []);
 
   const loadInfoScreenData = useCallback(async (eventId: string) => {
-    const [rules, { data: sessions }, { data: ann }] = await Promise.all([
-      fetchPointRules(eventId),
-      supabase
-        .from('schedule_sessions')
-        .select('id, title, start_time, end_time, day_number')
-        .eq('event_id', eventId)
-        .eq('is_active', true)
-        .order('day_number')
-        .order('start_time'),
-      supabase
-        .from('announcements')
-        .select('id, title, content, created_at, sent_at, scheduled_at')
-        .eq('event_id', eventId)
-        .or(PUBLISHED_ANNOUNCEMENT_OR_FILTER)
-        .order('created_at', { ascending: false })
-        .limit(20),
-    ]);
-    setPointRules(rules);
-    setScheduleSessions((sessions ?? []) as SessionForNowNext[]);
-    setAnnouncements(sortAnnouncementsNewestFirst((ann ?? []) as AnnouncementListRow[]));
-    await fetchB2BHomeRows();
-    await reloadSponsors();
+    try {
+      const [rules, sessionsRes, annRes] = await Promise.all([
+        fetchPointRules(eventId),
+        supabase
+          .from('schedule_sessions')
+          .select('id, title, start_time, end_time, day_number')
+          .eq('event_id', eventId)
+          .eq('is_active', true)
+          .order('day_number')
+          .order('start_time'),
+        supabase
+          .from('announcements')
+          .select('id, title, content, created_at, sent_at, scheduled_at')
+          .eq('event_id', eventId)
+          .or(PUBLISHED_ANNOUNCEMENT_OR_FILTER)
+          .order('created_at', { ascending: false })
+          .limit(20),
+      ]);
+      if (sessionsRes.error) throw sessionsRes.error;
+      const sessionRows = (sessionsRes.data ?? []) as SessionForNowNext[];
+      setPointRules(rules);
+      setScheduleSessions(sessionRows);
+      setAnnouncements(sortAnnouncementsNewestFirst((annRes.data ?? []) as AnnouncementListRow[]));
+      // Seed offline agenda if Agenda tab hasn't written a full cache yet (partial rows OK for Now/Next).
+      void (async () => {
+        const existing = await loadCachedSessions(eventId);
+        if (!existing) {
+          await saveCachedSessions(eventId, sessionRows as unknown as ScheduleSession[]);
+        }
+      })();
+      useConnectivityStore.getState().reportSuccess();
+      await fetchB2BHomeRows();
+      await reloadSponsors();
+    } catch (err) {
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedSessions(eventId);
+      if (cached) {
+        setScheduleSessions(
+          cached.map((s) => ({
+            id: s.id,
+            title: s.title,
+            start_time: s.start_time,
+            end_time: s.end_time,
+            day_number: s.day_number,
+          })),
+        );
+        useConnectivityStore.getState().setShowingCachedData(true);
+      }
+    }
   }, [fetchPointRules, fetchB2BHomeRows, reloadSponsors]);
 
   const prevEventIdRef = useRef<string | null>(null);
@@ -350,16 +383,31 @@ export default function HomeScreen() {
 
   const refetchInfoData = useCallback(async () => {
     if (!user?.id) return;
-    await refresh(user.id, user?.is_platform_admin);
-    const eventId = useEventStore.getState().currentEvent?.id ?? currentEvent?.id;
-    if (eventId) {
-      const { data: freshEvent } = await supabase.from('events').select('*').eq('id', eventId).maybeSingle();
-      if (freshEvent) {
-        await useEventStore.getState().setCurrentEvent(freshEvent as Event);
+    try {
+      await refresh(user.id, user?.is_platform_admin);
+      const eventId = useEventStore.getState().currentEvent?.id ?? currentEvent?.id;
+      if (eventId) {
+        const { data: freshEvent, error } = await supabase.from('events').select('*').eq('id', eventId).maybeSingle();
+        if (!error && freshEvent) {
+          await useEventStore.getState().setCurrentEvent(freshEvent as Event);
+          void saveCachedEvent(freshEvent as Event);
+          useConnectivityStore.getState().reportSuccess();
+        } else if (error) {
+          useConnectivityStore.getState().reportFailure(error);
+          const cached = await loadCachedEvent(eventId);
+          if (cached) {
+            await useEventStore.getState().setCurrentEvent(cached);
+            useConnectivityStore.getState().setShowingCachedData(true);
+          }
+        }
+        await loadInfoScreenData(eventId);
+      } else {
+        await reloadSponsors();
       }
-      await loadInfoScreenData(eventId);
-    } else {
-      await reloadSponsors();
+    } catch (err) {
+      useConnectivityStore.getState().reportFailure(err);
+      const eventId = currentEvent?.id;
+      if (eventId) await loadInfoScreenData(eventId);
     }
   }, [user?.id, user?.is_platform_admin, currentEvent?.id, refresh, loadInfoScreenData, reloadSponsors]);
 
@@ -519,7 +567,7 @@ export default function HomeScreen() {
                 autoCorrect={false}
                 maxLength={20}
               />
-              <TouchableOpacity
+              <PressScale
                 style={[styles.primaryBtn, searching && styles.btnDisabled]}
                 onPress={handleSearchCode}
                 disabled={searching || !codeInput.trim()}
@@ -529,7 +577,7 @@ export default function HomeScreen() {
                 ) : (
                   <Text style={styles.primaryBtnText}>Search for event</Text>
                 )}
-              </TouchableOpacity>
+              </PressScale>
               {joinError ? <Text style={styles.inlineError}>{joinError}</Text> : null}
             </View>
 
@@ -548,7 +596,7 @@ export default function HomeScreen() {
                 <Text style={styles.cardText}>
                   {formatDate(searchedEvent.start_date)} – {formatDate(searchedEvent.end_date)}
                 </Text>
-                <TouchableOpacity
+                <PressScale
                   style={[styles.primaryBtn, styles.joinBtn, searching && styles.btnDisabled]}
                   onPress={handleJoin}
                   disabled={searching}
@@ -558,7 +606,7 @@ export default function HomeScreen() {
                   ) : (
                     <Text style={styles.primaryBtnText}>{isAlreadyMember ? 'Open event' : 'Join this event'}</Text>
                   )}
-                </TouchableOpacity>
+                </PressScale>
               </View>
             ) : null}
 
@@ -575,7 +623,9 @@ export default function HomeScreen() {
 
   // Current event: summit-style info page
   const e = currentEvent;
-  const themeColor = e.theme_color || colors.primary;
+  const themeColor = resolveEventThemeColor(e.theme_color);
+  const themeColorDark = darkenThemeColor(themeColor);
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
   let welcomeTitle =
     typeof e.welcome_title === 'string'
       ? e.welcome_title
@@ -618,7 +668,7 @@ export default function HomeScreen() {
         ) : (
           <View style={styles.bannerWrap}>
             <LinearGradient
-              colors={[themeColor, colors.primaryDark]}
+              colors={[themeColor, themeColorDark]}
               style={{ width: windowWidth, height: fallbackBannerHeight }}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
@@ -636,23 +686,21 @@ export default function HomeScreen() {
           {(e.venue || e.map_url) ? (
             <>
               {e.venue ? (
-                <TouchableOpacity
+                <PressScale
                   style={styles.eventIntroLocationRow}
                   onPress={() => openMapForLocation(e)}
-                  activeOpacity={0.7}
                 >
-                  <MapPin size={16} color={colors.primary} />
+                  <MapPin size={16} color={themeColor} />
                   <Text style={styles.eventIntroVenue}>{e.venue}</Text>
-                </TouchableOpacity>
+                </PressScale>
               ) : e.map_url ? (
-                <TouchableOpacity
+                <PressScale
                   style={styles.eventIntroLocationRow}
                   onPress={() => openMapForLocation(e)}
-                  activeOpacity={0.7}
                 >
-                  <MapPin size={16} color={colors.primary} />
+                  <MapPin size={16} color={themeColor} />
                   <Text style={styles.eventIntroLocationLabel}>Open in maps</Text>
-                </TouchableOpacity>
+                </PressScale>
               ) : null}
             </>
           ) : null}
@@ -679,27 +727,26 @@ export default function HomeScreen() {
 
         {/* Now & next — compact, tappable to Agenda. Sessions only show for the current event. Next B2B shown when user has one. */}
         {(nowSessions.length > 0 || nextSessions.length > 0 || (show1on1InInfo && (nextB2B || liveB2BList.length > 0))) ? (
-          <View style={styles.nowNextCard}>
-            <TouchableOpacity
+          <AccentCard style={styles.nowNextCard}>
+            <PressScale
               style={styles.nowNextCardTouchable}
               onPress={() => router.push('/(tabs)/schedule' as any)}
-              activeOpacity={0.8}
             >
               <View style={styles.nowNextHeader}>
-                <Calendar size={18} color={colors.primary} />
+                <Calendar size={18} color={themeColor} />
                 <Text style={styles.nowNextTitle}>Schedule</Text>
               </View>
               {nowSessions.length > 0 ? (
                 nowSessions.length === 1 ? (
                   <View style={styles.nowNextRow}>
-                    <View style={styles.liveDot} />
+                    <View style={[styles.liveDot, { backgroundColor: themeColor }]} />
                     <Text style={styles.nowNextNowLabel}>Now:</Text>
                     <Text style={styles.nowNextText} numberOfLines={1}>{nowSessions[0].title}</Text>
                   </View>
                 ) : (
                   nowSessions.map((session) => (
                     <View key={session.id} style={styles.nowNextRow}>
-                      <View style={styles.liveDot} />
+                      <View style={[styles.liveDot, { backgroundColor: themeColor }]} />
                       <Text style={styles.nowNextNowLabel}>Now:</Text>
                       <Text style={styles.nowNextText} numberOfLines={1}>{session.title}</Text>
                     </View>
@@ -708,21 +755,20 @@ export default function HomeScreen() {
               ) : null}
               {show1on1InInfo
                 ? liveB2BList.map((b) => (
-                    <TouchableOpacity
+                    <PressScale
                       key={`live-b2b-${b.booth_id}-${b.start_time}`}
                       style={styles.nowNextRow}
                       onPress={() =>
                         router.push(`/(tabs)/expo/${b.booth_id}?from=${encodeURIComponent('/(tabs)/home')}` as any)
                       }
-                      activeOpacity={0.7}
                     >
-                      <View style={styles.liveDot} />
+                      <View style={[styles.liveDot, { backgroundColor: themeColor }]} />
                       <Text style={styles.nowNextNowLabel}>Now:</Text>
                       <Text style={styles.nowNextText} numberOfLines={1}>
                         {b.vendor_name}
                       </Text>
-                      <Text style={styles.nowNextB2bTag}>1:1</Text>
-                    </TouchableOpacity>
+                      <Text style={[styles.nowNextB2bTag, { color: themeColor }]}>1:1</Text>
+                    </PressScale>
                   ))
                 : null}
               {nextSessions.length > 0 ? (
@@ -735,25 +781,24 @@ export default function HomeScreen() {
                 <Text style={styles.nowNextEmpty}>No more sessions today</Text>
               ) : null}
               {show1on1InInfo && nextB2B ? (
-                <TouchableOpacity
+                <PressScale
                   style={styles.nowNextRow}
                   onPress={() => router.push(`/(tabs)/expo/${nextB2B.booth_id}?from=${encodeURIComponent('/(tabs)/home')}` as any)}
-                  activeOpacity={0.7}
                 >
-                  <Store size={14} color={colors.primary} style={{ marginRight: 6 }} />
+                  <Store size={14} color={themeColor} style={{ marginRight: 6 }} />
                   <Text style={styles.nowNextNextLabel}>Next 1:1:</Text>
                   <Text style={styles.nowNextText} numberOfLines={1}>{nextB2B.vendor_name}</Text>
                   <Text style={styles.nowNextTime}>{formatB2BSlotTimeLocal(nextB2B.start_time)}</Text>
-                </TouchableOpacity>
+                </PressScale>
               ) : null}
-              <Text style={styles.nowNextTap}>Tap to view full agenda</Text>
-            </TouchableOpacity>
-          </View>
+              <Text style={[styles.nowNextTap, { color: themeColor }]}>Tap to view full agenda</Text>
+            </PressScale>
+          </AccentCard>
         ) : null}
 
         {/* Event Details */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Event Details</Text>
+        <AccentCard style={styles.section}>
+          <SectionHeader title="Event Details" style={styles.sectionHeaderInCard} />
           {e.arrival_day_text ? (
             <Text style={styles.detailRow}><Text style={styles.detailLabel}>Arrival Day:</Text> {e.arrival_day_text}</Text>
           ) : null}
@@ -773,14 +818,14 @@ export default function HomeScreen() {
               <Text style={styles.detailRow}>
                 <Text style={styles.detailLabel}>Location: </Text>
                 <Text style={styles.detailValue}>{e.location || 'Tap to open in maps'}</Text>
-                <Text style={styles.mapHint}> · Tap to open in maps</Text>
+                <Text style={[styles.mapHint, { color: themeColor }]}> · Tap to open in maps</Text>
               </Text>
             </TouchableOpacity>
           ) : null}
           {e.theme_text ? (
             <Text style={styles.detailRow}><Text style={styles.detailLabel}>Theme:</Text> {e.theme_text}</Text>
           ) : null}
-        </View>
+        </AccentCard>
 
         {/* Announcements */}
         {announcements.length > 0 ? (
@@ -790,9 +835,9 @@ export default function HomeScreen() {
               <ChevronDown size={18} color={colors.textMuted} />
             </TouchableOpacity>
           ) : (
-            <View style={[styles.section, visibleAnnouncements.length > 0 && styles.announcementsHasContent]}>
+            <AccentCard style={[styles.section, visibleAnnouncements.length > 0 && styles.announcementsHasContent, visibleAnnouncements.length > 0 && { borderLeftColor: themeColor }]}>
               <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionTitle}>Announcements</Text>
+                <SectionHeader title="Announcements" style={styles.sectionHeaderInCardRow} />
                 <View style={styles.announcementsHeaderActions}>
                   <TouchableOpacity
                     onPress={() =>
@@ -802,7 +847,7 @@ export default function HomeScreen() {
                     }
                     hitSlop={12}
                   >
-                    <Text style={styles.seeAllLink}>See all</Text>
+                    <Text style={[styles.seeAllLink, { color: themeColor }]}>See all</Text>
                   </TouchableOpacity>
                   <TouchableOpacity onPress={handleToggleAnnouncementsSection} hitSlop={12} style={styles.hideAnnouncementsBtn}>
                     <Text style={styles.hideAnnouncementsText}>Hide</Text>
@@ -836,24 +881,24 @@ export default function HomeScreen() {
               {visibleAnnouncements.length === 0 ? (
                 <Text style={styles.noAnnouncementsHint}>No announcements visible. Dismissed items are hidden.</Text>
               ) : null}
-            </View>
+            </AccentCard>
           )
         ) : null}
 
         {/* What to Expect */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>What to Expect</Text>
+        <AccentCard style={styles.section}>
+          <SectionHeader title="What to Expect" style={styles.sectionHeaderInCard} />
           {whatToExpect.map((line, i) => (
             <View key={i} style={styles.bulletRow}>
-              <Text style={styles.bullet}>•</Text>
+              <Text style={[styles.bullet, { color: themeColor }]}>•</Text>
               <Text style={styles.bulletText}>{line}</Text>
             </View>
           ))}
-        </View>
+        </AccentCard>
 
         {/* Earn Points — same accent as banner */}
         <LinearGradient
-          colors={[themeColor, colors.primaryDark]}
+          colors={[themeColor, themeColorDark]}
           style={styles.pointsSection}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
@@ -876,54 +921,53 @@ export default function HomeScreen() {
         </LinearGradient>
 
         {/* How to Use This App */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>How to Use This App</Text>
+        <AccentCard style={styles.section}>
+          <SectionHeader title="How to Use This App" style={styles.sectionHeaderInCard} />
           <View style={styles.howToRow}>
             <View style={styles.howToIcon}>
-              <Home size={20} color={colors.primary} />
+              <Home size={20} color={themeColor} />
             </View>
             <Text style={styles.howToText}><Text style={styles.howToBold}>Info:</Text> Event details and welcome (you are here!)</Text>
           </View>
           <View style={styles.howToRow}>
             <View style={styles.howToIcon}>
-              <Calendar size={20} color={colors.primary} />
+              <Calendar size={20} color={themeColor} />
             </View>
             <Text style={styles.howToText}><Text style={styles.howToBold}>Agenda:</Text> View the full schedule</Text>
           </View>
           <View style={styles.howToRow}>
             <View style={styles.howToIcon}>
-              <ImageIcon size={20} color={colors.primary} />
+              <ImageIcon size={20} color={themeColor} />
             </View>
             <Text style={styles.howToText}><Text style={styles.howToBold}>Feed:</Text> Share photos and engage to earn points</Text>
           </View>
           <View style={styles.howToRow}>
             <View style={styles.howToIcon}>
-              <Trophy size={20} color={colors.primary} />
+              <Trophy size={20} color={themeColor} />
             </View>
             <Text style={styles.howToText}><Text style={styles.howToBold}>Rank:</Text> See who's winning!</Text>
           </View>
           <View style={styles.howToRow}>
             <View style={styles.howToIcon}>
-              <Users size={20} color={colors.primary} />
+              <Users size={20} color={themeColor} />
             </View>
             <Text style={styles.howToText}><Text style={styles.howToBold}>Community:</Text> Network with fellow attendees</Text>
           </View>
           <View style={styles.howToRow}>
             <View style={styles.howToIcon}>
-              <User size={20} color={colors.primary} />
+              <User size={20} color={themeColor} />
             </View>
             <Text style={styles.howToText}><Text style={styles.howToBold}>Profile:</Text> Edit profile, notifications, DMs</Text>
           </View>
-        </View>
+        </AccentCard>
 
-        <TouchableOpacity style={styles.changeEventBtn} onPress={handleChangeEvent}>
+        <PressScale style={styles.changeEventBtn} onPress={handleChangeEvent}>
           <Text style={styles.changeEventText}>Change event</Text>
-        </TouchableOpacity>
+        </PressScale>
 
         <View style={{ height: 24 }} />
         </View>
       </ScrollView>
-
       {/* Event switcher modal: see all your events and switch, or join with code */}
       <Modal
         visible={!!selectedAnnouncement}
@@ -958,7 +1002,6 @@ export default function HomeScreen() {
           </Pressable>
         </Pressable>
       </Modal>
-
       {/* Event switcher modal: see all your events and switch, or join with code */}
       <Modal visible={eventSwitcherVisible} animationType="slide" transparent onRequestClose={() => setEventSwitcherVisible(false)}>
         <Pressable style={styles.eventSwitcherOverlay} onPress={() => setEventSwitcherVisible(false)}>
@@ -971,7 +1014,7 @@ export default function HomeScreen() {
                   key={ev.id}
                   style={[
                     styles.eventSwitcherRow,
-                    currentEvent?.id === ev.id && styles.eventSwitcherRowCurrent,
+                    currentEvent?.id === ev.id && [styles.eventSwitcherRowCurrent, { borderColor: themeColor, backgroundColor: themeFaded }],
                     ev.is_active === false && styles.eventSwitcherRowDisabled,
                   ]}
                   onPress={() => handleSelectEventFromList(ev)}
@@ -983,14 +1026,14 @@ export default function HomeScreen() {
                     {ev.is_active === false ? ' · Disabled' : ''}
                   </Text>
                   {currentEvent?.id === ev.id ? (
-                    <Text style={styles.eventSwitcherCurrentBadge}>Current</Text>
+                    <Text style={[styles.eventSwitcherCurrentBadge, { color: themeColor }]}>Current</Text>
                   ) : ev.is_active === false ? (
                     <Text style={styles.eventSwitcherDisabledBadge}>Disabled</Text>
                   ) : null}
                 </TouchableOpacity>
               ))}
               <TouchableOpacity style={styles.eventSwitcherJoinRow} onPress={handleJoinWithCode} activeOpacity={0.7}>
-                <Text style={styles.eventSwitcherJoinText}>Join with event code</Text>
+                <Text style={[styles.eventSwitcherJoinText, { color: themeColor }]}>Join with event code</Text>
                 <Text style={styles.eventSwitcherJoinHint}>Enter a code to join a new event</Text>
               </TouchableOpacity>
             </ScrollView>
@@ -1005,7 +1048,7 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.background },
+  container: { flex: 1, backgroundColor: 'transparent' },
   flex1: { flex: 1 },
   content: { padding: theme.spacing.lg, paddingBottom: theme.spacing.xxl },
   scrollContent: { paddingBottom: theme.spacing.xxl },
@@ -1022,12 +1065,13 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.borderLight,
   },
   eventIntroTitle: {
-    fontSize: 24,
-    fontWeight: '700',
+    fontSize: 28,
+    fontWeight: '800',
     color: colors.text,
     textAlign: 'center',
     marginBottom: theme.spacing.sm,
-    letterSpacing: 0.2,
+    letterSpacing: 0.35,
+    lineHeight: 34,
   },
   eventIntroSubtitle: {
     fontSize: 15,
@@ -1081,12 +1125,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   heroTitle: {
-    fontSize: theme.heroTitleSize,
-    fontWeight: '700',
+    fontSize: Math.max(theme.heroTitleSize, 28),
+    fontWeight: '800',
     color: colors.textOnPrimary,
     marginBottom: theme.spacing.xs,
-    letterSpacing: 0.3,
-    lineHeight: 30,
+    letterSpacing: 0.35,
+    lineHeight: 32,
   },
   heroSubtitle: {
     fontSize: theme.heroSubtitleSize,
@@ -1168,8 +1212,6 @@ const styles = StyleSheet.create({
     borderRadius: theme.sectionRadius,
     padding: theme.sectionPadding,
     marginBottom: theme.sectionMarginBottom,
-    borderWidth: 1,
-    borderColor: colors.border,
     ...theme.cardShadow,
   },
   nowNextCardTouchable: { flex: 1 },
@@ -1242,6 +1284,15 @@ const styles = StyleSheet.create({
     padding: theme.sectionPadding,
     marginBottom: theme.sectionMarginBottom,
     ...theme.cardShadow,
+  },
+  sectionHeaderInCard: {
+    marginTop: 0,
+    marginBottom: theme.spacing.sm,
+  },
+  sectionHeaderInCardRow: {
+    marginTop: 0,
+    marginBottom: 0,
+    flex: 1,
   },
   sectionTitle: { fontSize: 17, fontWeight: '700', color: colors.text, marginBottom: theme.spacing.sm, letterSpacing: 0.2 },
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: theme.spacing.sm },

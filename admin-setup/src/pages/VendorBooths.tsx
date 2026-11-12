@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { postgrestErrorMessage } from '../lib/postgrestErrorMessage';
 import type { VendorBooth } from '../lib/types';
 import { VENDOR_BOOTH_LOGO_HINT } from '../lib/logoUploadHints';
+import EventFeatureNavLinks from '../components/EventFeatureNavLinks';
 import styles from './VendorBooths.module.css';
 
 type LocationState = { vendorBoothFlash?: string };
@@ -58,9 +59,11 @@ export default function VendorBooths() {
           ← Event
         </Link>
         <h1>Solution Providers</h1>
+        <EventFeatureNavLinks eventId={eventId} variant="page" />
         <p className={styles.hint}>
-          Add and edit booths for the in-app <strong>Solution Providers</strong> list and 1:1 Meetings, then use{' '}
-          <strong>Meetings</strong> to assign times per attendee and notify them — same as the mobile app.
+          These booths power the in-app <strong>Solution Providers</strong> list and 1:1 Meetings. On matchmaking
+          events, approving a vendor and assigning a home table (Slots &amp; locations) creates/updates the booth
+          from registration (name, description, logo, website, reps). Use <strong>Meetings</strong> to assign times.
         </p>
         <p className={styles.logoHint}>{VENDOR_BOOTH_LOGO_HINT}</p>
         <Link to={`/events/${eventId}/vendor-booths/new`} className={styles.addBtn}>
@@ -78,7 +81,8 @@ export default function VendorBooths() {
         <div className={styles.empty}>
           <p>No booths yet.</p>
           <p className={styles.emptySub}>
-            Tap &quot;Add booth&quot; to add one, then assign meetings under Meetings.
+            Approve matchmaking vendors (or tap Add booth). Assign a home table on Matchmaking → Slots &amp; locations
+            so the booth location shows in the app.
           </p>
         </div>
       ) : (

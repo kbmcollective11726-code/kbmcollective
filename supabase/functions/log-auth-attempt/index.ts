@@ -1,32 +1,42 @@
-// Log sign-in success/failure for platform security audit (mobile app + cadmin).
+// Log sign-in success/failure for platform security audit (mobile app + cadmin + portals).
+// Success rows require a user JWT whose email matches the claimed email.
+// Failures require project anon apikey only (no client-shipped shared secret).
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.0";
+import { corsHeaders, corsPreflightResponse } from "../_shared/cors.ts";
+import {
+  isProjectAnonCredential,
+  presentedAnonKey,
+  projectRefFromSupabaseUrl,
+} from "../_shared/projectAnon.ts";
+import { createClient } from "npm:@supabase/supabase-js@2.45.0";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Authorization, Content-Type, apikey",
-};
-
-function json(body: object, status: number) {
+function json(body: object, status: number, headers: Record<string, string>) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...corsHeaders, "Content-Type": "application/json" },
+    headers: { ...headers, "Content-Type": "application/json" },
   });
 }
 
 Deno.serve(async (req: Request) => {
+  const ch = corsHeaders(req, "Authorization, Content-Type, apikey");
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: corsHeaders });
+    return corsPreflightResponse(req, "Authorization, Content-Type, apikey");
   }
   if (req.method !== "POST") {
-    return json({ error: "Method not allowed" }, 405);
+    return json({ error: "Method not allowed" }, 405, ch);
   }
 
-  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const supabaseUrl = Deno.env.get("SUPABASE_URL") ?? "";
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY")?.trim() ?? "";
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-  if (!supabaseUrl || !serviceRoleKey) {
-    return json({ error: "Server configuration error" }, 500);
+  if (!supabaseUrl || !anonKey || !serviceRoleKey) {
+    return json({ error: "Server configuration error" }, 500, ch);
+  }
+
+  const projectRef = projectRefFromSupabaseUrl(supabaseUrl);
+  const presented = presentedAnonKey(req);
+  if (!isProjectAnonCredential(presented, anonKey, projectRef)) {
+    return json({ error: "Unauthorized" }, 401, ch);
   }
 
   let body: {
@@ -39,19 +49,47 @@ Deno.serve(async (req: Request) => {
   try {
     body = await req.json();
   } catch {
-    return json({ error: "Invalid JSON body" }, 400);
+    return json({ error: "Invalid JSON body" }, 400, ch);
   }
 
-  const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+  let email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
   const success = body.success === true;
   const source = typeof body.source === "string" ? body.source.trim().slice(0, 64) : "unknown";
   const errorMessage = typeof body.error_message === "string"
     ? body.error_message.trim().slice(0, 500)
     : "";
-  const userId = typeof body.user_id === "string" ? body.user_id.trim() : null;
+  let userId = typeof body.user_id === "string" ? body.user_id.trim() : null;
 
   if (!email || !email.includes("@")) {
-    return json({ error: "email required" }, 400);
+    return json({ error: "email required" }, 400, ch);
+  }
+
+  // Successful logins must be attested by a real user JWT (prevents fake success noise).
+  if (success) {
+    const authHeader = req.headers.get("Authorization") ?? "";
+    if (!authHeader.startsWith("Bearer ")) {
+      return json({ error: "User session required for successful login logs" }, 401, ch);
+    }
+    const token = authHeader.slice(7);
+    if (isProjectAnonCredential(token, anonKey, projectRef)) {
+      return json({ error: "User session required for successful login logs" }, 401, ch);
+    }
+    const callerClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+    });
+    const {
+      data: { user },
+      error: userError,
+    } = await callerClient.auth.getUser(token);
+    if (userError || !user?.id || !user.email) {
+      return json({ error: "Invalid session" }, 401, ch);
+    }
+    const jwtEmail = user.email.trim().toLowerCase();
+    if (jwtEmail !== email) {
+      return json({ error: "Email does not match session" }, 403, ch);
+    }
+    email = jwtEmail;
+    userId = user.id;
   }
 
   const admin = createClient(supabaseUrl, serviceRoleKey);
@@ -64,12 +102,13 @@ Deno.serve(async (req: Request) => {
     .gte("created_at", oneHourAgo);
 
   if ((count ?? 0) > 30) {
-    return json({ ok: true, throttled: true }, 200);
+    return json({ ok: true, throttled: true }, 200, ch);
   }
 
   const ip =
     req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
     req.headers.get("x-real-ip")?.trim() ||
+    req.headers.get("cf-connecting-ip")?.trim() ||
     null;
 
   let resolvedUserId = userId;
@@ -95,8 +134,8 @@ Deno.serve(async (req: Request) => {
 
   if (error) {
     console.error("insert_platform_audit_log error:", error);
-    return json({ error: error.message }, 500);
+    return json({ error: error.message }, 500, ch);
   }
 
-  return json({ ok: true }, 200);
+  return json({ ok: true }, 200, ch);
 });

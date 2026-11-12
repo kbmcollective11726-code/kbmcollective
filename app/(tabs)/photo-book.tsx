@@ -16,19 +16,16 @@ import {
   Linking,
   BackHandler,
   Alert,
-  AppState,
-  AppStateStatus,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import * as FileSystem from 'expo-file-system/legacy';
-import * as MediaLibrary from 'expo-media-library';
 import * as Sharing from 'expo-sharing';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../../lib/supabase';
-import { selectAllInPages, SUPABASE_SELECT_PAGE_SIZE } from '../../lib/supabaseSelectAllPages';
+import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import { colors } from '../../constants/colors';
 import type { Post } from '../../lib/types';
 import Toast from 'react-native-toast-message';
@@ -36,6 +33,7 @@ import { Heart, Share2, Link, Download, X } from 'lucide-react-native';
 
 const COLS = 3;
 const GAP = 4;
+const PHOTO_PAGE_SIZE = 60;
 
 export default function PhotoBookScreen() {
   const { user } = useAuthStore();
@@ -43,49 +41,78 @@ export default function PhotoBookScreen() {
   const [posts, setPosts] = useState<Post[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [selectedPost, setSelectedPost] = useState<Post | null>(null);
   const [sharing, setSharing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const postsLengthRef = useRef(0);
+  const hasMoreRef = useRef(true);
+  const loadingMoreRef = useRef(false);
+  postsLengthRef.current = posts.length;
+  hasMoreRef.current = hasMore;
 
-  const fetchPhotos = useCallback(async () => {
+  const fetchPhotos = useCallback(async (opts?: { append?: boolean }) => {
+    const append = opts?.append === true;
     if (!currentEvent?.id || !user?.id) {
       setPosts([]);
+      setHasMore(false);
+      hasMoreRef.current = false;
       setLoading(false);
       setFetchError(null);
       return;
     }
-    setFetchError(null);
+    if (append) {
+      if (loadingMoreRef.current || !hasMoreRef.current) return;
+      loadingMoreRef.current = true;
+      setLoadingMore(true);
+    } else {
+      setFetchError(null);
+      setHasMore(true);
+      hasMoreRef.current = true;
+    }
+    const from = append ? postsLengthRef.current : 0;
+    const to = from + PHOTO_PAGE_SIZE - 1;
     try {
       await withRetryAndRefresh(async () => {
-        const postsData = await selectAllInPages(SUPABASE_SELECT_PAGE_SIZE, async (from, to) => {
-          const res = await supabase
-            .from('posts')
-            .select('id, image_url, caption, created_at, likes_count, user:users(full_name)')
-            .eq('event_id', currentEvent.id)
-            .eq('is_deleted', false)
-            .eq('is_approved', true)
-            .not('image_url', 'is', null)
-            .order('created_at', { ascending: false })
-            .range(from, to);
-          return res;
-        });
+        const res = await supabase
+          .from('posts')
+          .select('id, image_url, caption, created_at, likes_count, user:users(full_name)')
+          .eq('event_id', currentEvent.id)
+          .eq('is_deleted', false)
+          .eq('is_approved', true)
+          .not('image_url', 'is', null)
+          .order('created_at', { ascending: false })
+          .range(from, to);
+        if (res.error) throw res.error;
 
-        const raw = postsData as Array<Record<string, unknown>>;
+        const raw = (res.data ?? []) as Array<Record<string, unknown>>;
         const normalized: Post[] = raw.map((p) => ({
           ...p,
           user: Array.isArray(p.user) ? (p.user[0] ?? null) : p.user,
         })) as Post[];
-        setPosts(normalized);
+        const more = raw.length >= PHOTO_PAGE_SIZE;
+        setHasMore(more);
+        hasMoreRef.current = more;
+        setPosts((prev) => {
+          if (!append) return normalized;
+          const seen = new Set(prev.map((p) => p.id));
+          return [...prev, ...normalized.filter((p) => !seen.has(p.id))];
+        });
       });
       setFetchError(null);
     } catch (err) {
       if (__DEV__) console.warn('Photo book fetch error:', err);
-      setPosts([]);
-      setFetchError('Error - page not loading');
+      if (!append) {
+        setPosts([]);
+        setFetchError('Error - page not loading');
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
+      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
   }, [currentEvent?.id, user?.id]);
 
@@ -109,10 +136,10 @@ export default function PhotoBookScreen() {
   );
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && currentEvent?.id && user?.id) fetchPhotos().catch(() => {});
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (currentEvent?.id && user?.id) fetchPhotos().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [currentEvent?.id, user?.id]);
 
   const loadingStartRef = useRef<number | null>(null);
@@ -209,6 +236,7 @@ export default function PhotoBookScreen() {
           text2: 'Choose Save to Photos or a gallery app from the menu.',
         });
       } else {
+        const MediaLibrary = await import('expo-media-library');
         const { status } = await MediaLibrary.requestPermissionsAsync(true, ['photo']);
         if (status !== 'granted') {
           Alert.alert('Permission needed', 'Allow photo library access in Settings to save photos.');
@@ -284,7 +312,7 @@ export default function PhotoBookScreen() {
         <Text style={styles.headerTitle}>Photo book</Text>
         {posts.length > 0 ? (
           <Text style={styles.headerCount}>
-            {posts.length} {posts.length === 1 ? 'photo' : 'photos'}
+            {hasMore ? `${posts.length}+ photos` : `${posts.length} ${posts.length === 1 ? 'photo' : 'photos'}`}
           </Text>
         ) : null}
       </View>
@@ -303,6 +331,19 @@ export default function PhotoBookScreen() {
           maxToRenderPerBatch={12}
           windowSize={5}
           removeClippedSubviews={true}
+          onEndReached={() => {
+            if (hasMore && !loadingMore && !loading) {
+              fetchPhotos({ append: true }).catch(() => {});
+            }
+          }}
+          onEndReachedThreshold={0.4}
+          ListFooterComponent={
+            loadingMore ? (
+              <View style={{ paddingVertical: 16, width: '100%', alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={colors.primary} />
+              </View>
+            ) : null
+          }
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
           }

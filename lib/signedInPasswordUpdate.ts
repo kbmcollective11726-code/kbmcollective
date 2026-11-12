@@ -28,12 +28,29 @@ export async function updateSignedInUserPassword(
     supabase.auth.stopAutoRefresh();
 
     const cur = useAuthStore.getState().session;
-    const token = cur?.access_token;
+    let token = cur?.access_token;
+    if (!token) {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      token = session?.access_token;
+      if (session?.user) {
+        useAuthStore.setState({ session, isAuthenticated: true });
+      }
+    }
+    if (!token) {
+      const refreshed = await supabase.auth.refreshSession();
+      token = refreshed.data.session?.access_token;
+      if (refreshed.data.session?.user) {
+        useAuthStore.setState({ session: refreshed.data.session, isAuthenticated: true });
+      }
+    }
     if (!token) {
       return {
         ok: false,
-        title: 'Session missing',
-        message: 'Sign out, sign in again, then set your new password.',
+        title: 'Session expired',
+        message:
+          'Your reset session expired. Tap Forgot password on the login screen, open the newest email, and set your password on the web page that opens. Then sign in here.',
       };
     }
 

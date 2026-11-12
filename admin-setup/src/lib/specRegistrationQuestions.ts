@@ -23,7 +23,7 @@ export const SPEC_DELEGATE_STAGE2_PROMPTS = [
   "Company's Annual Revenue",
   'Select your budget for external solutions for 2026',
   'Scope of Responsibility',
-  'I sit in the C-suite or report directly to the C-suite',
+  'Seniority Level',
   'Name of person I report to',
   'Solution Category of Interest',
   'Meeting Goals',
@@ -61,22 +61,26 @@ export const SPEC_VENDOR_STAGE2_PROMPTS = [
 ] as const;
 
 export const MEETING_GOALS_DELEGATE_OPTIONS = [
-  'Evaluating solutions to purchase in the next 6 months',
+  'Ready to evaluate and purchase solutions',
   'Researching for a future budget cycle',
   'Open to learning about new vendors',
   'Exploring strategic partnerships',
-  'Networking / relationship-building only',
+  'Building my network',
   "Sharing my organization's expertise",
-  'Other',
 ];
 
 export const MEETING_GOALS_VENDOR_OPTIONS = [
-  'Generate new leads',
-  'Deepen existing relationships',
-  'Brand awareness',
-  'Recruit partners',
-  'Other',
+  'Close deals with buyers ready to purchase',
+  'Nurture prospects for a future sale',
+  'Build brand awareness with new contacts',
+  'Explore strategic partnerships',
+  'Build my network',
+  'Recruit partners or affiliates',
 ];
+
+/** Positional pairs for match scoring (1-based). Row 6 is lower-confidence. */
+export const MEETING_GOALS_PAIR_COUNT = 6;
+export const MEETING_GOALS_WEAK_PAIR_INDEX = 6; // 1-based
 
 export const VENDOR_SENIORITY_OPTIONS = [
   'C-Suite',
@@ -85,6 +89,14 @@ export const VENDOR_SENIORITY_OPTIONS = [
   'Manager',
   'Individual Contributor',
 ];
+
+/** Delegate Stage 2 seniority — same values as vendor target-seniority multi-select. */
+export const DELEGATE_SENIORITY_OPTIONS = [...VENDOR_SENIORITY_OPTIONS];
+
+export const DELEGATE_SENIORITY_PROMPT = 'Seniority Level';
+export const VENDOR_SENIORITY_PROMPT = 'Which seniority levels are you hoping to meet with?';
+export const LEGACY_DELEGATE_CSUITE_PROMPT =
+  'I sit in the C-suite or report directly to the C-suite';
 
 export const VENDOR_REVENUE_OPTIONS = [
   'Under $10M',
@@ -113,6 +125,7 @@ export const VENDOR_SCOPE_OPTIONS = [
 /** Legacy KBM template blocks removed from Stage 2 (spec-aligned trim). */
 export const LEGACY_DELEGATE_STAGE2_HIDDEN_PROMPTS = [
   'Username (create one to login in future)',
+  'I sit in the C-suite or report directly to the C-suite',
   'Please list your top 5 human resources, total rewards, and corporate wellness priorities for 2026',
   'Please list your top 5 Culture, Engagement, and DE&I priorities for 2026',
   'What challenges are you facing, regarding achieving these objectives?',

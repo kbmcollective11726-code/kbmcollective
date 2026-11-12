@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -8,14 +8,13 @@ import {
   RefreshControl,
   ActivityIndicator,
   TouchableOpacity,
-  AppState,
-  AppStateStatus,
   BackHandler,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEventStore } from '../../../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../../../lib/supabase';
+import { registerRefetchOnSessionRefreshed } from '../../../lib/onSessionRefreshed';
 import {
   PUBLISHED_ANNOUNCEMENT_OR_FILTER,
   announcementDisplayTime,
@@ -107,10 +106,10 @@ export default function AnnouncementsScreen() {
   );
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && currentEvent?.id) fetchAnnouncements().catch(() => {});
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (currentEvent?.id) fetchAnnouncements().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [currentEvent?.id]);
 
   useFocusEffect(

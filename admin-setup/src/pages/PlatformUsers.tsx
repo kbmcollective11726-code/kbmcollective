@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, Navigate, useSearchParams } from 'react-router-dom';
-import { supabase, supabaseUrl, edgeFunctionHeaders } from '../lib/supabase';
+import { supabase, supabaseUrl } from '../lib/supabase';
 import { adminResetUserPassword } from '../lib/adminResetUserPassword';
+import { deletePlatformUser } from '../lib/deletePlatformUser';
 import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import { refreshSupabaseSessionIfNeeded } from '../lib/refreshSupabaseSession';
 import { logPlatformAudit } from '../lib/logPlatformAudit';
+import { setAccountActive } from '../lib/setAccountActive';
 import styles from './PlatformUsers.module.css';
 
 type UserRow = {
@@ -13,6 +15,7 @@ type UserRow = {
   full_name: string;
   is_platform_admin: boolean;
   is_active: boolean | null;
+  password_reset_blocked: boolean;
   created_at: string | null;
 };
 
@@ -78,7 +81,15 @@ export default function PlatformUsers() {
   const [bulkDeactivating, setBulkDeactivating] = useState(false);
 
   const [drafts, setDrafts] = useState<
-    Record<string, { full_name: string; is_platform_admin: boolean; is_active: boolean }>
+    Record<
+      string,
+      {
+        full_name: string;
+        is_platform_admin: boolean;
+        is_active: boolean;
+        password_reset_blocked: boolean;
+      }
+    >
   >({});
   const [passwordDrafts, setPasswordDrafts] = useState<
     Record<string, { new: string; confirm: string }>
@@ -89,7 +100,7 @@ export default function PlatformUsers() {
     setMembershipsError('');
     const { data, error: qErr } = await supabase
       .from('users')
-      .select('id, email, full_name, is_platform_admin, is_active, created_at')
+      .select('id, email, full_name, is_platform_admin, is_active, password_reset_blocked, created_at')
       .order('email', { ascending: true, nullsFirst: false });
     if (qErr) {
       setError(qErr.message);
@@ -97,14 +108,29 @@ export default function PlatformUsers() {
       setMembershipsByUser({});
       return;
     }
-    const list = (data ?? []) as UserRow[];
+    const list = (data ?? []).map((row) => {
+      const u = row as UserRow;
+      return {
+        ...u,
+        password_reset_blocked: u.password_reset_blocked === true,
+      };
+    });
     setRows(list);
-    const next: Record<string, { full_name: string; is_platform_admin: boolean; is_active: boolean }> = {};
+    const next: Record<
+      string,
+      {
+        full_name: string;
+        is_platform_admin: boolean;
+        is_active: boolean;
+        password_reset_blocked: boolean;
+      }
+    > = {};
     for (const u of list) {
       next[u.id] = {
         full_name: u.full_name ?? '',
         is_platform_admin: u.is_platform_admin === true,
         is_active: u.is_active !== false,
+        password_reset_blocked: u.password_reset_blocked === true,
       };
     }
     setDrafts(next);
@@ -287,7 +313,12 @@ export default function PlatformUsers() {
 
   const updateDraft = (
     id: string,
-    patch: Partial<{ full_name: string; is_platform_admin: boolean; is_active: boolean }>
+    patch: Partial<{
+      full_name: string;
+      is_platform_admin: boolean;
+      is_active: boolean;
+      password_reset_blocked: boolean;
+    }>
   ) => {
     setDrafts((prev) => {
       const cur = prev[id];
@@ -332,6 +363,7 @@ export default function PlatformUsers() {
         full_name: fn,
         is_platform_admin: d.is_platform_admin,
         is_active: d.is_active,
+        password_reset_blocked: d.password_reset_blocked,
       };
       const { error: upErr } = await supabase.from('users').update(payload).eq('id', u.id);
       if (upErr) throw upErr;
@@ -357,6 +389,15 @@ export default function PlatformUsers() {
           targetName: fn,
         });
       }
+      if (d.password_reset_blocked !== (u.password_reset_blocked === true)) {
+        await logPlatformAudit({
+          category: 'admin',
+          action: d.password_reset_blocked ? 'password_reset_block' : 'password_reset_allow',
+          targetUserId: u.id,
+          targetEmail: u.email,
+          targetName: fn,
+        });
+      }
       if (Object.keys(auditDetails).length > 0) {
         await logPlatformAudit({
           category: 'admin',
@@ -375,6 +416,7 @@ export default function PlatformUsers() {
                 full_name: fn,
                 is_platform_admin: d.is_platform_admin,
                 is_active: d.is_active,
+                password_reset_blocked: d.password_reset_blocked,
               }
             : r
         )
@@ -417,8 +459,7 @@ export default function PlatformUsers() {
     setToggleActiveId(u.id);
     try {
       const fn = (drafts[u.id]?.full_name ?? u.full_name ?? '').trim() || label;
-      const { error: upErr } = await supabase.from('users').update({ is_active: makeActive }).eq('id', u.id);
-      if (upErr) throw upErr;
+      await setAccountActive({ userId: u.id, isActive: makeActive });
       await logPlatformAudit({
         category: 'admin',
         action: makeActive ? 'account_activate' : 'account_deactivate',
@@ -463,8 +504,9 @@ export default function PlatformUsers() {
     try {
       for (const u of bulkDeactivateTargets) {
         const fn = (drafts[u.id]?.full_name ?? u.full_name ?? '').trim() || u.email;
-        const { error: upErr } = await supabase.from('users').update({ is_active: false }).eq('id', u.id);
-        if (upErr) {
+        try {
+          await setAccountActive({ userId: u.id, isActive: false });
+        } catch {
           failed += 1;
           continue;
         }
@@ -514,20 +556,7 @@ export default function PlatformUsers() {
       await refreshSupabaseSessionIfNeeded();
       const token = await getEdgeFunctionAccessToken();
       if (!token || !supabaseUrl) throw new Error('Not signed in or missing Supabase URL.');
-      const res = await fetch(`${supabaseUrl}/functions/v1/delete-user`, {
-        method: 'POST',
-        headers: edgeFunctionHeaders(token),
-        body: JSON.stringify({ user_id: u.id }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) {
-        const msg =
-          res.status === 401
-            ? body.error ||
-              'Unauthorized (401). Sign out and sign in again, then retry. If this persists, redeploy the delete-user Edge Function with verify_jwt disabled (see supabase/config.toml).'
-            : body.error || `Request failed (${res.status})`;
-        throw new Error(msg);
-      }
+      await deletePlatformUser(token, u.id);
       setRows((prev) => prev.filter((r) => r.id !== u.id));
       setMembershipsByUser((prev) => {
         const next = { ...prev };
@@ -552,7 +581,8 @@ export default function PlatformUsers() {
     const profileDirty =
       d.full_name !== (u.full_name ?? '') ||
       d.is_platform_admin !== (u.is_platform_admin === true) ||
-      d.is_active !== (u.is_active !== false);
+      d.is_active !== (u.is_active !== false) ||
+      d.password_reset_blocked !== (u.password_reset_blocked === true);
     const p = passwordDrafts[u.id];
     const passwordDirty = !!(p?.new?.trim() || p?.confirm?.trim());
     return profileDirty || passwordDirty;
@@ -729,6 +759,9 @@ export default function PlatformUsers() {
                     </div>
                     <div className={styles.badges}>
                       {u.is_platform_admin ? <span className={styles.badge}>Platform admin</span> : null}
+                      {u.password_reset_blocked ? (
+                        <span className={styles.badgeInactive}>Reset blocked</span>
+                      ) : null}
                       {inactive ? (
                         <span className={styles.badgeInactive}>Deactivated</span>
                       ) : (
@@ -773,6 +806,21 @@ export default function PlatformUsers() {
                         />
                         Platform admin
                       </label>
+                      <label className={styles.checkRow}>
+                        <input
+                          type="checkbox"
+                          checked={d.password_reset_blocked}
+                          onChange={(e) =>
+                            updateDraft(u.id, { password_reset_blocked: e.target.checked })
+                          }
+                        />
+                        Block self-serve password reset emails
+                      </label>
+                      <p className={styles.passwordHint}>
+                        When blocked, self-serve reset still looks successful but no email is sent
+                        (app forgot-password and Auth recovery, once the auth-send-email hook is
+                        enabled). Admins can still set a password below.
+                      </p>
                       <details className={styles.passwordDetails}>
                         <summary className={styles.passwordSummary}>Reset password (optional)</summary>
                         <div className={styles.passwordBlock}>

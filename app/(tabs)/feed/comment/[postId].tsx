@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
 import { View, Text, ActivityIndicator, Pressable, StyleSheet } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../../../stores/authStore';
 import { useEventStore } from '../../../../stores/eventStore';
 import { useBlockStore } from '../../../../stores/blockStore';
 import CommentSheet from '../../../../components/CommentSheet';
 import { loadPostForCommentSheet, resolveEventForOpenPost } from '../../../../lib/feedOpenPost';
+import { navigateToFeedRoot } from '../../../../lib/navigateToFeedRoot';
 import type { Post } from '../../../../lib/types';
 import { colors } from '../../../../constants/colors';
 
@@ -20,7 +21,6 @@ function firstParam(v: string | string[] | undefined): string | undefined {
  * (query params + zustand on the main feed tab were unreliable with tabs + stack).
  */
 export default function FeedCommentPostScreen() {
-  const router = useRouter();
   const params = useLocalSearchParams<{ postId: string | string[]; eventId?: string | string[] }>();
   const postId = firstParam(params.postId);
   const hintEventId = firstParam(params.eventId);
@@ -96,7 +96,7 @@ export default function FeedCommentPostScreen() {
     return (
       <SafeAreaView style={styles.centered} edges={[]}>
         <Text style={styles.error}>{error ?? 'Could not load this post.'}</Text>
-        <Pressable style={styles.btn} onPress={() => router.replace('/(tabs)/feed' as any)}>
+        <Pressable style={styles.btn} onPress={() => navigateToFeedRoot()}>
           <Text style={styles.btnText}>Back to feed</Text>
         </Pressable>
       </SafeAreaView>
@@ -108,7 +108,9 @@ export default function FeedCommentPostScreen() {
       <CommentSheet
         embedded
         visible
-        onClose={() => router.replace('/(tabs)/feed' as any)}
+        onClose={() => {
+          navigateToFeedRoot();
+        }}
         post={post}
         eventId={currentEventId}
         currentUserId={user?.id ?? null}

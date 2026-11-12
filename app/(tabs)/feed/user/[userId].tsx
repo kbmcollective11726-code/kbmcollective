@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import {
   View,
   Text,
@@ -13,7 +13,9 @@ import {
   Modal,
   TextInput,
 } from 'react-native';
-import { useLocalSearchParams, useRouter, useNavigation } from 'expo-router';
+import Avatar from '../../../../components/Avatar';
+import PortraitAvatarPhoto from '../../../../components/PortraitAvatarPhoto';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MessageCircle, ChevronRight, ExternalLink, Ban, Flag, Briefcase, Building2, FileText, Phone, Mic, Store, Users, UserPlus, UserMinus, Check, X, User as UserIcon } from 'lucide-react-native';
 import Toast from 'react-native-toast-message';
@@ -24,10 +26,12 @@ import { supabase, withRetryAndRefresh } from '../../../../lib/supabase';
 import { createNotificationAndPush } from '../../../../lib/notifications';
 import { sendUserReportAdminPush } from '../../../../lib/pushNotifications';
 import { colors } from '../../../../constants/colors';
-import Avatar from '../../../../components/Avatar';
+import { useEventThemeColor } from '../../../../lib/eventTheme';
 import HeaderNotificationBell from '../../../../components/HeaderNotificationBell';
 import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenHeader';
+import ProfileHeroBackdrop from '../../../../components/ProfileHeroBackdrop';
 import type { User } from '../../../../lib/types';
+import { chatHrefViaProfile, navigateBackToFrom, userProfilePath } from '../../../../lib/navReturn';
 
 const ROLE_LABELS: Record<string, string> = {
   attendee: 'Attendee',
@@ -40,7 +44,6 @@ export default function UserProfileScreen() {
   const userId = typeof params.userId === 'string' ? params.userId : params.userId?.[0] ?? '';
   const from = typeof params.from === 'string' ? params.from : params.from?.[0];
   const router = useRouter();
-  const navigation = useNavigation();
   const { user: currentUser } = useAuthStore();
   const { currentEvent } = useEventStore();
   const { blockUser, unblockUser, isBlocked, fetchBlockedUsers, isInteractionBlocked } = useBlockStore();
@@ -51,24 +54,21 @@ export default function UserProfileScreen() {
   const [requestReceivedFromThem, setRequestReceivedFromThem] = useState(false);
   const [connectingId, setConnectingId] = useState(false);
   const [acceptingId, setAcceptingId] = useState(false);
+  const [cancellingRequest, setCancellingRequest] = useState(false);
   const [removingConnection, setRemovingConnection] = useState(false);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [showReportModal, setShowReportModal] = useState(false);
   const [reportReason, setReportReason] = useState<string>('spam');
   const [reportDetails, setReportDetails] = useState('');
+  const themeColor = useEventThemeColor();
 
   const isOwnProfile = currentUser?.id === userId;
   const blocked = userId ? isBlocked(userId) : false;
 
-  const goBack = () => {
-    const returnPath = from && typeof from === 'string' ? decodeURIComponent(from).trim() : '';
-    if (returnPath) {
-      router.replace(returnPath as any);
-    } else {
-      router.back();
-    }
-  };
+  const goBack = useCallback(() => {
+    navigateBackToFrom(router, from, '/(tabs)/feed');
+  }, [from, router]);
 
   const headerRight = useMemo(
     () => (
@@ -80,11 +80,11 @@ export default function UserProfileScreen() {
           hitSlop={12}
           activeOpacity={0.85}
         >
-          <UserIcon size={24} color={colors.primary} strokeWidth={2} />
+          <UserIcon size={24} color={themeColor} strokeWidth={2} />
         </TouchableOpacity>
       </View>
     ),
-    [router]
+    [router, themeColor]
   );
 
   useEffect(() => {
@@ -113,8 +113,9 @@ export default function UserProfileScreen() {
     setFetchError(null);
     try {
       await withRetryAndRefresh(async () => {
-      const [userRes, rolesRes, connectionRes, requestSentRes, requestReceivedRes] = await Promise.all([
-        supabase.from('users').select('*').eq('id', userId).single(),
+      const [profileRes, contactRes, rolesRes, connectionRes, requestSentRes, requestReceivedRes] = await Promise.all([
+        supabase.rpc('get_visible_user_profile', { p_user_id: userId }),
+        supabase.rpc('get_user_networking_contact', { p_user_id: userId }),
         currentEvent?.id
           ? supabase
               .from('event_members')
@@ -122,7 +123,7 @@ export default function UserProfileScreen() {
               .eq('event_id', currentEvent.id)
               .eq('user_id', userId)
               .maybeSingle()
-          : Promise.resolve({ data: null }),
+          : Promise.resolve({ data: null, error: null }),
         currentEvent?.id
           ? supabase
               .from('connections')
@@ -131,7 +132,7 @@ export default function UserProfileScreen() {
               .eq('user_id', currentUser.id)
               .eq('connected_user_id', userId)
               .maybeSingle()
-          : Promise.resolve({ data: null }),
+          : Promise.resolve({ data: null, error: null }),
         currentEvent?.id
           ? supabase
               .from('connection_requests')
@@ -141,7 +142,7 @@ export default function UserProfileScreen() {
               .eq('requested_user_id', userId)
               .eq('status', 'pending')
               .maybeSingle()
-          : Promise.resolve({ data: null }),
+          : Promise.resolve({ data: null, error: null }),
         currentEvent?.id
           ? supabase
               .from('connection_requests')
@@ -151,10 +152,58 @@ export default function UserProfileScreen() {
               .eq('requested_user_id', currentUser.id)
               .eq('status', 'pending')
               .maybeSingle()
-          : Promise.resolve({ data: null }),
+          : Promise.resolve({ data: null, error: null }),
       ]);
-      if (userRes.error) throw userRes.error;
-      setProfileUser(userRes.data as User);
+      if (profileRes.error) throw profileRes.error;
+      const profileRow = Array.isArray(profileRes.data)
+        ? (profileRes.data[0] as Record<string, unknown> | undefined)
+        : (profileRes.data as Record<string, unknown> | null);
+      if (!profileRow) {
+        // Fallback for older clients / edge cases: public-safe columns only.
+        const { data: fallback, error: fallbackErr } = await supabase
+          .from('users')
+          .select('id, full_name, avatar_url, title, company, linkedin_url, bio, is_active, created_at, updated_at')
+          .eq('id', userId)
+          .maybeSingle();
+        if (fallbackErr) throw fallbackErr;
+        if (!fallback) {
+          setProfileUser(null);
+          setEventRoles([]);
+          setFetchError(null);
+          return;
+        }
+        setProfileUser({
+          ...(fallback as Omit<User, 'push_token' | 'phone' | 'email' | 'is_platform_admin' | 'last_login_at' | 'session_reminder_skip_same_room'>),
+          email: null,
+          phone: null,
+          push_token: null,
+          is_platform_admin: false,
+          last_login_at: null,
+          session_reminder_skip_same_room: true,
+        } as User);
+      } else {
+        const contactRow = Array.isArray(contactRes.data)
+          ? (contactRes.data[0] as { phone?: string | null; email?: string | null } | undefined)
+          : (contactRes.data as { phone?: string | null; email?: string | null } | null);
+        setProfileUser({
+          id: String(profileRow.id),
+          email: (contactRow?.email ?? (profileRow.email as string | null) ?? null) as string,
+          full_name: String(profileRow.full_name ?? 'Member'),
+          avatar_url: (profileRow.avatar_url as string | null) ?? null,
+          title: (profileRow.title as string | null) ?? null,
+          company: (profileRow.company as string | null) ?? null,
+          linkedin_url: (profileRow.linkedin_url as string | null) ?? null,
+          bio: (profileRow.bio as string | null) ?? null,
+          phone: contactRow?.phone ?? null,
+          push_token: null,
+          is_active: profileRow.is_active !== false,
+          created_at: String(profileRow.created_at ?? new Date().toISOString()),
+          updated_at: String(profileRow.updated_at ?? new Date().toISOString()),
+          is_platform_admin: profileRow.is_platform_admin === true,
+          last_login_at: (profileRow.last_login_at as string | null) ?? null,
+          session_reminder_skip_same_room: profileRow.session_reminder_skip_same_room !== false,
+        });
+      }
       const row = rolesRes.data as { role?: string; roles?: string[] } | null;
       if (row) {
         const roles = (row.roles?.length ? row.roles : row.role ? [row.role] : []).filter(
@@ -172,36 +221,32 @@ export default function UserProfileScreen() {
       if (__DEV__) console.warn('User profile fetch error:', err);
       setProfileUser(null);
       setEventRoles([]);
-      setFetchError('Error - page not loading');
+      setFetchError('Could not load this profile. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
   }, [userId, currentEvent?.id, currentUser?.id]);
 
-  // Reload user data when screen gains focus (e.g. after background or navigating back)
+  // Single load path — avoid double fetch fighting loading/error state.
   useFocusEffect(
     useCallback(() => {
-      if (userId && currentUser?.id) fetchUser().catch(() => {});
+      if (!userId || !currentUser?.id) {
+        setLoading(false);
+        return;
+      }
+      setLoading(true);
+      setFetchError(null);
+      let cancelled = false;
+      fetchUser()
+        .catch(() => {})
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
       return () => {
-        navigation.reset({ index: 0, routes: [{ name: 'index' as never }] });
+        cancelled = true;
       };
-    }, [userId, currentUser?.id, fetchUser, navigation])
+    }, [userId, currentUser?.id, fetchUser])
   );
-
-  // Like Info: run and wait. No timer so first try can complete.
-  useEffect(() => {
-    if (!userId || !currentUser?.id) {
-      setLoading(false);
-      return;
-    }
-    setFetchError(null);
-    setLoading(true);
-    let cancelled = false;
-    fetchUser()
-      .catch(() => { if (!cancelled) setTimeout(() => fetchUser().finally(() => {}), 2000); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [userId, currentUser?.id, fetchUser]);
 
   const handleMessage = () => {
     if (!userId) return;
@@ -213,7 +258,7 @@ export default function UserProfileScreen() {
       });
       return;
     }
-    router.push(`/profile/chat/${userId}?from=${encodeURIComponent(`/feed/user/${userId}`)}` as any);
+    router.push(chatHrefViaProfile(userId, from) as never);
   };
 
   const handleRemoveConnection = () => {
@@ -300,6 +345,37 @@ export default function UserProfileScreen() {
     } finally {
       setConnectingId(false);
     }
+  };
+
+  const handleCancelRequest = () => {
+    if (!currentUser?.id || !userId || !currentEvent?.id) return;
+    Alert.alert('Cancel request?', 'They will no longer see your connection request. You can send a new one later.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Cancel request',
+        style: 'destructive',
+        onPress: async () => {
+          setCancellingRequest(true);
+          try {
+            const { error } = await supabase
+              .from('connection_requests')
+              .delete()
+              .eq('event_id', currentEvent.id)
+              .eq('requester_id', currentUser.id)
+              .eq('requested_user_id', userId)
+              .eq('status', 'pending');
+            if (error) throw error;
+            setRequestSentByMe(false);
+            Toast.show({ type: 'success', text1: 'Request cancelled' });
+          } catch (err) {
+            console.error('Cancel connection request error:', err);
+            Toast.show({ type: 'error', text1: 'Could not cancel', text2: 'Please try again.' });
+          } finally {
+            setCancellingRequest(false);
+          }
+        },
+      },
+    ]);
   };
 
   const handleAccept = async () => {
@@ -391,7 +467,9 @@ export default function UserProfileScreen() {
   };
 
   const handleEdit = () => {
-    router.push(`/profile/edit?from=${encodeURIComponent(`/feed/user/${userId}`)}` as any);
+    router.push(
+      `/profile/edit?from=${encodeURIComponent(userProfilePath(userId, from))}` as never
+    );
   };
 
   const handleBlock = () => {
@@ -469,7 +547,7 @@ export default function UserProfileScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <ProfileStackScreenHeader variant="back" title="Profile" onBack={goBack} right={headerRight} />
         <View style={styles.centered}>
-          <ActivityIndicator size="large" color={colors.primary} />
+          <ActivityIndicator size="large" color={themeColor} />
           <Text style={styles.loadingText}>Loading profile…</Text>
         </View>
       </SafeAreaView>
@@ -481,7 +559,7 @@ export default function UserProfileScreen() {
       <SafeAreaView style={styles.container} edges={['top']}>
         <ProfileStackScreenHeader variant="back" title="Profile" onBack={goBack} right={headerRight} />
         <View style={styles.centered}>
-          <Text style={styles.errorText}>Error - page not loading</Text>
+          <Text style={styles.errorText}>{fetchError || 'Could not load this profile'}</Text>
           <Text style={styles.errorSubtext}>Tap Try again or go back.</Text>
           <TouchableOpacity
             style={styles.backBtn}
@@ -492,10 +570,10 @@ export default function UserProfileScreen() {
             }}
             activeOpacity={0.8}
           >
-            <Text style={styles.backBtnText}>Try again</Text>
+            <Text style={[styles.backBtnText, { color: themeColor }]}>Try again</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.backBtn, { marginTop: 12 }]} onPress={goBack}>
-            <Text style={styles.backBtnText}>Go back</Text>
+            <Text style={[styles.backBtnText, { color: themeColor }]}>Go back</Text>
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -520,25 +598,35 @@ export default function UserProfileScreen() {
     <SafeAreaView style={styles.container} edges={['top']}>
       <ProfileStackScreenHeader
         variant="back"
-        title={profileUser.full_name?.trim() || 'Profile'}
+        title="Profile"
         onBack={goBack}
         right={headerRight}
       />
       <ScrollView style={styles.scrollFlex} contentContainerStyle={styles.scrollContent}>
         <View style={styles.hero}>
-          <View style={styles.heroAvatarWrap}>
-            <Avatar uri={profileUser.avatar_url} name={profileUser.full_name} size={108} />
+          {profileUser.avatar_url ? (
+            <View style={styles.heroBackdrop} pointerEvents="none">
+              <ProfileHeroBackdrop avatarUrl={profileUser.avatar_url} />
+            </View>
+          ) : null}
+          <View style={styles.heroForeground}>
+            <View style={styles.heroAvatarWrap}>
+              {profileUser.avatar_url ? (
+                <PortraitAvatarPhoto uri={profileUser.avatar_url} transition={150} />
+              ) : (
+                <Avatar uri={null} name={profileUser.full_name} size={112} />
+              )}
+            </View>
+            <Text style={styles.heroName}>{profileUser.full_name ?? 'Unknown'}</Text>
           </View>
         </View>
         <View style={styles.content}>
         <View style={styles.header}>
-          <Text style={styles.name}>{profileUser.full_name ?? 'Unknown'}</Text>
-
           {eventRoles.length > 0 ? (
             <View style={styles.rolesRow}>
               {eventRoles.map((r) => (
-                <View key={r} style={[styles.roleBadge, r === 'speaker' && styles.roleSpeaker, r === 'vendor' && styles.roleVendor]}>
-                  {r === 'speaker' ? <Mic size={14} color={colors.primary} /> : null}
+                <View key={r} style={[styles.roleBadge, r === 'speaker' && { backgroundColor: `${themeColor}22` }, r === 'vendor' && styles.roleVendor]}>
+                  {r === 'speaker' ? <Mic size={14} color={themeColor} /> : null}
                   {r === 'vendor' ? <Store size={14} color={colors.secondary} /> : null}
                   {r === 'attendee' ? <Users size={14} color={colors.textMuted} /> : null}
                   <Text style={styles.roleBadgeText}>{ROLE_LABELS[r] ?? r}</Text>
@@ -572,7 +660,7 @@ export default function UserProfileScreen() {
               {profileUser.phone ? (
                 <TouchableOpacity style={styles.infoRow} onPress={openPhone} activeOpacity={0.7}>
                   <Phone size={18} color={colors.textMuted} />
-                  <Text style={[styles.infoText, styles.phoneText]}>{profileUser.phone}</Text>
+                  <Text style={[styles.infoText, styles.phoneText, { color: themeColor }]}>{profileUser.phone}</Text>
                 </TouchableOpacity>
               ) : null}
               </View>
@@ -581,8 +669,8 @@ export default function UserProfileScreen() {
 
           {profileUser.linkedin_url ? (
             <TouchableOpacity style={styles.linkedinBtn} onPress={openLinkedIn} activeOpacity={0.7}>
-              <ExternalLink size={18} color={colors.primary} />
-              <Text style={styles.linkedinText}>View LinkedIn profile</Text>
+              <ExternalLink size={18} color={themeColor} />
+              <Text style={[styles.linkedinText, { color: themeColor }]}>View LinkedIn profile</Text>
             </TouchableOpacity>
           ) : null}
         </View>
@@ -599,7 +687,7 @@ export default function UserProfileScreen() {
               <Text style={styles.actionsSectionLabel}>Connection</Text>
               {isConnected ? (
                 <View style={styles.connectedActions}>
-                  <TouchableOpacity style={styles.messageBtn} onPress={handleMessage} activeOpacity={0.7}>
+                  <TouchableOpacity style={[styles.messageBtn, { backgroundColor: themeColor }]} onPress={handleMessage} activeOpacity={0.7}>
                     <MessageCircle size={22} color="#fff" />
                     <Text style={styles.messageBtnText}>Message</Text>
                   </TouchableOpacity>
@@ -622,7 +710,7 @@ export default function UserProfileScreen() {
               ) : requestReceivedFromThem ? (
                 <View style={styles.profileRequestRow}>
                   <TouchableOpacity
-                    style={[styles.profileBtn, styles.profileAcceptBtn]}
+                    style={[styles.profileBtn, styles.profileAcceptBtn, { backgroundColor: themeColor }]}
                     onPress={handleAccept}
                     disabled={acceptingId}
                   >
@@ -645,12 +733,24 @@ export default function UserProfileScreen() {
                   </TouchableOpacity>
                 </View>
               ) : requestSentByMe ? (
-                <View style={[styles.profileBtn, styles.profileMutedBtn]}>
-                  <Text style={styles.profileMutedBtnText}>Request sent</Text>
-                </View>
+                <TouchableOpacity
+                  style={[styles.profileBtn, styles.profileDeclineBtn]}
+                  onPress={handleCancelRequest}
+                  disabled={cancellingRequest}
+                  activeOpacity={0.7}
+                >
+                  {cancellingRequest ? (
+                    <ActivityIndicator size="small" color={colors.textSecondary} />
+                  ) : (
+                    <>
+                      <X size={18} color={colors.textSecondary} />
+                      <Text style={styles.profileDeclineBtnText}>Cancel request</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               ) : (
                 <TouchableOpacity
-                  style={styles.messageBtn}
+                  style={[styles.messageBtn, { backgroundColor: themeColor }]}
                   onPress={handleConnect}
                   disabled={connectingId}
                   activeOpacity={0.7}
@@ -695,7 +795,7 @@ export default function UserProfileScreen() {
               {(['spam', 'harassment', 'inappropriate', 'other'] as const).map((r) => (
                 <TouchableOpacity
                   key={r}
-                  style={[styles.reasonChip, reportReason === r && styles.reasonChipActive]}
+                  style={[styles.reasonChip, reportReason === r && { backgroundColor: themeColor }]}
                   onPress={() => setReportReason(r)}
                 >
                   <Text style={[styles.reasonChipText, reportReason === r && styles.reasonChipTextActive]}>
@@ -751,7 +851,7 @@ const styles = StyleSheet.create({
   },
   content: {
     paddingHorizontal: 20,
-    paddingTop: 0,
+    paddingTop: 8,
   },
   centered: {
     flex: 1,
@@ -787,35 +887,53 @@ const styles = StyleSheet.create({
   hero: {
     width: '100%',
     alignSelf: 'stretch',
+    minHeight: 268,
     backgroundColor: colors.surfaceHover ?? '#eef1f5',
-    paddingVertical: 24,
+    paddingTop: 20,
+    paddingBottom: 28,
     alignItems: 'center',
-    justifyContent: 'center',
+    justifyContent: 'flex-end',
+    overflow: 'hidden',
+    position: 'relative',
+  },
+  heroBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  heroForeground: {
+    alignItems: 'center',
+    width: '100%',
+    paddingBottom: 4,
+    paddingHorizontal: 20,
+  },
+  heroName: {
+    fontSize: 26,
+    fontWeight: '700',
+    color: colors.text,
+    marginTop: 18,
+    marginBottom: 2,
+    paddingHorizontal: 12,
+    letterSpacing: -0.3,
+    textAlign: 'center',
   },
   heroAvatarWrap: {
-    width: 108,
-    height: 108,
-    borderRadius: 54,
+    width: 112,
+    height: 112,
+    borderRadius: 56,
+    borderWidth: 3,
+    borderColor: colors.background,
+    overflow: 'hidden',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 6,
-    elevation: 3,
-    backgroundColor: colors.background,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+    elevation: 5,
+    backgroundColor: colors.surfaceHover,
   },
   header: {
     alignItems: 'center',
     marginBottom: 20,
     paddingTop: 12,
     paddingHorizontal: 0,
-  },
-  name: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: colors.text,
-    marginTop: 0,
-    marginBottom: 10,
-    letterSpacing: -0.3,
   },
   rolesRow: {
     flexDirection: 'row',

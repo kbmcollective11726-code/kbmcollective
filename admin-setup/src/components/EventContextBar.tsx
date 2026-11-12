@@ -5,6 +5,7 @@ import type { Event } from '../lib/types';
 import { fetchEventsForSwitcher, isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import { isAppMenuItemVisible } from '../lib/effectiveEventMenu';
 import { liveWallUrlForEvent } from '../lib/liveWallUrl';
+import EventFeatureNavLinks from './EventFeatureNavLinks';
 import styles from './EventContextBar.module.css';
 
 export const ADMIN_EVENTS_REFRESH = 'kbm-admin-events-refresh';
@@ -153,6 +154,7 @@ export default function EventContextBar() {
             </option>
           ))}
         </select>
+        <EventFeatureNavLinks eventId={eventId} variant="bar" />
         {showLiveWallLink ? (
           <a
             href={liveWallHref!}

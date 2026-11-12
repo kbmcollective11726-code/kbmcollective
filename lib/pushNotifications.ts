@@ -94,7 +94,7 @@ export async function sendPushToUser(
   userId: string,
   title: string,
   body: string,
-  options?: { eventId?: string; postId?: string; chatUserId?: string; groupId?: string; boothId?: string }
+  options?: { eventId?: string; postId?: string; chatUserId?: string; groupId?: string; boothId?: string; kind?: string }
 ): Promise<{ sent: number; error?: string }> {
   if (!isSupabaseConfigured) {
     if (__DEV__) console.warn('[push] sendPushToUser skipped: Supabase URL not configured');
@@ -109,6 +109,7 @@ export async function sendPushToUser(
       chatUserId: options?.chatUserId,
       groupId: options?.groupId,
       boothId: options?.boothId,
+      kind: options?.kind,
     });
   } catch {
     return { sent: 0 };
@@ -126,7 +127,7 @@ export async function sendAnnouncementPush(
   title: string,
   body: string,
   recipientUserIds: string[],
-  options?: { postId?: string; chatUserId?: string; groupId?: string; boothId?: string }
+  options?: { postId?: string; chatUserId?: string; groupId?: string; boothId?: string; kind?: string }
 ): Promise<{ sent: number; error?: string }> {
   if (!isSupabaseConfigured || recipientUserIds.length === 0) {
     return { sent: 0 };
@@ -142,6 +143,7 @@ export async function sendAnnouncementPush(
     if (options?.chatUserId) payload.chat_user_id = options.chatUserId;
     if (options?.groupId) payload.group_id = options.groupId;
     if (options?.boothId) payload.booth_id = options.boothId;
+    if (options?.kind) payload.kind = options.kind;
 
     const res = await fetch(`${supabaseUrl}/functions/v1/send-announcement-push`, {
       method: 'POST',

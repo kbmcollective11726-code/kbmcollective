@@ -12,6 +12,7 @@ export type EventAdminConsoleTileId =
   | 'photos'
   | 'sponsors'
   | 'matchmaking'
+  | 'standard_registration'
   | 'badges'
   | 'scan_log'
   | 'session_attendance'
@@ -38,6 +39,7 @@ export const ALL_EVENT_ADMIN_CONSOLE_TILE_IDS: EventAdminConsoleTileId[] = [
   'photos',
   'sponsors',
   'matchmaking',
+  'standard_registration',
   'badges',
   'scan_log',
   'session_attendance',
@@ -141,6 +143,12 @@ export const EVENT_ADMIN_CONSOLE_TILES: EventAdminConsoleTileDef[] = [
     to: (eventId) => `/events/${eventId}/matchmaking`,
   },
   {
+    id: 'standard_registration',
+    title: 'Standard registration',
+    desc: 'Public event website, simple registration form, and registrations — for events without matchmaking',
+    to: (eventId) => `/events/${eventId}/standard-registration`,
+  },
+  {
     id: 'badges',
     title: 'Badges',
     desc: 'Print 3.75″×5.5″ QR badges for all members — footer line, tokens, and layouts',
@@ -180,6 +188,7 @@ export const EVENT_ADMIN_CONSOLE_PATH_SEGMENT_TO_TILE: Record<string, EventAdmin
   photos: 'photos',
   sponsors: 'sponsors',
   matchmaking: 'matchmaking',
+  'standard-registration': 'standard_registration',
   badges: 'badges',
   'scan-log': 'scan_log',
   'session-attendance': 'session_attendance',

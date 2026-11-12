@@ -9,24 +9,24 @@ import {
   Linking,
   ScrollView,
   useWindowDimensions,
-  AppState,
-  AppStateStatus,
+  Platform,
 } from 'react-native';
-import { useRouter, usePathname } from 'expo-router';
-import { isAppMenuItemVisible } from '../lib/effectiveEventMenu';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useRouter, usePathname, useNavigation } from 'expo-router';
+import { isAppMenuItemVisible, isHamburgerTabShortcutVisible } from '../lib/effectiveEventMenu';
 import { effectiveCanShowSessionCheckIn } from '../lib/rolePreview';
 import { useRolePreviewStore } from '../stores/rolePreviewStore';
 import { useRolePreviewContext } from '../hooks/useRolePreviewContext';
 import { RolePreviewMenuButton, RolePreviewPicker } from './RolePreviewBanner';
+import { navigateToFeedRoot } from '../lib/navigateToFeedRoot';
+import { navigateToTabRoot } from '../lib/navigateToTabRoot';
 import {
-  Menu,
   X,
   Users,
   ImageIcon,
   LayoutGrid,
   Tv,
   User,
-  Edit3,
   Bell,
   Shield,
   LogOut,
@@ -40,14 +40,19 @@ import {
   QrCode,
   FileText,
   ClipboardCheck,
+  MessageCircle,
 } from 'lucide-react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Constants from 'expo-constants';
 import { useAuthStore } from '../stores/authStore';
 import { useEventStore } from '../stores/eventStore';
 import { supabase, withRetryAndRefresh } from '../lib/supabase';
+import { subscribeUserNotifications } from '../lib/notificationsRealtime';
+import { registerRefetchOnSessionRefreshed } from '../lib/onSessionRefreshed';
 import { setAppBadgeCount } from '../lib/pushNotifications';
+import { fetchUnreadDmCount } from '../lib/unreadDmMessages';
 import { colors } from '../constants/colors';
+import { darkenThemeColor, useEventThemeColor } from '../lib/eventTheme';
 import type { EventSponsor } from '../lib/types';
 import { logSponsorClick, type SponsorClickPlacement } from '../lib/logSponsorClick';
 import { openExternalUrl } from '../lib/openExternalUrl';
@@ -68,18 +73,43 @@ type HamburgerMenuProps = {
   onLogout?: () => void;
 };
 
+/** Crisp three-bar icon — Lucide `Menu` can look uneven at small header sizes. */
+function HamburgerLines({ color, size = 18 }: { color: string; size?: number }) {
+  const barHeight = Math.max(2, Math.round(size * 0.12));
+  const barWidth = size;
+  const gap = Math.max(3, Math.round(size * 0.2));
+  return (
+    <View style={{ width: barWidth, height: barHeight * 3 + gap * 2, justifyContent: 'space-between' }}>
+      {[0, 1, 2].map((key) => (
+        <View
+          key={key}
+          style={{
+            width: barWidth,
+            height: barHeight,
+            borderRadius: barHeight / 2,
+            backgroundColor: color,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
 export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const navigation = useNavigation();
   const { width } = useWindowDimensions();
   const [visible, setVisible] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [unreadChats, setUnreadChats] = useState(0);
   const [isEventAdmin, setIsEventAdmin] = useState(false);
   const [isVendorRep, setIsVendorRep] = useState(false);
   const [rolePreviewOpen, setRolePreviewOpen] = useState(false);
   const insets = useSafeAreaInsets();
   const { user, logout } = useAuthStore();
   const { currentEvent, adminCheckTick } = useEventStore();
+  const themeColor = useEventThemeColor();
   const previewRole = useRolePreviewStore((s) => s.previewRole);
   const { applyEventAdmin, applyVendorRep } = useRolePreviewContext();
   const isPlatformAdmin = user?.is_platform_admin === true;
@@ -111,6 +141,7 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
       .eq('user_id', user.id)
       .eq('is_read', false)
       .eq('event_id', currentEvent.id)
+      .neq('type', 'message')
       .then(({ count }) => {
         const n = count ?? 0;
         setUnreadNotifications(n);
@@ -118,23 +149,63 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
       });
   }, [user?.id, currentEvent?.id]);
 
-  useEffect(() => {
-    fetchUnreadCount();
-  }, [fetchUnreadCount]);
+  const fetchUnreadChats = useCallback(() => {
+    if (!user?.id) {
+      setUnreadChats(0);
+      return;
+    }
+    if (!currentEvent?.id) {
+      setUnreadChats(0);
+      return;
+    }
+    void fetchUnreadDmCount(currentEvent.id, user.id)
+      .then((n) => setUnreadChats(n))
+      .catch(() => {
+        /* keep previous */
+      });
+  }, [user?.id, currentEvent?.id]);
 
   useEffect(() => {
-    if (visible) fetchUnreadCount();
-  }, [visible, fetchUnreadCount]);
+    fetchUnreadCount();
+    fetchUnreadChats();
+  }, [fetchUnreadCount, fetchUnreadChats]);
+
+  useEffect(() => {
+    if (visible) {
+      fetchUnreadCount();
+      fetchUnreadChats();
+    }
+  }, [visible, fetchUnreadCount, fetchUnreadChats]);
 
   useEffect(() => {
     if (!user?.id) return;
-    const channel = supabase
-      .channel('notifications-badge')
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, fetchUnreadCount)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` }, fetchUnreadCount)
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+    return subscribeUserNotifications(user.id, {
+      onInsert: () => { fetchUnreadCount(); },
+      onUpdate: () => { fetchUnreadCount(); },
+    });
   }, [user?.id, fetchUnreadCount]);
+
+  useEffect(() => {
+    if (!user?.id || !currentEvent?.id) return;
+    const channel = supabase
+      .channel(`hamburger-unread-dms:${currentEvent.id}:${user.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'messages',
+          filter: `receiver_id=eq.${user.id}`,
+        },
+        () => {
+          fetchUnreadChats();
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [user?.id, currentEvent?.id, fetchUnreadChats]);
 
   const tryAnyEventAdmin = useCallback(async () => {
     if (!user?.id) {
@@ -172,7 +243,7 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
             .select('role, roles')
             .eq('event_id', currentEvent.id)
             .eq('user_id', user.id)
-            .single();
+            .maybeSingle();
           if (error) throw error;
           return d;
         });
@@ -225,13 +296,11 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
   }, [fetchVendorRepStatus, adminCheckTick]);
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && user?.id) {
-        fetchEventAdminStatus();
-        fetchVendorRepStatus();
-      }
+    return registerRefetchOnSessionRefreshed(() => {
+      if (!user?.id) return;
+      fetchEventAdminStatus();
+      fetchVendorRepStatus();
     });
-    return () => sub.remove();
   }, [user?.id, fetchEventAdminStatus, fetchVendorRepStatus]);
 
   // Refetch when menu opens so she always sees latest role (e.g. just made admin, or event selected after load)
@@ -246,14 +315,26 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
 
   const navigate = (path: string) => {
     close();
-    router.push(path as any);
+    router.push(path as never);
+  };
+
+  /** Prefer tab navigator so menu items don’t stack poison history for Back. */
+  const navigateTab = (tabName: string, pathFallback: string) => {
+    close();
+    try {
+      navigateToTabRoot(tabName, navigation);
+      return;
+    } catch {
+      /* fall through */
+    }
+    router.navigate(pathFallback as never);
   };
 
   // For profile sub-pages, pass current path so back button returns to the page user was on
   const returnTo = pathname && pathname !== '/' ? pathname : '/(tabs)/home';
   const navigateToProfileScreen = (screen: string) => {
     close();
-    router.push(`${screen}?from=${encodeURIComponent(returnTo)}` as any);
+    router.push(`${screen}?from=${encodeURIComponent(returnTo)}` as never);
   };
 
   const handleLogout = async () => {
@@ -303,15 +384,10 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
         style={styles.trigger}
         hitSlop={12}
         activeOpacity={0.85}
+        accessibilityLabel="Open menu"
+        accessibilityRole="button"
       >
-        <View>
-          <Menu size={24} color={colors.text} />
-          {unreadNotifications > 0 && (
-            <View style={styles.badgeDot} pointerEvents="none">
-              <Text style={styles.badgeDotText}>{unreadNotifications > 99 ? '99+' : unreadNotifications}</Text>
-            </View>
-          )}
-        </View>
+        <HamburgerLines color={themeColor} size={20} />
       </TouchableOpacity>
 
       <Modal visible={visible} transparent animationType="slide">
@@ -320,6 +396,12 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
             style={[styles.drawer, { width: menuWidth, paddingTop: insets.top }]}
             onPress={(e) => e.stopPropagation()}
           >
+            <LinearGradient
+              colors={[themeColor, darkenThemeColor(themeColor, 0.88)]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.drawerAccent}
+            />
             <View style={styles.drawerHeader}>
               <View style={styles.drawerHeaderLeft}>
                 <Text style={styles.drawerTitle}>Menu</Text>
@@ -347,8 +429,14 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                 ))}
               </View>
               <View style={styles.drawerHeaderClose}>
-                <TouchableOpacity onPress={close} hitSlop={12} accessibilityLabel="Close menu">
-                  <X size={22} color={colors.textMuted} />
+                <TouchableOpacity
+                  onPress={close}
+                  hitSlop={12}
+                  style={styles.closeBtn}
+                  activeOpacity={0.8}
+                  accessibilityLabel="Close menu"
+                >
+                  <X size={18} color={colors.textSecondary} strokeWidth={2.25} />
                 </TouchableOpacity>
               </View>
             </View>
@@ -358,29 +446,70 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
               contentContainerStyle={styles.menuListContent}
               showsVerticalScrollIndicator={false}
             >
-              <MenuItem icon={Home} label="Info" onPress={() => navigate('/(tabs)/home')} />
-              <MenuItem icon={ImageIcon} label="Feed" onPress={() => navigate('/(tabs)/feed')} />
-              {isAppMenuItemVisible(currentEvent, 'menu_show_agenda') && (
-                <MenuItem icon={Calendar} label="Agenda" onPress={() => navigate('/(tabs)/schedule')} />
+              {/* Tab shortcuts — usually off (tabs cover these); kept for rare platform enable. */}
+              {isHamburgerTabShortcutVisible(currentEvent, 'platform_hamburger_show_info') && (
+                <MenuItem themeColor={themeColor} icon={Home} label="Info" onPress={() => navigateTab('home', '/(tabs)/home')} />
               )}
-              <MenuItem icon={Users} label="Community" onPress={() => navigate('/(tabs)/community')} />
-              <MenuItem icon={Trophy} label="Rank" onPress={() => navigate('/(tabs)/leaderboard')} />
+              {isHamburgerTabShortcutVisible(currentEvent, 'platform_hamburger_show_feed') && (
+                <MenuItem
+                  themeColor={themeColor}
+                  icon={ImageIcon}
+                  label="Feed"
+                  onPress={() => {
+                    close();
+                    // Pass tab navigation so Feed opens from any other tab (Community, etc.).
+                    navigateToFeedRoot(navigation);
+                  }}
+                />
+              )}
+              {isHamburgerTabShortcutVisible(currentEvent, 'platform_hamburger_show_agenda') && (
+                <MenuItem themeColor={themeColor} icon={Calendar} label="Agenda" onPress={() => navigateTab('schedule', '/(tabs)/schedule')} />
+              )}
+              {isHamburgerTabShortcutVisible(currentEvent, 'platform_hamburger_show_community') && (
+                <MenuItem themeColor={themeColor} icon={Users} label="Community" onPress={() => navigateTab('community', '/(tabs)/community')} />
+              )}
+              {isHamburgerTabShortcutVisible(currentEvent, 'platform_hamburger_show_rank') && (
+                <MenuItem themeColor={themeColor} icon={Trophy} label="Rank" onPress={() => navigateTab('leaderboard', '/(tabs)/leaderboard')} />
+              )}
+
+              {/* Connect + event extras (typical hamburger when tab shortcuts are off) */}
+              <MenuItem
+                themeColor={themeColor}
+                icon={MessageCircle}
+                label="Chat"
+                badge={unreadChats > 0 ? unreadChats : undefined}
+                onPress={() => navigateToProfileScreen('/profile/messages')}
+              />
               {isAppMenuItemVisible(currentEvent, 'menu_show_solution_providers') && (
                 <MenuItem
+                  themeColor={themeColor}
                   icon={Building2}
                   label="Solution Providers"
                   onPress={() =>
                     navigate(
-                      `/(tabs)/solution-providers?from=${encodeURIComponent(returnTo)}` as any
+                      `/(tabs)/solution-providers?from=${encodeURIComponent(returnTo)}` as never
                     )
                   }
                 />
               )}
               {isAppMenuItemVisible(currentEvent, 'menu_show_1on1') && (
-                <MenuItem icon={Store} label="1:1 Meetings" onPress={() => navigate('/(tabs)/expo')} />
+                <MenuItem themeColor={themeColor} icon={Store} label="1:1 Meetings" onPress={() => navigateTab('expo', '/(tabs)/expo')} />
+              )}
+              <MenuItem themeColor={themeColor} icon={LayoutGrid} label="Photo book" onPress={() => navigateTab('photo-book', '/(tabs)/photo-book')} />
+              {isAppMenuItemVisible(currentEvent, 'menu_show_live_wall') && (
+                <MenuItem themeColor={themeColor} icon={Tv} label="Live wall" onPress={openLiveWall} />
+              )}
+
+              {(isAppMenuItemVisible(currentEvent, 'menu_show_scan_badge') ||
+                effectiveCanShowSessionCheckIn(currentEvent, isEventAdmin, isPlatformAdmin, previewRole) ||
+                (currentEvent?.id &&
+                  (effectiveIsEventAdmin || effectiveIsVendorRep) &&
+                  isAppMenuItemVisible(currentEvent, 'menu_show_notes'))) && (
+                <View style={styles.divider} />
               )}
               {isAppMenuItemVisible(currentEvent, 'menu_show_scan_badge') && (
                 <MenuItem
+                  themeColor={themeColor}
                   icon={QrCode}
                   label="Scan badge"
                   onPress={() => navigateToProfileScreen('/profile/badge-scan')}
@@ -388,10 +517,11 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
               )}
               {effectiveCanShowSessionCheckIn(currentEvent, isEventAdmin, isPlatformAdmin, previewRole) && (
                 <MenuItem
+                  themeColor={themeColor}
                   icon={ClipboardCheck}
                   label="Session check-in"
                   onPress={() =>
-                    navigate(`/(tabs)/profile/session-check-in?from=${encodeURIComponent(returnTo)}` as any)
+                    navigate(`/(tabs)/profile/session-check-in?from=${encodeURIComponent(returnTo)}` as never)
                   }
                 />
               )}
@@ -399,39 +529,36 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
                 (effectiveIsEventAdmin || effectiveIsVendorRep) &&
                 isAppMenuItemVisible(currentEvent, 'menu_show_notes') && (
                   <MenuItem
+                    themeColor={themeColor}
                     icon={FileText}
                     label="Notes"
                     onPress={() => navigateToProfileScreen('/profile/badge-notes')}
                   />
                 )}
-              <MenuItem icon={LayoutGrid} label="Photo book" onPress={() => navigate('/(tabs)/photo-book')} />
-              {isAppMenuItemVisible(currentEvent, 'menu_show_live_wall') && (
-                <MenuItem icon={Tv} label="Live wall" onPress={openLiveWall} />
-              )}
-              <MenuItem
-                icon={BookOpen}
-                label="How to use"
-                onPress={() => navigateToProfileScreen('/profile/user-guide')}
-              />
+
               <View style={styles.divider} />
               <MenuItem
+                themeColor={themeColor}
                 icon={User}
                 label="My profile"
-                onPress={() => navigate('/(tabs)/profile')}
+                onPress={() => navigateTab('profile', '/(tabs)/profile')}
               />
               <MenuItem
-                icon={Edit3}
-                label="Edit profile"
-                onPress={() => navigateToProfileScreen('/profile/edit')}
-              />
-              <MenuItem
+                themeColor={themeColor}
                 icon={Bell}
                 label="Notifications"
                 badge={unreadNotifications > 0 ? unreadNotifications : undefined}
                 onPress={() => navigateToProfileScreen('/profile/notifications')}
               />
+              <MenuItem
+                themeColor={themeColor}
+                icon={BookOpen}
+                label="How to use"
+                onPress={() => navigateToProfileScreen('/profile/user-guide')}
+              />
               {effectiveIsEventAdmin && user && (
                 <MenuItem
+                  themeColor={themeColor}
                   icon={Shield}
                   label="Event admin"
                   onPress={() => navigateToProfileScreen('/profile/admin')}
@@ -445,9 +572,11 @@ export default function HamburgerMenu({ onLogout }: HamburgerMenuProps) {
               ) : null}
               <View style={styles.divider} />
               <MenuItem
+                themeColor={themeColor}
                 icon={LogOut}
                 label="Logout"
                 onPress={handleLogout}
+                destructive
                 labelStyle={styles.logoutLabel}
               />
               {sponsorsMenuFooter.length > 0 ? (
@@ -494,23 +623,29 @@ function MenuItem({
   onPress,
   labelStyle,
   badge,
+  themeColor,
+  destructive,
 }: {
-  icon: React.ComponentType<{ size?: number; color?: string }>;
+  icon: React.ComponentType<{ size?: number; color?: string; strokeWidth?: number }>;
   label: string;
   onPress: () => void;
   labelStyle?: object;
   badge?: number;
+  themeColor: string;
+  destructive?: boolean;
 }) {
+  const iconColor = destructive ? colors.danger : themeColor;
+
   return (
     <TouchableOpacity style={styles.menuItem} onPress={onPress} activeOpacity={0.7}>
-      <Icon size={22} color={colors.textSecondary} />
+      <Icon size={20} color={iconColor} strokeWidth={2} />
       <Text style={[styles.menuItemLabel, labelStyle]}>{label}</Text>
       {badge != null && badge > 0 && (
-        <View style={styles.badge}>
+        <View style={[styles.badge, { backgroundColor: themeColor }]}>
           <Text style={styles.badgeText}>{badge > 99 ? '99+' : badge}</Text>
         </View>
       )}
-      <ChevronRight size={20} color={colors.textMuted} />
+      <ChevronRight size={18} color={colors.textLight} strokeWidth={2} />
     </TouchableOpacity>
   );
 }
@@ -519,32 +654,34 @@ const styles = StyleSheet.create({
   trigger: {
     padding: 8,
     marginLeft: 4,
-  },
-  badgeDot: {
-    position: 'absolute',
-    top: -4,
-    right: -6,
-    minWidth: 18,
-    height: 18,
-    borderRadius: 9,
-    backgroundColor: colors.danger,
-    alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 5,
-  },
-  badgeDotText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#fff',
+    alignItems: 'center',
   },
   overlay: {
     flex: 1,
     flexDirection: 'row',
-    backgroundColor: 'rgba(0,0,0,0.4)',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
   },
   drawer: {
-    backgroundColor: colors.background,
+    backgroundColor: colors.card,
     marginRight: 0,
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    overflow: 'hidden',
+    ...Platform.select({
+      ios: {
+        shadowColor: colors.shadowColor,
+        shadowOffset: { width: 4, height: 0 },
+        shadowOpacity: 0.18,
+        shadowRadius: 16,
+      },
+      android: { elevation: 12 },
+      default: {},
+    }),
+  },
+  drawerAccent: {
+    height: 3,
+    width: '100%',
   },
   drawerHeader: {
     flexDirection: 'row',
@@ -553,8 +690,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
+    borderBottomColor: colors.borderLight,
     minHeight: 48,
+    backgroundColor: colors.card,
   },
   /** “Menu” + inline sponsor mark(s) on the same row, left side. */
   drawerHeaderLeft: {
@@ -570,7 +708,14 @@ const styles = StyleSheet.create({
     color: colors.text,
     flexShrink: 0,
     marginRight: 10,
-    letterSpacing: 0.2,
+  },
+  closeBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: colors.surfaceHover,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerSponsorBtn: {
     width: 108,
@@ -608,13 +753,13 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   menuListContent: {
-    paddingTop: 8,
+    paddingTop: 4,
     paddingBottom: 70,
   },
   menuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 11,
+    paddingVertical: 6,
     paddingHorizontal: 16,
     gap: 12,
   },
@@ -625,7 +770,6 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   badge: {
-    backgroundColor: colors.primary,
     minWidth: 22,
     height: 22,
     borderRadius: 11,
@@ -644,8 +788,8 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.border,
-    marginVertical: 6,
+    backgroundColor: colors.borderLight,
+    marginVertical: 4,
     marginHorizontal: 16,
   },
   bottomSpacer: {

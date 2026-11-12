@@ -1,19 +1,18 @@
 import { Platform } from 'react-native';
-import Constants from 'expo-constants';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { decode as decodeBase64ToArrayBuffer } from 'base64-arraybuffer';
 import md5 from 'js-md5';
-import Toast from 'react-native-toast-message';
-import { supabase, supabaseStorage, supabaseUrl } from './supabase';
+import { supabase, supabaseAnonKey, supabaseUrl } from './supabase';
 import { EVENT_BANNER_HEIGHT, EVENT_BANNER_WIDTH } from './eventBanner';
+import { useAuthStore } from '../stores/authStore';
 
 const MAX_WIDTH = 1920;
-const MAX_WIDTH_POST = 1280;
+const MAX_WIDTH_POST = 1080;
 /** Vendor booth logos: keep uploads small (faster R2 / storage). */
 const MAX_WIDTH_VENDOR_LOGO = 768;
-const COMPRESSION_QUALITY = 0.8;
+const COMPRESSION_QUALITY = 0.75;
 const VENDOR_LOGO_QUALITY = 0.82;
 const ANDROID_POST_MAX_WIDTH = 1024;
 const ANDROID_POST_QUALITY = 0.75;
@@ -232,18 +231,6 @@ const EDGE_FUNCTION_TIMEOUT_MS = Platform.OS === 'android' ? 30_000 : 18_000;
 const R2_PUT_TIMEOUT_MS = Platform.OS === 'android' ? 60_000 : 35_000;
 const UPLOAD_TOTAL_TIMEOUT_MS = Platform.OS === 'android' ? 100_000 : 65_000;
 
-/** Android: when true, try direct R2 (presigned URL + upload) like iOS. Set via EXPO_PUBLIC_ANDROID_USE_R2=true in .env, or ANDROID_USE_R2_DEV in dev. */
-const ANDROID_USE_R2_DEV = true; // Set to true in dev to test R2 when .env/extra isn't passed (e.g. Expo Go)
-const extraR2 = (Constants.expoConfig as { extra?: { ANDROID_USE_R2?: string } } | null)?.extra?.ANDROID_USE_R2;
-const envR2 = process.env.EXPO_PUBLIC_ANDROID_USE_R2;
-const ANDROID_USE_R2_DIRECT =
-  Platform.OS === 'android' &&
-  (extraR2 === 'true' || envR2 === 'true' || (__DEV__ && ANDROID_USE_R2_DEV));
-const ANDROID_STORAGE_ONLY = Platform.OS === 'android' && !ANDROID_USE_R2_DIRECT;
-if (__DEV__ && Platform.OS === 'android') {
-  console.log('[image] Android upload: R2 direct=', ANDROID_USE_R2_DIRECT, '| extra=', extraR2, '| env=', envR2);
-}
-
 type R2UrlResult =
   | { ok: true; uploadUrl: string; publicUrl: string }
   | { ok: false; status?: number; message: string };
@@ -257,21 +244,29 @@ const GET_SESSION_TIMEOUT_MS = Platform.OS === 'android' ? 6_000 : 5_000;
 async function getR2UploadUrlViaFetch(
   key: string,
   contentType: string,
+  contentLength: number,
   timeoutMs: number
 ): Promise<R2UrlResult> {
-  /* Use main supabase client so session is always in sync (fixes Android 401 when R2 URL requested). */
-  let session: { access_token?: string } | null = null;
-  try {
-    const sessionResult = await withTimeout(
-      supabase.auth.getSession(),
-      GET_SESSION_TIMEOUT_MS,
-      'Getting session'
-    );
-    session = sessionResult?.data?.session ?? null;
-  } catch (_) {
-    return { ok: false, message: 'Session timeout' };
+  // Prefer the session already held by the auth store. Calling getSession while
+  // many page requests are queued can block the upload even though the user is
+  // already authenticated.
+  const cachedSession = useAuthStore.getState().session as {
+    access_token?: string;
+  } | null;
+  let accessToken = cachedSession?.access_token;
+  if (!accessToken) {
+    try {
+      const sessionResult = await withTimeout(
+        supabase.auth.getSession(),
+        GET_SESSION_TIMEOUT_MS,
+        'Getting session'
+      );
+      accessToken = sessionResult?.data?.session?.access_token;
+    } catch (_) {
+      return { ok: false, message: 'Session timeout' };
+    }
   }
-  if (!session?.access_token) {
+  if (!accessToken) {
     return { ok: false, status: 401, message: 'Not signed in' };
   }
   const url = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/get-r2-upload-url`;
@@ -282,9 +277,10 @@ async function getR2UploadUrlViaFetch(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${accessToken}`,
+        apikey: supabaseAnonKey,
       },
-      body: JSON.stringify({ key, contentType }),
+      body: JSON.stringify({ key, contentType, contentLength }),
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
@@ -317,52 +313,33 @@ async function getR2UploadUrlViaFetch(
 }
 
 /**
- * Call get-r2-upload-url Edge Function. On Android we use direct fetch + AbortController so the request
- * cannot hang; on iOS we use supabase.functions.invoke().
+ * Call get-r2-upload-url Edge Function via direct fetch + AbortController on all
+ * platforms. supabase.functions.invoke() has hung on iOS during Share → Uploading.
  */
-async function getR2UploadUrl(key: string, contentType: string): Promise<R2UrlResult> {
-  if (Platform.OS === 'android') {
-    const hardTimeoutMs = EDGE_FUNCTION_TIMEOUT_MS + 5_000;
-    const result = await Promise.race([
-      getR2UploadUrlViaFetch(key, contentType, EDGE_FUNCTION_TIMEOUT_MS),
-      new Promise<R2UrlResult>((_, rej) =>
-        setTimeout(() => rej(new Error(`Get URL timed out after ${hardTimeoutMs / 1000}s`)), hardTimeoutMs)
-      ),
-    ]).catch((e) => ({ ok: false as const, message: e instanceof Error ? e.message : String(e) }));
-    return result;
-  }
-  const result = await supabase.functions.invoke('get-r2-upload-url', {
-    body: { key, contentType },
-  });
-  type InvokeBody = { uploadUrl?: string; publicUrl?: string; error?: string } | null;
-  type InvokeError = { message?: string; status?: number } | null;
-  const data = result.data as InvokeBody;
-  const error = result.error as InvokeError;
-  if (error) {
-    const msg = error.message ?? String(error);
-    const status = error.status;
-    return { ok: false, status, message: msg };
-  }
-  const body = data;
-  if (!body) return { ok: false, message: 'No response' };
-  if (body.error && String(body.error).includes('R2 not configured')) {
-    return { ok: false, status: 503, message: body.error };
-  }
-  if (body.error) return { ok: false, status: 401, message: body.error };
-  if (!body.uploadUrl || !body.publicUrl) return { ok: false, message: 'Missing upload URL' };
-  return { ok: true, uploadUrl: body.uploadUrl, publicUrl: body.publicUrl };
+async function getR2UploadUrl(
+  key: string,
+  contentType: string,
+  contentLength: number
+): Promise<R2UrlResult> {
+  const hardTimeoutMs = EDGE_FUNCTION_TIMEOUT_MS + 5_000;
+  return Promise.race([
+    getR2UploadUrlViaFetch(key, contentType, contentLength, EDGE_FUNCTION_TIMEOUT_MS),
+    new Promise<R2UrlResult>((_, rej) =>
+      setTimeout(() => rej(new Error(`Get URL timed out after ${hardTimeoutMs / 1000}s`)), hardTimeoutMs)
+    ),
+  ]).catch((e) => ({ ok: false as const, message: e instanceof Error ? e.message : String(e) }));
 }
 
 /** Result of trying R2: either the public URL or a failure reason for fallback/UI. */
 type R2UploadResult = { url: string } | { failed: true; reason: string };
 
-const R2_PROXY_TIMEOUT_MS = 60_000;
+const R2_PROXY_TIMEOUT_MS = Platform.OS === 'android' ? 60_000 : 45_000;
 
 type EdgeImageResponse = { publicUrl?: string; base64?: string; error?: string };
 
 async function callUploadImageEdge(body: Record<string, unknown>): Promise<EdgeImageResponse | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session?.access_token) return null;
+  const accessToken = useAuthStore.getState().session?.access_token;
+  if (!accessToken || !supabaseUrl) return null;
   const url = `${supabaseUrl.replace(/\/$/, '')}/functions/v1/upload-image-to-r2`;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), R2_PROXY_TIMEOUT_MS);
@@ -371,7 +348,8 @@ async function callUploadImageEdge(body: Record<string, unknown>): Promise<EdgeI
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${session.access_token}`,
+        Authorization: `Bearer ${accessToken}`,
+        apikey: supabaseAnonKey,
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -445,28 +423,29 @@ async function uploadToR2(
 ): Promise<R2UploadResult> {
   try {
     let urlResult = await withTimeout(
-      getR2UploadUrl(key, contentType),
+      getR2UploadUrl(key, contentType, arrayBuffer.byteLength),
       EDGE_FUNCTION_TIMEOUT_MS + 10_000,
       'Getting upload URL'
     );
-    if (!urlResult.ok && Platform.OS === 'android') {
-      await new Promise((r) => setTimeout(r, 2000));
+    if (!urlResult.ok) {
+      await new Promise((r) => setTimeout(r, 1500));
       urlResult = await withTimeout(
-        getR2UploadUrl(key, contentType),
+        getR2UploadUrl(key, contentType, arrayBuffer.byteLength),
         EDGE_FUNCTION_TIMEOUT_MS + 5_000,
         'Getting upload URL (retry)'
       );
     }
     if (!urlResult.ok) {
       const reason = urlResult.status ? `${urlResult.status}: ${urlResult.message}` : urlResult.message;
-      if (Platform.OS === 'android') {
-        console.warn('[R2 Android] Get URL failed:', reason);
-      }
       return { failed: true, reason: `R2 URL: ${reason}` };
     }
 
-    if (Platform.OS === 'android' && fileUri) {
-      const uploadType = (FileSystem as { FileSystemUploadType?: { BINARY_CONTENT: number } }).FileSystemUploadType?.BINARY_CONTENT ?? 0;
+    // Native file PUT on both platforms — fetch(ArrayBuffer) has hung on iOS
+    // leaving Share stuck on "Uploading…".
+    if (fileUri) {
+      const uploadType =
+        (FileSystem as { FileSystemUploadType?: { BINARY_CONTENT: number } }).FileSystemUploadType
+          ?.BINARY_CONTENT ?? 0;
       const uploadResult = await withTimeout(
         FileSystem.uploadAsync(urlResult.uploadUrl, fileUri, {
           httpMethod: 'PUT',
@@ -480,7 +459,12 @@ async function uploadToR2(
       if (status >= 200 && status < 300) {
         return { url: urlResult.publicUrl };
       }
-      console.warn('[R2 Android] FileSystem.uploadAsync failed:', status || (uploadResult as { _error?: unknown })._error);
+      if (__DEV__) {
+        console.warn(
+          '[R2] FileSystem.uploadAsync failed:',
+          status || (uploadResult as { _error?: unknown })._error
+        );
+      }
       const putRes = await withTimeout(
         fetch(urlResult.uploadUrl, {
           method: 'PUT',
@@ -489,13 +473,16 @@ async function uploadToR2(
         }),
         R2_PUT_TIMEOUT_MS,
         'Uploading to R2 (retry)'
-      ).catch((e) => null);
+      ).catch(() => null);
       if (putRes?.ok) return { url: urlResult.publicUrl };
       if (putRes && !putRes.ok) {
         return { failed: true, reason: `R2 PUT: ${putRes.status}` };
       }
       const errMsg = (uploadResult as { _error?: unknown })._error;
-      return { failed: true, reason: errMsg instanceof Error ? errMsg.message : 'R2 upload failed' };
+      return {
+        failed: true,
+        reason: errMsg instanceof Error ? errMsg.message : 'R2 upload failed',
+      };
     }
 
     const putRes = await withTimeout(
@@ -508,9 +495,6 @@ async function uploadToR2(
       'Uploading to storage'
     );
     if (!putRes.ok) {
-      if (Platform.OS === 'android') {
-        console.warn('[R2 Android] PUT failed:', putRes.status, putRes.statusText);
-      }
       return { failed: true, reason: `R2 PUT: ${putRes.status}` };
     }
     return { url: urlResult.publicUrl };
@@ -525,8 +509,9 @@ async function uploadToR2(
 }
 
 /**
- * Upload an image: tries R2 first (saves Supabase egress), then falls back to Supabase Storage.
- * Returns the public URL of the uploaded image.
+ * Upload an event image: Cloudflare R2 first (primary), then Supabase Storage backup.
+ * Android: Edge proxy first (device → Supabase → R2), then direct presigned PUT.
+ * iOS: direct presigned PUT first, then Edge proxy.
  * Pass options.base64 when you already have it (e.g. from compressAndHashImage) to avoid reading the file again.
  */
 export async function uploadImage(
@@ -557,74 +542,58 @@ export async function uploadImage(
     const filePath = options.folder
       ? `${eventId}/${options.folder}/${userId}_${timestamp}.jpg`
       : `${eventId}/${userId}_${timestamp}.jpg`;
+    const r2Key = `event-photos/${filePath}`;
 
     if (typeof base64 !== 'string' || base64.length === 0) {
       throw new Error('Invalid base64 image data');
     }
     const arrayBuffer = decodeBase64ToArrayBuffer(base64);
-
-    let r2FileUri: string | undefined = Platform.OS === 'android' ? uploadFileUri : undefined;
-    if (Platform.OS === 'android' && r2FileUri && r2FileUri.startsWith('content://')) {
-      const cachePath = `${FileSystem.cacheDirectory ?? ''}r2_upload_${timestamp}.jpg`;
-      try {
-        await FileSystem.copyAsync({ from: r2FileUri, to: cachePath });
-        r2FileUri = cachePath;
-      } catch (_) {
-        r2FileUri = uploadFileUri;
-      }
+    // Reject non-JPEG payloads client-side (R2 authz also checks magic bytes on proxy).
+    const bytes = new Uint8Array(arrayBuffer);
+    if (bytes.length < 3 || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[2] !== 0xff) {
+      throw new Error('Only JPEG images can be uploaded');
     }
 
-    // Android: Supabase Storage only (like original). Use supabaseStorage so custom fetch doesn't affect upload.
-    if (Platform.OS === 'android' && ANDROID_STORAGE_ONLY) {
-      const { data, error } = await supabaseStorage.storage
-        .from(bucket)
-        .upload(filePath, arrayBuffer, { contentType: 'image/jpeg', upsert: false });
-      if (error) {
-        const msg = (error as { message?: string }).message ?? String(error);
-        throw new Error(msg || 'Storage upload failed');
+    const doUpload = async (): Promise<string> => {
+      const reasons: string[] = [];
+
+      const tryProxy = async (): Promise<string | null> => {
+        const result = await uploadToR2ViaProxy(r2Key, base64, 'image/jpeg');
+        if (!('failed' in result)) return result.url;
+        reasons.push(`proxy: ${result.reason}`);
+        return null;
+      };
+
+      const tryDirect = async (): Promise<string | null> => {
+        const result = await uploadToR2(r2Key, arrayBuffer, 'image/jpeg', uploadFileUri);
+        if (!('failed' in result)) return result.url;
+        reasons.push(`direct: ${result.reason}`);
+        return null;
+      };
+
+      // Direct native PUT first on both platforms (fast path). Proxy next for
+      // networks that block Cloudflare R2. iOS used to prefer proxy-first, but
+      // large base64 posts hung Share on "Uploading…".
+      const viaDirect = await tryDirect();
+      if (viaDirect) return viaDirect;
+      const viaProxy = await tryProxy();
+      if (viaProxy) return viaProxy;
+
+      // Backup only after R2 paths fail — keep posts working on venue Wi‑Fi.
+      const { data, error } = await supabase.storage.from(bucket).upload(filePath, arrayBuffer, {
+        contentType: 'image/jpeg',
+        upsert: false,
+      });
+      if (!error && data?.path) {
+        if (__DEV__) console.warn('[uploadImage] R2 failed; used Supabase backup:', reasons.join('; '));
+        const { data: urlData } = supabase.storage.from(bucket).getPublicUrl(data.path);
+        if (urlData?.publicUrl) return urlData.publicUrl;
       }
-      const path = data?.path;
-      if (!path) throw new Error('Storage returned no path');
-      const { data: urlData } = supabaseStorage.storage.from(bucket).getPublicUrl(path);
-      return urlData?.publicUrl ?? null;
-    }
+      if (error) reasons.push(`supabase: ${error.message}`);
 
-    const STORAGE_UPLOAD_TIMEOUT_MS = Platform.OS === 'android' ? 75_000 : 45_000;
-    const storageClient = Platform.OS === 'android' ? supabaseStorage : supabase;
-    const doUpload = async (): Promise<string | null> => {
-      const r2Result = await uploadToR2(
-        `event-photos/${filePath}`,
-        arrayBuffer,
-        'image/jpeg',
-        Platform.OS === 'android' ? r2FileUri : undefined
+      throw new Error(
+        `Photo upload failed. ${reasons.join('; ') || 'Unknown error'}. Check your connection and try again.`
       );
-      if (!('failed' in r2Result)) return r2Result.url;
-      try {
-        Toast.show({
-          type: 'info',
-          text1: 'Saved to app storage',
-          text2: `R2 unavailable: ${r2Result.reason}`,
-          visibilityTime: 5000,
-        });
-      } catch (_) {}
-
-      const { data, error } = await withTimeout(
-        storageClient.storage.from(bucket).upload(filePath, arrayBuffer, {
-          contentType: 'image/jpeg',
-          upsert: false,
-        }),
-        STORAGE_UPLOAD_TIMEOUT_MS,
-        'Uploading to storage'
-      );
-
-      if (error) {
-        const msg = (error as { message?: string }).message ?? String(error);
-        throw new Error(msg || 'Storage upload failed');
-      }
-      const path = data?.path;
-      if (!path) throw new Error('Storage returned no path');
-      const { data: urlData } = storageClient.storage.from(bucket).getPublicUrl(path);
-      return urlData?.publicUrl ?? null;
     };
 
     return withTimeout(doUpload(), UPLOAD_TOTAL_TIMEOUT_MS, 'Photo upload');

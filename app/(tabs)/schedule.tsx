@@ -14,15 +14,13 @@ import {
   Platform,
   PanResponder,
   ActivityIndicator,
-  AppState,
-  AppStateStatus,
   InteractionManager,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useNavigation, useLocalSearchParams } from 'expo-router';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect } from "@react-navigation/native";
 import { Bookmark, Calendar, List, MapPin, Plus, Search, Star, Store, User, X } from 'lucide-react-native';
-import { format, parseISO, isPast } from 'date-fns';
+import { format, parseISO } from 'date-fns';
 
 /** Parses API date strings (PostgreSQL may return space instead of T between date and time). */
 function parseDate(iso: string | null | undefined): Date | null {
@@ -42,9 +40,6 @@ function parseDate(iso: string | null | undefined): Date | null {
 
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAY_NAMES_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
-
-/** Accent for date selector and search (purple). */
-const dateSelectorAccent = '#7c3aed';
 
 /** Format a yyyy-MM-dd key for display (no date-fns, no locale; never returns "---"). */
 function formatDayKey(key: string, index: number): string {
@@ -71,14 +66,21 @@ import { useEventStore } from '../../stores/eventStore';
 import { useRolePreviewContext } from '../../hooks/useRolePreviewContext';
 import { effectiveIsEventAdmin as computeEffectiveEventAdmin } from '../../lib/rolePreview';
 import { awardPoints } from '../../lib/points';
-import { supabase, supabaseStorage, withRetryAndRefresh, refreshSessionIfNeeded } from '../../lib/supabase';
+import { supabase, supabaseStorage, withRetryAndRefresh } from '../../lib/supabase';
+import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import { fetchVendorRepBoothIds } from '../../lib/vendorBoothReps';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
+import { loadCachedSessions, saveCachedSessions, loadCachedB2BMeetings, saveCachedB2BMeetings } from '../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../stores/connectivityStore';
 import { colors, sessionTypeColors } from '../../constants/colors';
+import { DEFAULT_EVENT_THEME_COLOR, themeColorWithAlpha, useEventThemeColor } from '../../lib/eventTheme';
 import type { ScheduleSession, SessionRating } from '../../lib/types';
 import CompactSponsorStrip from '../../components/CompactSponsorStrip';
 import { useResolvedEventSponsors } from '../../lib/useResolvedEventSponsors';
 import HeaderNotificationBell from '../../components/HeaderNotificationBell';
+import LivePulseDot from '../../components/ui/LivePulseDot';
+import EmptyState from '../../components/ui/EmptyState';
+import PressScale from '../../components/ui/PressScale';
 import {
   isSessionLiveWallClockOnEventDay,
   isSessionNotYetEndedWallClockOnEventDay,
@@ -86,6 +88,9 @@ import {
   getDeviceLocalDateKey,
   sessionInstantOnEventDayLocal,
 } from '../../lib/scheduleNowNext';
+
+/** Accent fallback for date selector styles (live UI overrides with event theme → blue default). */
+const dateSelectorAccent = DEFAULT_EVENT_THEME_COLOR;
 
 type SessionWithBookmarked = ScheduleSession & { is_bookmarked?: boolean };
 
@@ -109,11 +114,10 @@ function isB2BItem(item: AgendaListItem): item is B2BMeetingItem {
   return (item as B2BMeetingItem).type === 'b2b';
 }
 
-/** Sort key: schedule rows use wall-clock on event day; B2B slots use real instants (same as `getNowNextSessions`). */
+/** Sort key: sessions and 1:1 meetings both use the venue wall clock, so 2:00 sits with 2:00. */
 function agendaItemSortKey(item: AgendaListItem, eventDateKey: string, eventIanaZone?: string | null): number {
   const start = parseDate(item.start_time);
   if (!start) return 0;
-  if (isB2BItem(item)) return start.getTime();
   const wall = sessionInstantOnEventDayLocal(start, eventDateKey, eventIanaZone);
   return wall?.getTime() ?? start.getTime();
 }
@@ -301,6 +305,8 @@ export default function ScheduleScreen() {
     typeof focusSessionIdRaw === 'string' ? focusSessionIdRaw : focusSessionIdRaw?.[0];
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
+  const themeColor = useEventThemeColor();
+  const themeFaded = themeColorWithAlpha(themeColor, '18');
   const { previewRole, isPlatformAdmin } = useRolePreviewContext();
   /** When set on the event, "Live now" / ordering use this IANA zone (same as 5‑min reminder Edge Function). */
   const agendaTimeZone = currentEvent?.reminder_timezone?.trim() || null;
@@ -359,25 +365,37 @@ export default function ScheduleScreen() {
     if (fetchInProgressRef.current) return;
     fetchInProgressRef.current = true;
     setFetchError(null);
+    const eventId = currentEvent.id;
     try {
       await withRetryAndRefresh(async () => {
         // Use * so the app still loads if `ratings_enabled` migration is not applied yet; optional field in types.
         const { data, error } = await supabase
           .from('schedule_sessions')
           .select('*')
-          .eq('event_id', currentEvent.id)
+          .eq('event_id', eventId)
           .eq('is_active', true)
           .order('day_number', { ascending: true })
           .order('start_time', { ascending: true });
 
         if (error) throw error;
-        setSessions((data ?? []) as ScheduleSession[]);
+        const rows = (data ?? []) as ScheduleSession[];
+        setSessions(rows);
+        await saveCachedSessions(eventId, rows);
       });
       setFetchError(null);
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       if (__DEV__) console.warn('Schedule fetch error:', err);
-      setSessions([]);
-      setFetchError('Error - page not loading');
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedSessions(eventId);
+      if (cached) {
+        setSessions(cached);
+        setFetchError(null);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setSessions([]);
+        setFetchError('Error - page not loading');
+      }
     } finally {
       fetchInProgressRef.current = false;
       setLoading(false);
@@ -510,6 +528,8 @@ export default function ScheduleScreen() {
         }
         adminList.sort((a, b) => (parseDate(a.start_time)?.getTime() ?? 0) - (parseDate(b.start_time)?.getTime() ?? 0));
         setB2bMeetings(adminList);
+        await saveCachedB2BMeetings(currentEvent.id, user.id, adminList);
+        useConnectivityStore.getState().reportSuccess();
         return;
       }
 
@@ -609,9 +629,18 @@ export default function ScheduleScreen() {
       const list = [...attendeeList, ...vendorList];
       list.sort((a, b) => (parseDate(a.start_time)?.getTime() ?? 0) - (parseDate(b.start_time)?.getTime() ?? 0));
       setB2bMeetings(list);
+      await saveCachedB2BMeetings(currentEvent.id, user.id, list);
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       if (__DEV__) console.warn('B2B meetings fetch error:', err);
-      setB2bMeetings([]);
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedB2BMeetings(currentEvent.id, user.id);
+      if (cached) {
+        setB2bMeetings(cached);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setB2bMeetings([]);
+      }
     }
   };
 
@@ -776,8 +805,9 @@ export default function ScheduleScreen() {
         Promise.all([fetchSessions(), fetchBookmarks(), fetchIsAdmin(), fetchB2BMeetings(), reloadScheduleSponsors()]),
         LOAD_TIMEOUT_MS
       );
-    } catch {
-      setFetchError('Error - page not loading');
+    } catch (err) {
+      // fetchSessions restores agenda from cache when possible; avoid wiping a working cached view.
+      useConnectivityStore.getState().reportFailure(err);
     } finally {
       setRefreshing(false);
     }
@@ -856,6 +886,21 @@ export default function ScheduleScreen() {
     );
     return list;
   }, [filteredSessions, selectedDay, eventStartDate, b2bMeetings, agendaTimeZone]);
+
+  const listLengthRef = useRef(0);
+  listLengthRef.current = sessionsForSelectedDay.length;
+
+  /** Delayed scrolls can fire after the day changed; Android throws on an out-of-range index. */
+  const safeScrollToIndex = React.useCallback((index: number, viewPosition: number) => {
+    const count = listLengthRef.current;
+    if (count === 0) return;
+    const clamped = Math.min(Math.max(0, index), count - 1);
+    listRef.current?.scrollToIndex({ index: clamped, animated: true, viewPosition });
+  }, []);
+
+  useEffect(() => {
+    pendingScrollIndexRef.current = null;
+  }, [selectedDay]);
 
   /** Session IDs currently happening (for live indicator on rows). B2B items are excluded. */
   const liveSessionIds = useMemo(() => {
@@ -969,12 +1014,12 @@ export default function ScheduleScreen() {
     const session = sessions.find((s) => s.id === focusSessionId);
     if (!session) return;
     const handle = setTimeout(() => {
-      listRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.2 });
+      safeScrollToIndex(idx, 0.2);
       setSelectedSession(session);
       router.setParams({ sessionId: undefined } as never);
     }, 220);
     return () => clearTimeout(handle);
-  }, [focusSessionId, loading, sessionsForSelectedDay, sessions, router]);
+  }, [focusSessionId, loading, sessionsForSelectedDay, sessions, router, safeScrollToIndex]);
 
   useEffect(() => {
     if (!focusSessionId || loading || sessions.length === 0) return;
@@ -1013,18 +1058,12 @@ export default function ScheduleScreen() {
   );
 
   useEffect(() => {
-    const sub = AppState.addEventListener('change', (state: AppStateStatus) => {
-      if (state === 'active' && currentEvent?.id) {
-        fetchInProgressRef.current = false;
-        refreshSessionIfNeeded()
-          .catch(() => {})
-          .finally(() => {
-            fetchSessions().catch(() => {});
-            fetchB2BMeetings().catch(() => {});
-          });
-      }
+    const unregister = registerRefetchOnSessionRefreshed(() => {
+      if (!currentEvent?.id) return;
+      fetchSessions().catch(() => {});
+      fetchB2BMeetings().catch(() => {});
     });
-    return () => sub.remove();
+    return unregister;
   }, [currentEvent?.id]);
 
   const loadingStartRef = React.useRef<number | null>(null);
@@ -1035,10 +1074,36 @@ export default function ScheduleScreen() {
     }
     loadingStartRef.current = Date.now();
     const t = setTimeout(() => {
-      if (loadingStartRef.current !== null && Date.now() - loadingStartRef.current >= 40000) {
+      if (loadingStartRef.current === null || Date.now() - loadingStartRef.current < 40000) return;
+      void (async () => {
+        const eventId = useEventStore.getState().currentEvent?.id;
+        const userId = useAuthStore.getState().user?.id;
+        let restored = false;
+        if (eventId) {
+          const cached = await loadCachedSessions(eventId);
+          if (cached) {
+            setSessions(cached);
+            setFetchError(null);
+            restored = true;
+          }
+          if (userId) {
+            const cachedB2b = await loadCachedB2BMeetings(eventId, userId);
+            if (cachedB2b) {
+              setB2bMeetings(cachedB2b);
+              restored = true;
+            }
+          }
+        }
         setLoading(false);
-        setFetchError('Error - page not loading');
-      }
+        if (restored) {
+          setFetchError(null);
+          useConnectivityStore.getState().reportFailure();
+          useConnectivityStore.getState().setShowingCachedData(true);
+        } else {
+          setFetchError('Error - page not loading');
+          useConnectivityStore.getState().reportFailure();
+        }
+      })();
     }, 40000);
     return () => clearTimeout(t);
   }, [loading]);
@@ -1086,8 +1151,8 @@ export default function ScheduleScreen() {
     hasScrolledToNow.current = true;
     const safeIdx = Math.max(0, idx);
     pendingScrollIndexRef.current = safeIdx;
-    setTimeout(() => listRef.current?.scrollToIndex({ index: safeIdx, animated: true, viewPosition: 0.12 }), 120);
-  }, [nowScrollRequestId, loading, selectedDay, eventStartDate, sessionsForSelectedDay, agendaTimeZone]);
+    setTimeout(() => safeScrollToIndex(safeIdx, 0.12), 120);
+  }, [nowScrollRequestId, loading, selectedDay, eventStartDate, sessionsForSelectedDay, agendaTimeZone, safeScrollToIndex]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -1097,19 +1162,25 @@ export default function ScheduleScreen() {
         <View style={s.headerRight}>
           <View style={s.headerButtonGroup}>
             <TouchableOpacity style={s.headerPill} onPress={goToNow}>
-              <Text style={s.headerPillText}>Now</Text>
+              <Text style={[s.headerPillText, { color: themeColor }]}>Now</Text>
             </TouchableOpacity>
             {sessions.length > 0 && (
               <>
                 <TouchableOpacity
-                  style={[s.headerIconPill, !showSavedOnly && s.headerPillActive]}
+                  style={[
+                    s.headerIconPill,
+                    !showSavedOnly && [s.headerPillActive, { backgroundColor: themeColor }],
+                  ]}
                   onPress={() => setShowSavedOnly(false)}
                   accessibilityLabel="All sessions"
                 >
                   <List size={16} color={!showSavedOnly ? '#fff' : colors.textMuted} />
                 </TouchableOpacity>
                 <TouchableOpacity
-                  style={[s.headerIconPill, showSavedOnly && s.headerPillActive]}
+                  style={[
+                    s.headerIconPill,
+                    showSavedOnly && [s.headerPillActive, { backgroundColor: themeColor }],
+                  ]}
                   onPress={() => setShowSavedOnly(true)}
                   accessibilityLabel="Saved sessions"
                 >
@@ -1120,19 +1191,19 @@ export default function ScheduleScreen() {
           </View>
           {effectiveIsEventAdmin && (
             <TouchableOpacity style={s.headerIconBtn} onPress={() => router.push(`/profile/admin-schedule?from=${encodeURIComponent('/(tabs)/schedule')}` as any)}>
-              <Plus size={20} color={colors.primary} />
+              <Plus size={20} color={themeColor} />
             </TouchableOpacity>
           )}
           <View style={s.headerNotifyProfile}>
             <HeaderNotificationBell style={s.headerBellInPair} />
             <TouchableOpacity onPress={() => router.push('/(tabs)/profile')} style={s.headerProfileBtn} hitSlop={12}>
-              <User size={24} color={colors.primary} strokeWidth={2} />
+              <User size={24} color={themeColor} strokeWidth={2} />
             </TouchableOpacity>
           </View>
         </View>
       ),
     });
-  }, [navigation, effectiveIsEventAdmin, goToNow, router, showSavedOnly, sessions.length]);
+  }, [navigation, effectiveIsEventAdmin, goToNow, router, showSavedOnly, sessions.length, themeColor]);
 
   // Display session times as stored (UTC wall-clock) so they match admin/web; no device timezone conversion.
   // "Live now" uses events.reminder_timezone when set (see agendaTimeZone) so the badge matches venue wall time.
@@ -1178,7 +1249,7 @@ export default function ScheduleScreen() {
       <SafeAreaView style={s.container} edges={[]}>
         <View style={s.emptyState}>
           <View style={s.emptyIconWrap}>
-            <Calendar size={48} color={colors.primary} strokeWidth={1.5} />
+            <Calendar size={48} color={themeColor} strokeWidth={1.5} />
           </View>
           <Text style={s.emptyTitle}>No event selected</Text>
           <Text style={s.emptyText}>Join an event on the Info tab to view the schedule.</Text>
@@ -1194,16 +1265,16 @@ export default function ScheduleScreen() {
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, justifyContent: 'center', padding: 24 }}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
+            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />
           }
         >
           <View style={s.emptyState}>
             <View style={s.emptyIconWrap}>
-              <Calendar size={48} color={colors.primary} strokeWidth={1.5} />
+              <Calendar size={48} color={themeColor} strokeWidth={1.5} />
             </View>
             {loading ? (
               <>
-                <ActivityIndicator size="large" color={colors.primary} style={{ marginBottom: 12 }} />
+                <ActivityIndicator size="large" color={themeColor} style={{ marginBottom: 12 }} />
                 <Text style={s.emptyTitle}>Loading schedule…</Text>
                 <Text style={s.emptyText}>Pull down to refresh</Text>
               </>
@@ -1253,7 +1324,7 @@ export default function ScheduleScreen() {
               <X size={18} color={colors.textMuted} />
             </TouchableOpacity>
           )}
-          <View style={s.searchUnderline} />
+          <View style={[s.searchUnderline, { backgroundColor: themeColor }]} />
         </View>
 
         {dayNumbers.length > 0 && monthYearLabel && (
@@ -1284,15 +1355,15 @@ export default function ScheduleScreen() {
                     <View
                       style={[
                         s.dateChipCircle,
-                        isSelected && s.dateChipCircleSelected,
-                        isToday && !isSelected && s.dateChipCircleToday,
+                        isSelected && [s.dateChipCircleSelected, { backgroundColor: themeColor, borderColor: themeColor }],
+                        isToday && !isSelected && [s.dateChipCircleToday, { borderColor: themeColor }],
                       ]}
                     >
                       <Text
                         style={[
                           s.dateChipDayNum,
                           isSelected && s.dateChipDayNumSelected,
-                          isToday && !isSelected && s.dateChipDayNumToday,
+                          isToday && !isSelected && [s.dateChipDayNumToday, { color: themeColor }],
                         ]}
                       >
                         {display ? display.dayOfMonth : index + 1}
@@ -1301,8 +1372,8 @@ export default function ScheduleScreen() {
                     <Text
                       style={[
                         s.dateChipWeekday,
-                        isSelected && s.dateChipWeekdaySelected,
-                        isToday && !isSelected && s.dateChipWeekdayToday,
+                        isSelected && [s.dateChipWeekdaySelected, { color: themeColor }],
+                        isToday && !isSelected && [s.dateChipWeekdayToday, { color: themeColor }],
                       ]}
                     >
                       {display ? display.weekday : `DAY ${index + 1}`}
@@ -1319,7 +1390,7 @@ export default function ScheduleScreen() {
       {sessionsForSelectedDay.length === 0 ? (
         <ScrollView
           contentContainerStyle={[s.emptyList, scheduleSponsors.length > 0 ? { justifyContent: 'flex-start' as const, paddingTop: 20 } : null]}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />}
         >
           {scheduleSponsors.length > 0 ? (
             <View style={s.sponsorStripBleedEmpty}>
@@ -1331,17 +1402,18 @@ export default function ScheduleScreen() {
               />
             </View>
           ) : null}
-          <View style={s.emptyIconWrap}>
-            <Calendar size={44} color={colors.textMuted} strokeWidth={1.5} />
-          </View>
-          <Text style={s.emptyTitle}>No sessions</Text>
-          <Text style={s.emptyText}>
-            {filteredSessions.length === 0 && searchQuery
-              ? 'No sessions match your search.'
-              : sessions.length === 0
-                ? 'No sessions for this event yet.'
-                : 'No sessions on this day. Select another day.'}
-          </Text>
+          <EmptyState
+            title="No sessions this day"
+            subtitle={
+              filteredSessions.length === 0 && searchQuery
+                ? 'No sessions match your search — try clearing the filter.'
+                : sessions.length === 0
+                  ? 'Sessions will appear here once the organizer publishes the agenda.'
+                  : 'Pick another day above, or tap Now to jump to today.'
+            }
+            ctaLabel={searchQuery ? 'Clear search' : undefined}
+            onCtaPress={searchQuery ? () => setSearchQuery('') : undefined}
+          />
         </ScrollView>
       ) : (
         <FlatList
@@ -1349,12 +1421,13 @@ export default function ScheduleScreen() {
           data={sessionsForSelectedDay}
           keyExtractor={(item, index) => isB2BItem(item) ? `b2b-${item.id}-${item.booth_id}-${index}` : item.id}
           contentContainerStyle={s.listContent}
-          initialNumToRender={12}
-          maxToRenderPerBatch={10}
-          windowSize={5}
+          initialNumToRender={16}
+          maxToRenderPerBatch={16}
+          windowSize={15}
+          removeClippedSubviews={false}
           onScrollToIndexFailed={({ index, averageItemLength }) => {
             const retryIndex = pendingScrollIndexRef.current ?? index;
-            const safeIdx = Math.max(0, retryIndex);
+            const safeIdx = Math.min(Math.max(0, retryIndex), Math.max(0, listLengthRef.current - 1));
             // First jump near target using estimated offset so RN can measure more rows.
             if (averageItemLength > 0) {
               listRef.current?.scrollToOffset({
@@ -1365,12 +1438,12 @@ export default function ScheduleScreen() {
             // Then retry exact index after layout settles.
             InteractionManager.runAfterInteractions(() => {
               setTimeout(() => {
-                listRef.current?.scrollToIndex({ index: safeIdx, animated: true, viewPosition: 0.12 });
+                safeScrollToIndex(safeIdx, 0.12);
               }, 120);
             });
           }}
           ItemSeparatorComponent={() => <View style={s.rowDivider} />}
-          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />}
+          refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[themeColor]} />}
           ListHeaderComponent={
             scheduleSponsors.length > 0 ? (
               <View style={s.sponsorStripBleed}>
@@ -1386,42 +1459,53 @@ export default function ScheduleScreen() {
           ListFooterComponent={null}
           renderItem={({ item, index }) => {
             if (isB2BItem(item)) {
-              const b2bEnd = parseDate(item.end_time);
+              const meetingDayKey = getSessionDateKey(item.end_time) ?? getSessionDateKey(item.start_time);
+              const meetingEndMs = meetingDayKey
+                ? agendaItemEndKey(item, meetingDayKey, agendaTimeZone)
+                : Number.NaN;
               const canRate =
-                !item.isVendorMeeting && !item.isAdminOverview && b2bEnd != null && isPast(b2bEnd);
+                !item.isVendorMeeting &&
+                !item.isAdminOverview &&
+                Number.isFinite(meetingEndMs) &&
+                meetingEndMs <= Date.now();
               const isLiveB2b = liveB2bIds.has(item.id);
               return (
-                <TouchableOpacity
-                  style={[s.scheduleRow, s.b2bRow, index % 2 === 1 && s.scheduleRowAlt]}
-                  onPress={() => {
-                    const fromEnc = encodeURIComponent('/(tabs)/schedule');
-                    const rateParam = canRate ? `&rate_slot_id=${encodeURIComponent(item.id)}` : '';
-                    router.push(`/(tabs)/expo/${item.booth_id}?from=${fromEnc}${rateParam}` as any);
-                  }}
-                  activeOpacity={0.7}
-                >
-                  <View style={s.b2bTimeCol}>
-                    <Text style={s.b2bTime} numberOfLines={1}>{formatB2BSlotTimeLocal(item.start_time)}</Text>
-                  </View>
-                  <View style={s.b2bContent}>
-                    <View style={s.b2bContentInner}>
-                      <View style={s.b2bTitleRow}>
-                        <Store size={14} color={colors.primary} style={{ marginRight: 6 }} />
-                        <Text style={s.b2bVendor} numberOfLines={1}>{item.vendor_name}</Text>
-                        <Text style={s.b2bLabel}>1:1</Text>
-                      </View>
+                  <PressScale
+                    style={[
+                      s.scheduleRow,
+                      s.b2bRow,
+                      index % 2 === 1 && s.scheduleRowAlt,
+                    ]}
+                    onPress={() => {
+                      const fromEnc = encodeURIComponent('/(tabs)/schedule');
+                      const rateParam = canRate ? `&rate_slot_id=${encodeURIComponent(item.id)}` : '';
+                      router.push(`/(tabs)/expo/${item.booth_id}?from=${fromEnc}${rateParam}` as any);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Meeting with ${item.vendor_name}`}
+                  >
+                    <View style={s.b2bTimeCol}>
+                      <Text style={s.b2bTime} numberOfLines={1}>{formatB2BSlotTimeLocal(item.start_time)}</Text>
+                    </View>
+                    <View style={s.b2bContent}>
+                      <View style={s.b2bContentInner}>
+                        <View style={s.b2bTitleRow}>
+                          <Store size={14} color={themeColor} style={{ marginRight: 6 }} />
+                          <Text style={s.b2bVendor} numberOfLines={1}>{item.vendor_name}</Text>
+                          <Text style={s.b2bLabel}>1:1</Text>
+                        </View>
                         {isLiveB2b && (
                           <View style={s.guideLive}>
-                            <View style={s.liveDot} />
-                            <Text style={s.guideLiveText}>Live now</Text>
+                            <LivePulseDot size={6} />
+                            <Text style={[s.guideLiveText, { color: themeColor }]}>Live now</Text>
                           </View>
                         )}
-                      {canRate ? (
-                        <Text style={s.b2bTapToRate}>Tap to rate this meeting</Text>
-                      ) : null}
+                        {canRate ? (
+                          <Text style={s.b2bTapToRate}>Tap to rate this meeting</Text>
+                        ) : null}
+                      </View>
                     </View>
-                  </View>
-                </TouchableOpacity>
+                  </PressScale>
               );
             }
             const session = item;
@@ -1433,90 +1517,94 @@ export default function ScheduleScreen() {
               !!selectedDateKeyForList &&
               !agendaItemNotYetEnded(new Date(), session, selectedDateKeyForList, agendaTimeZone);
             const sessionAlreadyRated = ratedSessionIds.has(session.id);
-            const rowStyle = [s.scheduleRow, index % 2 === 1 && !isLive && s.scheduleRowAlt];
+            const rowStyle = [
+              s.scheduleRow,
+              index % 2 === 1 && !isLive && s.scheduleRowAlt,
+            ];
             return (
-              <Pressable
-                style={rowStyle}
-                onPress={() => setSelectedSession(session)}
-                android_ripple={{ color: colors.borderLight }}
-              >
-                {isLive ? (
-                  <View style={s.scheduleRowLiveWrap}>
-                    <View style={s.guideTimeCol}>
-                      <Text style={s.guideTime} numberOfLines={1}>{formatTime(session.start_time)}</Text>
-                      <Text style={s.guideTimeEnd} numberOfLines={1}>{formatTime(session.end_time)}</Text>
-                    </View>
-                    <View style={s.guideContent}>
-                      {session.session_type ? (
-                        <Text style={s.guideTypeLabel}>{sessionTypesDisplay(session.session_type)}</Text>
-                      ) : null}
-                      <Text style={s.guideTitle} numberOfLines={2}>{session.title}</Text>
-                      {loc ? (
-                        <View style={s.guideLocation}>
-                          <MapPin size={12} color={colors.textMuted} />
-                          <Text style={s.guideLocationText} numberOfLines={1}>{loc}</Text>
-                        </View>
-                      ) : null}
-                      <View style={s.guideLive}>
-                        <View style={s.liveDot} />
-                        <Text style={s.guideLiveText}>Live now</Text>
+                <PressScale
+                  style={rowStyle}
+                  onPress={() => setSelectedSession(session)}
+                  accessibilityRole="button"
+                  accessibilityLabel={session.title}
+                >
+                  {isLive ? (
+                    <View style={[s.scheduleRowLiveWrap, { borderLeftColor: themeColor }]}>
+                      <View style={s.guideTimeCol}>
+                        <Text style={s.guideTime} numberOfLines={1}>{formatTime(session.start_time)}</Text>
+                        <Text style={s.guideTimeEnd} numberOfLines={1}>{formatTime(session.end_time)}</Text>
                       </View>
-                    </View>
-                    <TouchableOpacity
-                      hitSlop={12}
-                      style={s.guideBookmark}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        toggleBookmark(session.id);
-                      }}
-                    >
-                      <Bookmark
-                        size={18}
-                        color={session.is_bookmarked ? colors.primary : colors.textMuted}
-                        fill={session.is_bookmarked ? colors.primary : 'transparent'}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <>
-                    <View style={s.guideTimeCol}>
-                      <Text style={s.guideTime} numberOfLines={1}>{formatTime(session.start_time)}</Text>
-                      <Text style={s.guideTimeEnd} numberOfLines={1}>{formatTime(session.end_time)}</Text>
-                    </View>
-                    <View style={s.guideContent}>
-                      {session.session_type ? (
-                        <Text style={s.guideTypeLabel}>{sessionTypesDisplay(session.session_type)}</Text>
-                      ) : null}
-                      <Text style={s.guideTitle} numberOfLines={2}>{session.title}</Text>
-                      {loc ? (
-                        <View style={s.guideLocation}>
-                          <MapPin size={12} color={colors.textMuted} />
-                          <Text style={s.guideLocationText} numberOfLines={1}>{loc}</Text>
+                      <View style={s.guideContent}>
+                        {session.session_type ? (
+                          <Text style={s.guideTypeLabel}>{sessionTypesDisplay(session.session_type)}</Text>
+                        ) : null}
+                        <Text style={s.guideTitle} numberOfLines={2}>{session.title}</Text>
+                        {loc ? (
+                          <View style={s.guideLocation}>
+                            <MapPin size={12} color={colors.textMuted} />
+                            <Text style={s.guideLocationText} numberOfLines={1}>{loc}</Text>
+                          </View>
+                        ) : null}
+                        <View style={s.guideLive}>
+                          <LivePulseDot size={6} />
+                          <Text style={[s.guideLiveText, { color: themeColor }]}>Live now</Text>
                         </View>
-                      ) : null}
-                      {canRateSessionInRow ? (
-                        <Text style={s.sessionTapToRate}>
-                          {sessionAlreadyRated ? 'Session already rated' : 'Tap to rate this session'}
-                        </Text>
-                      ) : null}
+                      </View>
+                      <TouchableOpacity
+                        hitSlop={12}
+                        style={s.guideBookmark}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          toggleBookmark(session.id);
+                        }}
+                      >
+                        <Bookmark
+                          size={18}
+                          color={session.is_bookmarked ? themeColor : colors.textMuted}
+                          fill={session.is_bookmarked ? themeColor : 'transparent'}
+                        />
+                      </TouchableOpacity>
                     </View>
-                    <TouchableOpacity
-                      hitSlop={12}
-                      style={s.guideBookmark}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        toggleBookmark(session.id);
-                      }}
-                    >
-                      <Bookmark
-                        size={18}
-                        color={session.is_bookmarked ? colors.primary : colors.textMuted}
-                        fill={session.is_bookmarked ? colors.primary : 'transparent'}
-                      />
-                    </TouchableOpacity>
-                  </>
-                )}
-              </Pressable>
+                  ) : (
+                    <>
+                      <View style={s.guideTimeCol}>
+                        <Text style={s.guideTime} numberOfLines={1}>{formatTime(session.start_time)}</Text>
+                        <Text style={s.guideTimeEnd} numberOfLines={1}>{formatTime(session.end_time)}</Text>
+                      </View>
+                      <View style={s.guideContent}>
+                        {session.session_type ? (
+                          <Text style={s.guideTypeLabel}>{sessionTypesDisplay(session.session_type)}</Text>
+                        ) : null}
+                        <Text style={s.guideTitle} numberOfLines={2}>{session.title}</Text>
+                        {loc ? (
+                          <View style={s.guideLocation}>
+                            <MapPin size={12} color={colors.textMuted} />
+                            <Text style={s.guideLocationText} numberOfLines={1}>{loc}</Text>
+                          </View>
+                        ) : null}
+                        {canRateSessionInRow ? (
+                          <Text style={s.sessionTapToRate}>
+                            {sessionAlreadyRated ? 'Session already rated' : 'Tap to rate this session'}
+                          </Text>
+                        ) : null}
+                      </View>
+                      <TouchableOpacity
+                        hitSlop={12}
+                        style={s.guideBookmark}
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          toggleBookmark(session.id);
+                        }}
+                      >
+                        <Bookmark
+                          size={18}
+                          color={session.is_bookmarked ? themeColor : colors.textMuted}
+                          fill={session.is_bookmarked ? themeColor : 'transparent'}
+                        />
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </PressScale>
             );
           }}
         />
@@ -1544,8 +1632,8 @@ export default function ScheduleScreen() {
                     <X size={24} color={colors.text} />
                   </TouchableOpacity>
                 </View>
-                <View style={[s.modalBadge, { backgroundColor: (sessionTypeColors[selectedSession.session_type?.split(',')[0]?.trim() ?? ''] ?? colors.primary) + '18' }]}>
-                  <Text style={[s.modalBadgeText, { color: sessionTypeColors[selectedSession.session_type?.split(',')[0]?.trim() ?? ''] ?? colors.primary }]}>
+                <View style={[s.modalBadge, { backgroundColor: (sessionTypeColors[selectedSession.session_type?.split(',')[0]?.trim() ?? ''] ?? themeColor) + '18' }]}>
+                  <Text style={[s.modalBadgeText, { color: sessionTypeColors[selectedSession.session_type?.split(',')[0]?.trim() ?? ''] ?? themeColor }]}>
                     {sessionTypesDisplay(selectedSession.session_type ?? 'breakout')}
                   </Text>
                 </View>
@@ -1560,7 +1648,7 @@ export default function ScheduleScreen() {
                               activeOpacity={0.7}
                               disabled={!sp?.name}
                             >
-                              <Text style={[s.modalSpeakerName, sp?.name && s.modalSpeakerNameTappable]}>{sp?.name}</Text>
+                              <Text style={[s.modalSpeakerName, sp?.name && { color: themeColor }]}>{sp?.name}</Text>
                             </TouchableOpacity>
                             {(sp?.title || sp?.company) ? (
                               <Text style={s.modalSpeakerTitle}>{[sp.title, sp.company].filter(Boolean).join(' · ')}</Text>
@@ -1574,7 +1662,7 @@ export default function ScheduleScreen() {
                             activeOpacity={0.7}
                             disabled={!selectedSession.speaker_name}
                           >
-                            <Text style={[s.modalSpeakerName, selectedSession.speaker_name && s.modalSpeakerNameTappable]}>
+                            <Text style={[s.modalSpeakerName, selectedSession.speaker_name && { color: themeColor }]}>
                               {selectedSession.speaker_name}
                             </Text>
                           </TouchableOpacity>
@@ -1600,7 +1688,7 @@ export default function ScheduleScreen() {
                       </Text>
                     )}
                     {loadingRating ? (
-                      <ActivityIndicator size="small" color={colors.primary} style={{ marginVertical: 8 }} />
+                      <ActivityIndicator size="small" color={themeColor} style={{ marginVertical: 8 }} />
                     ) : (
                       <>
                         <View style={[s.modalStarsRow, !canRateSelectedSession && s.modalStarsRowDisabled]}>
@@ -1614,8 +1702,8 @@ export default function ScheduleScreen() {
                             >
                               <Star
                                 size={28}
-                                color={(ratingDraft ?? 0) >= star ? colors.primary : colors.textMuted}
-                                fill={(ratingDraft ?? 0) >= star ? colors.primary : 'transparent'}
+                                color={(ratingDraft ?? 0) >= star ? themeColor : colors.textMuted}
+                                fill={(ratingDraft ?? 0) >= star ? themeColor : 'transparent'}
                               />
                             </TouchableOpacity>
                           ))}
@@ -1633,6 +1721,7 @@ export default function ScheduleScreen() {
                         <TouchableOpacity
                           style={[
                             s.modalRatingSaveBtn,
+                            { backgroundColor: themeColor },
                             (savingRating || !canRateSelectedSession) && s.modalRatingSaveBtnDisabled,
                           ]}
                           onPress={saveSessionRating}
@@ -1645,7 +1734,7 @@ export default function ScheduleScreen() {
                           )}
                         </TouchableOpacity>
                         {ratingJustSaved && (
-                          <Text style={[s.modalRatingStats, { color: colors.primary, marginTop: 6 }]}>Rating saved</Text>
+                          <Text style={[s.modalRatingStats, { color: themeColor, marginTop: 6 }]}>Rating saved</Text>
                         )}
                         {effectiveIsEventAdmin && ratingStats != null && ratingStats.count > 0 && (
                           <Text style={s.modalRatingStats}>
@@ -1657,7 +1746,7 @@ export default function ScheduleScreen() {
                   </View>
                 )}
                 <TouchableOpacity
-                  style={s.modalSaveBtn}
+                  style={[s.modalSaveBtn, { backgroundColor: themeColor }]}
                   onPress={() => {
                     toggleBookmark(selectedSession.id);
                     setSelectedSession((prev) => (prev ? { ...prev, is_bookmarked: !prev.is_bookmarked } : null));
@@ -1665,8 +1754,8 @@ export default function ScheduleScreen() {
                 >
                   <Bookmark
                     size={20}
-                    color={selectedSession.is_bookmarked ? colors.primary : colors.textMuted}
-                    fill={selectedSession.is_bookmarked ? colors.primary : 'transparent'}
+                    color={selectedSession.is_bookmarked ? themeColor : colors.textMuted}
+                    fill={selectedSession.is_bookmarked ? themeColor : 'transparent'}
                   />
                   <Text style={s.modalSaveBtnText}>{selectedSession.is_bookmarked ? 'In My Schedule' : 'Add to My Schedule'}</Text>
                 </TouchableOpacity>
@@ -1680,7 +1769,7 @@ export default function ScheduleScreen() {
 }
 
 const s = StyleSheet.create({
-  container: { flex: 1, backgroundColor: colors.surface },
+  container: { flex: 1, backgroundColor: 'transparent' },
   contentWrap: { flex: 1 },
   topPanel: {
     backgroundColor: colors.background,
