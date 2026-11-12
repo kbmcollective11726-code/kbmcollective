@@ -32,7 +32,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!auth-recovery\\.html$|auth-recovery\\.js$|portal-set-password\\.html$).*)",
+      "source": "/((?!auth-recovery\\.html$|auth-recovery\\.js$|auth-recovery-config\\.js$|portal-set-password\\.html$).*)",
       "destination": "/index.html"
     }
   ]
