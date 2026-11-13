@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { Event, ScheduleSession } from './types';
+import type { Event, ScheduleSession, VendorBooth } from './types';
 
 const eventKey = (eventId: string) => `collectivelive_event_cache_${eventId}`;
 const sessionsKey = (eventId: string) => `collectivelive_sessions_cache_${eventId}`;
@@ -360,6 +360,65 @@ export async function saveCachedFeed(
   } catch {
     // ignore
   }
+}
+
+// ---- Small per-user snapshots (stars, booth pages, notifications, announcements, profiles) ----
+
+/** Keys are always scoped to the signed-in user so a shared phone never shows another user's copy. */
+export const snapshotKeys = {
+  bookmarks: (userId: string) => `collectivelive_bookmarks_cache_${userId}`,
+  booth: (boothId: string, userId: string) => `collectivelive_booth_cache_${boothId}_${userId}`,
+  solutionProvider: (boothId: string, userId: string) =>
+    `collectivelive_solution_provider_cache_${boothId}_${userId}`,
+  solutionProviderList: (eventId: string, userId: string) =>
+    `collectivelive_solution_provider_list_cache_${eventId}_${userId}`,
+  notifications: (eventId: string, userId: string) =>
+    `collectivelive_notifications_cache_${eventId}_${userId}`,
+  announcements: (eventId: string, userId: string) =>
+    `collectivelive_announcements_cache_${eventId}_${userId}`,
+  profile: (profileUserId: string, viewerId: string) =>
+    `collectivelive_profile_view_cache_${profileUserId}_${viewerId}`,
+};
+
+export async function saveCachedSnapshot<T>(key: string, value: T): Promise<void> {
+  try {
+    await AsyncStorage.setItem(key, JSON.stringify({ savedAt: Date.now(), value }));
+  } catch {
+    // Best-effort cache
+  }
+}
+
+/** Returns the saved value only if it passes `isValid` (guards against old or corrupt shapes). */
+export async function loadCachedSnapshot<T>(
+  key: string,
+  isValid: (value: unknown) => value is T,
+): Promise<T | null> {
+  try {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { value?: unknown };
+    return isValid(parsed?.value) ? parsed.value : null;
+  } catch {
+    return null;
+  }
+}
+
+export function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
+/** Minimal shape check for vendor_booths rows read back from the cache. */
+export function isBoothRowArray(value: unknown): value is VendorBooth[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (b) =>
+        b &&
+        typeof (b as VendorBooth).id === 'string' &&
+        typeof (b as VendorBooth).event_id === 'string' &&
+        typeof (b as VendorBooth).vendor_name === 'string',
+    )
+  );
 }
 
 export async function loadCachedFeed(

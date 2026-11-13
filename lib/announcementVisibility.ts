@@ -10,6 +10,20 @@ export type AnnouncementListRow = {
   scheduled_at?: string | null;
 };
 
+/** Shape check for announcements read back from the on-device cache. */
+export function isAnnouncementRows(value: unknown): value is AnnouncementListRow[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (row) =>
+        row &&
+        typeof (row as AnnouncementListRow).id === 'string' &&
+        typeof (row as AnnouncementListRow).title === 'string' &&
+        typeof (row as AnnouncementListRow).created_at === 'string',
+    )
+  );
+}
+
 /** When to show in the app UI (delivery time for scheduled, create time for send-now). */
 export function announcementDisplayTime(row: Pick<AnnouncementListRow, 'sent_at' | 'created_at'>): string {
   return row.sent_at ?? row.created_at;

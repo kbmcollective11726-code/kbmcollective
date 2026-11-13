@@ -27,6 +27,8 @@ import { colors, notificationIcons } from '../../../constants/colors';
 import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme';
 import { chatHref, groupChatHref } from '../../../lib/navReturn';
 import type { User } from '../../../lib/types';
+import { loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../../stores/connectivityStore';
 import { format } from 'date-fns';
 
 type NotificationRow = {
@@ -40,6 +42,20 @@ type NotificationRow = {
   /** Parsed JSON from DB; keys are normalized to strings */
   data?: Record<string, string>;
 };
+
+function isNotificationRows(value: unknown): value is NotificationRow[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (row) =>
+        row &&
+        typeof (row as NotificationRow).id === 'string' &&
+        typeof (row as NotificationRow).type === 'string' &&
+        typeof (row as NotificationRow).title === 'string' &&
+        typeof (row as NotificationRow).created_at === 'string',
+    )
+  );
+}
 
 const NOTIFICATIONS_PATH = '/profile/notifications';
 const FROM_NOTIFICATIONS = `?from=${encodeURIComponent(NOTIFICATIONS_PATH)}`;
@@ -235,13 +251,27 @@ export default function NotificationsScreen() {
       setFetchErrorDetail(null);
       const unread = all.filter((n) => !n.is_read).length;
       setAppBadgeCount(unread);
+      useConnectivityStore.getState().reportSuccess();
+      void saveCachedSnapshot(snapshotKeys.notifications(currentEvent.id, user.id), all);
     } catch (err: unknown) {
       const msg = getErrorMessage(err);
       addDebugLog('Notifications', 'Load failed', msg);
       if (__DEV__) console.log('[Notifications] Supabase call failed — exact error object:', err);
-      setItems([]);
-      setFetchError('Error - page not loading');
-      setFetchErrorDetail(msg);
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedSnapshot(
+        snapshotKeys.notifications(currentEvent.id, user.id),
+        isNotificationRows,
+      );
+      if (cached && cached.length > 0) {
+        setItems(cached);
+        setFetchError(null);
+        setFetchErrorDetail(null);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setItems([]);
+        setFetchError('Error - page not loading');
+        setFetchErrorDetail(msg);
+      }
     } finally {
       fetchInProgressRef.current = false;
       setLoading(false);

@@ -57,11 +57,46 @@ import {
 import VendorAttendeeBriefModal from '../../../components/VendorAttendeeBriefModal';
 import { colors } from '../../../constants/colors';
 import type { VendorBooth, MeetingSlot, MeetingBooking, MeetingBookingStatus } from '../../../lib/types';
+import { loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../../stores/connectivityStore';
 
 type SlotWithBooking = MeetingSlot & {
   myBooking?: MeetingBooking | null;
   bookings?: (MeetingBooking & { attendee_name?: string })[];
 };
+
+/** On-device copy of this page for outages (per user; booking notes are not stored). */
+type BoothPageSnapshot = {
+  booth: VendorBooth;
+  slots: SlotWithBooking[];
+  boothReps: BoothRepresentative[];
+  canViewAllMeetings: boolean;
+  isAdmin: boolean;
+  feedbackBookingIds: string[];
+  feedbackSlotIds: string[];
+  feedbackTimeKeys: string[];
+};
+
+function isBoothPageSnapshot(value: unknown): value is BoothPageSnapshot {
+  const s = value as BoothPageSnapshot | null;
+  return (
+    !!s &&
+    typeof s.booth?.id === 'string' &&
+    Array.isArray(s.slots) &&
+    Array.isArray(s.boothReps) &&
+    Array.isArray(s.feedbackBookingIds) &&
+    Array.isArray(s.feedbackSlotIds) &&
+    Array.isArray(s.feedbackTimeKeys)
+  );
+}
+
+function withoutBookingNotes(slots: SlotWithBooking[]): SlotWithBooking[] {
+  return slots.map((slot) => ({
+    ...slot,
+    myBooking: slot.myBooking ? { ...slot.myBooking, notes: null } : slot.myBooking,
+    bookings: slot.bookings?.map((b) => ({ ...b, notes: null })),
+  }));
+}
 
 export default function BoothDetailScreen() {
   const params = useLocalSearchParams<{ boothId: string; from?: string; rate_slot_id?: string }>();
@@ -170,7 +205,8 @@ export default function BoothDetailScreen() {
         .eq('is_active', true)
         .maybeSingle();
 
-      if (boothRes.error || !boothRes.data) {
+      if (boothRes.error) throw boothRes.error;
+      if (!boothRes.data) {
         setBooth(null);
         setSlots([]);
         setBoothReps([]);
@@ -203,6 +239,9 @@ export default function BoothDetailScreen() {
         user?.id ? client.from('meeting_bookings').select('id, slot_id, attendee_id, status, notes, created_at').eq('attendee_id', user.id) : Promise.resolve({ data: [] }),
         user?.id ? fetchRepBoothIds(eventId, user.id, client) : Promise.resolve([] as string[]),
       ]);
+      // A partial load would overwrite the saved copy with empty times; use the saved copy instead.
+      if (slotsRes.error) throw slotsRes.error;
+      if ('error' in bookingsRes && bookingsRes.error) throw bookingsRes.error;
 
       const roleRow = roleRes.data as { role?: string; roles?: string[] } | null;
       const roles = Array.isArray(roleRow?.roles) ? roleRow.roles : [];
@@ -234,6 +273,11 @@ export default function BoothDetailScreen() {
       const slotsData = (slotsRes.data ?? []) as MeetingSlot[];
       const myBookings = (bookingsRes.data ?? []) as MeetingBooking[];
       const myBySlot = new Map(myBookings.map((b) => [b.slot_id, b]));
+      let savedFeedbackBookingIds = new Set<string>();
+      let savedFeedbackSlotIds = new Set<string>();
+      let savedFeedbackTimeKeys = new Set<string>();
+      let nextSlots: SlotWithBooking[] = [];
+      let nextReps: BoothRepresentative[] = [];
 
       if (user?.id && slotsData.length > 0) {
         const slotIdsForBooth = slotsData.map((s) => s.id);
@@ -276,6 +320,9 @@ export default function BoothDetailScreen() {
           setFeedbackBookingIds(bookingIds);
           setFeedbackSlotIds(ratedSlotIds);
           setFeedbackTimeKeys(ratedTimeKeys);
+          savedFeedbackBookingIds = bookingIds;
+          savedFeedbackSlotIds = ratedSlotIds;
+          savedFeedbackTimeKeys = ratedTimeKeys;
         }
       } else {
         setFeedbackBookingIds(new Set());
@@ -296,13 +343,12 @@ export default function BoothDetailScreen() {
           arr.push({ ...b, attendee_name: nameByUserId.get(b.attendee_id) ?? undefined });
           bySlot.set(b.slot_id, arr);
         }
-        setSlots(
-          slotsData.map((slot) => ({
-            ...slot,
-            myBooking: myBySlot.get(slot.id) ?? null,
-            bookings: bySlot.get(slot.id) ?? [],
-          }))
-        );
+        nextSlots = slotsData.map((slot) => ({
+          ...slot,
+          myBooking: myBySlot.get(slot.id) ?? null,
+          bookings: bySlot.get(slot.id) ?? [],
+        }));
+        setSlots(nextSlots);
         const activeAttendeeIds = [
           ...new Set(bookingsList.filter((b) => b.status !== 'cancelled').map((b) => b.attendee_id)),
         ];
@@ -315,30 +361,60 @@ export default function BoothDetailScreen() {
           setPriorFlags(new Map());
         }
       } else {
-        setSlots(
-          slotsData.map((slot) => ({
-            ...slot,
-            myBooking: myBySlot.get(slot.id) ?? null,
-            bookings: [],
-          }))
-        );
+        nextSlots = slotsData.map((slot) => ({
+          ...slot,
+          myBooking: myBySlot.get(slot.id) ?? null,
+          bookings: [],
+        }));
+        setSlots(nextSlots);
         setPriorFlags(new Map());
       }
 
       try {
-        const reps = await fetchBoothRepresentatives(
+        nextReps = await fetchBoothRepresentatives(
           { id: boothData.id, contact_user_id: boothData.contact_user_id ?? null },
           client
         );
-        setBoothReps(reps);
+        setBoothReps(nextReps);
       } catch {
         setBoothReps([]);
       }
+
+      useConnectivityStore.getState().reportSuccess();
+      if (user?.id) {
+        void saveCachedSnapshot<BoothPageSnapshot>(snapshotKeys.booth(boothData.id, user.id), {
+          booth: boothData,
+          slots: withoutBookingNotes(nextSlots),
+          boothReps: nextReps,
+          canViewAllMeetings: canViewAllMeetingsThisBooth,
+          isAdmin: isEventAdmin,
+          feedbackBookingIds: [...savedFeedbackBookingIds],
+          feedbackSlotIds: [...savedFeedbackSlotIds],
+          feedbackTimeKeys: [...savedFeedbackTimeKeys],
+        });
+      }
     } catch (e) {
       console.error('Booth detail fetch error:', e);
-      setBooth(null);
-      setSlots([]);
-      setBoothReps([]);
+      useConnectivityStore.getState().reportFailure(e);
+      const cached = user?.id
+        ? await loadCachedSnapshot(snapshotKeys.booth(boothId, user.id), isBoothPageSnapshot)
+        : null;
+      if (cached) {
+        setBooth(cached.booth);
+        setSlots(cached.slots);
+        setBoothReps(cached.boothReps);
+        setCanViewAllMeetings(cached.canViewAllMeetings);
+        setIsAdmin(cached.isAdmin);
+        setFeedbackBookingIds(new Set(cached.feedbackBookingIds));
+        setFeedbackSlotIds(new Set(cached.feedbackSlotIds));
+        setFeedbackTimeKeys(new Set(cached.feedbackTimeKeys));
+        setPriorFlags(new Map());
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setBooth(null);
+        setSlots([]);
+        setBoothReps([]);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);

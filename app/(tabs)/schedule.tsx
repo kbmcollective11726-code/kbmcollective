@@ -70,7 +70,16 @@ import { supabase, supabaseStorage, withRetryAndRefresh } from '../../lib/supaba
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import { fetchVendorRepBoothIds } from '../../lib/vendorBoothReps';
 import { withRefreshTimeout } from '../../lib/refreshWithTimeout';
-import { loadCachedSessions, saveCachedSessions, loadCachedB2BMeetings, saveCachedB2BMeetings } from '../../lib/eventOfflineCache';
+import {
+  loadCachedSessions,
+  saveCachedSessions,
+  loadCachedB2BMeetings,
+  saveCachedB2BMeetings,
+  saveCachedSnapshot,
+  loadCachedSnapshot,
+  snapshotKeys,
+  isStringArray,
+} from '../../lib/eventOfflineCache';
 import { useConnectivityStore } from '../../stores/connectivityStore';
 import { colors, sessionTypeColors } from '../../constants/colors';
 import { DEFAULT_EVENT_THEME_COLOR, themeColorWithAlpha, useEventThemeColor } from '../../lib/eventTheme';
@@ -411,9 +420,13 @@ export default function ScheduleScreen() {
         .eq('user_id', user.id);
 
       if (error) throw error;
-      setBookmarkedIds(new Set((data ?? []).map((r: { session_id: string }) => r.session_id)));
+      const ids = (data ?? []).map((r: { session_id: string }) => r.session_id);
+      setBookmarkedIds(new Set(ids));
+      void saveCachedSnapshot(snapshotKeys.bookmarks(user.id), ids);
     } catch (err) {
       console.error('Bookmarks fetch error:', err);
+      const cached = await loadCachedSnapshot(snapshotKeys.bookmarks(user.id), isStringArray);
+      if (cached) setBookmarkedIds(new Set(cached));
     }
   };
 

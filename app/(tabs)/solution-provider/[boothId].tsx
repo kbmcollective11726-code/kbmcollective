@@ -20,6 +20,20 @@ import SolutionNavBack, { navigateSolutionBack } from '../../../components/Solut
 import Avatar from '../../../components/Avatar';
 import { fetchBoothRepresentatives, type BoothRepresentative } from '../../../lib/vendorBoothReps';
 import { openExternalUrl } from '../../../lib/openExternalUrl';
+import { isBoothRowArray, loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../lib/eventOfflineCache';
+import { useAuthStore } from '../../../stores/authStore';
+import { useConnectivityStore } from '../../../stores/connectivityStore';
+
+/** On-device copy of this page for outages (per user). */
+type SolutionProviderSnapshot = {
+  booth: VendorBooth;
+  representatives: BoothRepresentative[];
+};
+
+function isSolutionProviderSnapshot(value: unknown): value is SolutionProviderSnapshot {
+  const s = value as SolutionProviderSnapshot | null;
+  return !!s && typeof s.booth?.id === 'string' && Array.isArray(s.representatives);
+}
 
 export default function SolutionProviderDetailScreen() {
   const params = useLocalSearchParams<{ boothId: string; from?: string; name?: string }>();
@@ -28,6 +42,7 @@ export default function SolutionProviderDetailScreen() {
   const nameParam = typeof params.name === 'string' ? params.name : Array.isArray(params.name) ? params.name[0] : '';
   const router = useRouter();
   const { currentEvent } = useEventStore();
+  const userId = useAuthStore((s) => s.user?.id);
   const [booth, setBooth] = useState<VendorBooth | null>(null);
   const [representatives, setRepresentatives] = useState<BoothRepresentative[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,14 +85,47 @@ export default function SolutionProviderDetailScreen() {
         }
         const boothRow = data as VendorBooth;
         setBooth(boothRow);
+        let reps: BoothRepresentative[] = [];
         try {
-          const reps = await fetchBoothRepresentatives(boothRow, client);
+          reps = await fetchBoothRepresentatives(boothRow, client);
           if (!cancelled) setRepresentatives(reps);
         } catch {
           if (!cancelled) setRepresentatives([]);
         }
+        useConnectivityStore.getState().reportSuccess();
+        if (userId) {
+          void saveCachedSnapshot<SolutionProviderSnapshot>(snapshotKeys.solutionProvider(boothRow.id, userId), {
+            booth: boothRow,
+            representatives: reps,
+          });
+        }
       } catch (err) {
         if (cancelled) return;
+        useConnectivityStore.getState().reportFailure(err);
+        const cached = userId
+          ? await loadCachedSnapshot(snapshotKeys.solutionProvider(boothId, userId), isSolutionProviderSnapshot)
+          : null;
+        if (cancelled) return;
+        if (cached && cached.booth.event_id === currentEvent.id) {
+          setBooth(cached.booth);
+          setRepresentatives(cached.representatives);
+          setError(null);
+          useConnectivityStore.getState().setShowingCachedData(true);
+          return;
+        }
+        // Never opened before: fall back to the saved directory row (no reps).
+        const listed = userId
+          ? await loadCachedSnapshot(snapshotKeys.solutionProviderList(currentEvent.id, userId), isBoothRowArray)
+          : null;
+        const listedBooth = listed?.find((b) => b.id === boothId);
+        if (cancelled) return;
+        if (listedBooth) {
+          setBooth(listedBooth);
+          setRepresentatives([]);
+          setError(null);
+          useConnectivityStore.getState().setShowingCachedData(true);
+          return;
+        }
         setBooth(null);
         setRepresentatives([]);
         setError(err instanceof Error ? err.message : 'Could not load solution provider.');
@@ -89,7 +137,7 @@ export default function SolutionProviderDetailScreen() {
     return () => {
       cancelled = true;
     };
-  }, [boothId, currentEvent?.id]);
+  }, [boothId, currentEvent?.id, userId]);
 
   // The tab screen is reused, so the first render for a new boothId still holds the previous vendor.
   const isStale = !!booth && booth.id !== boothId;

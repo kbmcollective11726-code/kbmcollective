@@ -32,6 +32,27 @@ import ProfileStackScreenHeader from '../../../../components/ProfileStackScreenH
 import ProfileHeroBackdrop from '../../../../components/ProfileHeroBackdrop';
 import type { User } from '../../../../lib/types';
 import { chatHrefViaProfile, navigateBackToFrom, userProfilePath } from '../../../../lib/navReturn';
+import { loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../../lib/eventOfflineCache';
+import { useConnectivityStore } from '../../../../stores/connectivityStore';
+
+/** On-device copy of a viewed profile for outages (per viewer; no email or phone). */
+type ProfileViewSnapshot = {
+  profile: User;
+  eventRoles: string[];
+  isConnected: boolean;
+  requestSentByMe: boolean;
+  requestReceivedFromThem: boolean;
+};
+
+function isProfileViewSnapshot(value: unknown): value is ProfileViewSnapshot {
+  const s = value as ProfileViewSnapshot | null;
+  return (
+    !!s &&
+    typeof s.profile?.id === 'string' &&
+    typeof s.profile?.full_name === 'string' &&
+    Array.isArray(s.eventRoles)
+  );
+}
 
 const ROLE_LABELS: Record<string, string> = {
   attendee: 'Attendee',
@@ -155,6 +176,7 @@ export default function UserProfileScreen() {
           : Promise.resolve({ data: null, error: null }),
       ]);
       if (profileRes.error) throw profileRes.error;
+      let nextProfile: User | null = null;
       const profileRow = Array.isArray(profileRes.data)
         ? (profileRes.data[0] as Record<string, unknown> | undefined)
         : (profileRes.data as Record<string, unknown> | null);
@@ -172,7 +194,7 @@ export default function UserProfileScreen() {
           setFetchError(null);
           return;
         }
-        setProfileUser({
+        nextProfile = {
           ...(fallback as Omit<User, 'push_token' | 'phone' | 'email' | 'is_platform_admin' | 'last_login_at' | 'session_reminder_skip_same_room'>),
           email: null,
           phone: null,
@@ -180,12 +202,13 @@ export default function UserProfileScreen() {
           is_platform_admin: false,
           last_login_at: null,
           session_reminder_skip_same_room: true,
-        } as User);
+        } as User;
+        setProfileUser(nextProfile);
       } else {
         const contactRow = Array.isArray(contactRes.data)
           ? (contactRes.data[0] as { phone?: string | null; email?: string | null } | undefined)
           : (contactRes.data as { phone?: string | null; email?: string | null } | null);
-        setProfileUser({
+        nextProfile = {
           id: String(profileRow.id),
           email: (contactRow?.email ?? (profileRow.email as string | null) ?? null) as string,
           full_name: String(profileRow.full_name ?? 'Member'),
@@ -202,26 +225,48 @@ export default function UserProfileScreen() {
           is_platform_admin: profileRow.is_platform_admin === true,
           last_login_at: (profileRow.last_login_at as string | null) ?? null,
           session_reminder_skip_same_room: profileRow.session_reminder_skip_same_room !== false,
-        });
+        };
+        setProfileUser(nextProfile);
       }
       const row = rolesRes.data as { role?: string; roles?: string[] } | null;
-      if (row) {
-        const roles = (row.roles?.length ? row.roles : row.role ? [row.role] : []).filter(
-          (r) => r !== 'admin' && r !== 'super_admin'
-        );
-        setEventRoles(roles);
-      } else {
-        setEventRoles([]);
-      }
+      const roles = row
+        ? (row.roles?.length ? row.roles : row.role ? [row.role] : []).filter(
+            (r) => r !== 'admin' && r !== 'super_admin'
+          )
+        : [];
+      setEventRoles(roles);
       setIsConnected(!!connectionRes.data);
       setRequestSentByMe(!!requestSentRes.data);
       setRequestReceivedFromThem(!!requestReceivedRes.data);
+      useConnectivityStore.getState().reportSuccess();
+      if (nextProfile) {
+        void saveCachedSnapshot<ProfileViewSnapshot>(snapshotKeys.profile(userId, currentUser.id), {
+          // Contact details are not stored on the device.
+          profile: { ...nextProfile, email: null, phone: null, push_token: null },
+          eventRoles: roles,
+          isConnected: !!connectionRes.data,
+          requestSentByMe: !!requestSentRes.data,
+          requestReceivedFromThem: !!requestReceivedRes.data,
+        });
+      }
       });
     } catch (err) {
       if (__DEV__) console.warn('User profile fetch error:', err);
-      setProfileUser(null);
-      setEventRoles([]);
-      setFetchError('Could not load this profile. Check your connection and try again.');
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = await loadCachedSnapshot(snapshotKeys.profile(userId, currentUser.id), isProfileViewSnapshot);
+      if (cached) {
+        setProfileUser(cached.profile);
+        setEventRoles(cached.eventRoles);
+        setIsConnected(cached.isConnected);
+        setRequestSentByMe(cached.requestSentByMe);
+        setRequestReceivedFromThem(cached.requestReceivedFromThem);
+        setFetchError(null);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setProfileUser(null);
+        setEventRoles([]);
+        setFetchError('Could not load this profile. Check your connection and try again.');
+      }
     } finally {
       setLoading(false);
     }

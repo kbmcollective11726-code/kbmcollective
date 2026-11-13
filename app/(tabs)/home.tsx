@@ -23,7 +23,16 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { supabase, supabaseStorage } from '../../lib/supabase';
-import { loadCachedSessions, saveCachedSessions, saveCachedEvent, loadCachedEvent } from '../../lib/eventOfflineCache';
+import {
+  loadCachedSessions,
+  saveCachedSessions,
+  saveCachedEvent,
+  loadCachedEvent,
+  loadCachedSnapshot,
+  saveCachedSnapshot,
+  snapshotKeys,
+} from '../../lib/eventOfflineCache';
+import { isAnnouncementRows } from '../../lib/announcementVisibility';
 import { useConnectivityStore } from '../../stores/connectivityStore';
 import { useMemo } from 'react';
 import { format, parseISO } from 'date-fns';
@@ -283,7 +292,12 @@ export default function HomeScreen() {
       const sessionRows = (sessionsRes.data ?? []) as SessionForNowNext[];
       setPointRules(rules);
       setScheduleSessions(sessionRows);
-      setAnnouncements(sortAnnouncementsNewestFirst((annRes.data ?? []) as AnnouncementListRow[]));
+      const announcementRows = sortAnnouncementsNewestFirst((annRes.data ?? []) as AnnouncementListRow[]);
+      setAnnouncements(announcementRows);
+      const viewerId = useAuthStore.getState().user?.id;
+      if (!annRes.error && viewerId) {
+        void saveCachedSnapshot(snapshotKeys.announcements(eventId, viewerId), announcementRows);
+      }
       // Seed offline agenda if Agenda tab hasn't written a full cache yet (partial rows OK for Now/Next).
       void (async () => {
         const existing = await loadCachedSessions(eventId);
@@ -308,6 +322,14 @@ export default function HomeScreen() {
           })),
         );
         useConnectivityStore.getState().setShowingCachedData(true);
+      }
+      const viewerId = useAuthStore.getState().user?.id;
+      if (viewerId) {
+        const cachedAnnouncements = await loadCachedSnapshot(
+          snapshotKeys.announcements(eventId, viewerId),
+          isAnnouncementRows,
+        );
+        if (cachedAnnouncements) setAnnouncements(cachedAnnouncements);
       }
     }
   }, [fetchPointRules, fetchB2BHomeRows, reloadSponsors]);

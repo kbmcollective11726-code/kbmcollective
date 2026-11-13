@@ -18,9 +18,13 @@ import { registerRefetchOnSessionRefreshed } from '../../../lib/onSessionRefresh
 import {
   PUBLISHED_ANNOUNCEMENT_OR_FILTER,
   announcementDisplayTime,
+  isAnnouncementRows,
   sortAnnouncementsNewestFirst,
   type AnnouncementListRow,
 } from '../../../lib/announcementVisibility';
+import { loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../lib/eventOfflineCache';
+import { useAuthStore } from '../../../stores/authStore';
+import { useConnectivityStore } from '../../../stores/connectivityStore';
 import { colors } from '../../../constants/colors';
 import { format } from 'date-fns';
 import { Megaphone } from 'lucide-react-native';
@@ -32,6 +36,7 @@ export default function AnnouncementsScreen() {
   const router = useRouter();
   const params = useLocalSearchParams<{ from?: string }>();
   const { currentEvent } = useEventStore();
+  const userId = useAuthStore((s) => s.user?.id);
   const [items, setItems] = useState<AnnouncementRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -74,13 +79,26 @@ export default function AnnouncementsScreen() {
           .order('created_at', { ascending: false })
           .limit(50);
         if (error) throw error;
-        setItems(sortAnnouncementsNewestFirst((data ?? []) as AnnouncementRow[]));
+        const rows = sortAnnouncementsNewestFirst((data ?? []) as AnnouncementRow[]);
+        setItems(rows);
+        if (userId) void saveCachedSnapshot(snapshotKeys.announcements(currentEvent.id, userId), rows);
       });
       setFetchError(null);
+      useConnectivityStore.getState().reportSuccess();
     } catch (err) {
       if (__DEV__) console.warn('Announcements fetch error:', err);
-      setItems([]);
-      setFetchError(err instanceof Error ? err.message : 'Could not load announcements.');
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = userId
+        ? await loadCachedSnapshot(snapshotKeys.announcements(currentEvent.id, userId), isAnnouncementRows)
+        : null;
+      if (cached && cached.length > 0) {
+        setItems(cached);
+        setFetchError(null);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setItems([]);
+        setFetchError(err instanceof Error ? err.message : 'Could not load announcements.');
+      }
     } finally {
       setLoading(false);
     }

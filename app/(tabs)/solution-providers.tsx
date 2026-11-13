@@ -20,12 +20,16 @@ import { colors } from '../../constants/colors';
 import type { VendorBooth } from '../../lib/types';
 import HamburgerMenu from '../../components/HamburgerMenu';
 import { openExternalUrl } from '../../lib/openExternalUrl';
+import { isBoothRowArray, loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../lib/eventOfflineCache';
+import { useAuthStore } from '../../stores/authStore';
+import { useConnectivityStore } from '../../stores/connectivityStore';
 
 export default function SolutionProvidersScreen() {
   const router = useRouter();
   const pathname = usePathname();
   const { from: upstreamFrom } = useLocalSearchParams<{ from?: string | string[] }>();
   const { currentEvent } = useEventStore();
+  const userId = useAuthStore((s) => s.user?.id);
   const [booths, setBooths] = useState<VendorBooth[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -49,15 +53,27 @@ export default function SolutionProvidersScreen() {
         .eq('is_active', true)
         .order('vendor_name');
       if (fetchError) throw fetchError;
-      setBooths((data ?? []) as VendorBooth[]);
+      const rows = (data ?? []) as VendorBooth[];
+      setBooths(rows);
+      useConnectivityStore.getState().reportSuccess();
+      if (userId) void saveCachedSnapshot(snapshotKeys.solutionProviderList(currentEvent.id, userId), rows);
     } catch (err) {
-      setBooths([]);
-      setError(err instanceof Error ? err.message : 'Could not load solution providers.');
+      useConnectivityStore.getState().reportFailure(err);
+      const cached = userId
+        ? await loadCachedSnapshot(snapshotKeys.solutionProviderList(currentEvent.id, userId), isBoothRowArray)
+        : null;
+      if (cached && cached.length > 0) {
+        setBooths(cached);
+        useConnectivityStore.getState().setShowingCachedData(true);
+      } else {
+        setBooths([]);
+        setError(err instanceof Error ? err.message : 'Could not load solution providers.');
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [currentEvent?.id]);
+  }, [currentEvent?.id, userId]);
 
   useEffect(() => {
     setLoading(true);
