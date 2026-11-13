@@ -1,7 +1,9 @@
 import { create } from 'zustand';
-import type { User as AuthUser } from '@supabase/supabase-js';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isAuthRetryableFetchError, type Session, type User as AuthUser } from '@supabase/supabase-js';
 import Constants from 'expo-constants';
-import { supabase } from '../lib/supabase';
+import { supabase, supabaseUrl } from '../lib/supabase';
+import { authStorage } from '../lib/authStorage';
 import { requestAppPasswordReset } from '../lib/appPasswordReset';
 import { registerPushToken } from '../lib/pushNotifications';
 import { logAuthAttempt } from '../lib/logAuthAttempt';
@@ -20,6 +22,138 @@ import { User } from '../lib/types';
 /** iOS fetch occasionally fails to read a response body ("Unable to resolve data for blob"); a retry usually works. */
 function isBlobReadGlitch(message: string): boolean {
   return /unable to resolve data for blob/i.test(message);
+}
+
+// ---- Outage support: keep signed-in users in the app with on-device data ----
+
+const OFFLINE_RECOVERY_INTERVAL_MS = 30_000;
+const STARTUP_CHECK_TIMEOUT_MS = 5_000;
+const profileCacheKey = (userId: string) => `collectivelive_profile_cache_${userId}`;
+/** Placeholder profiles built from the auth user; never written to the profile cache. */
+const fallbackProfiles = new WeakSet<User>();
+
+function makeFallbackProfile(authUser: AuthUser): User {
+  const email = (authUser.email ?? '').trim().toLowerCase();
+  const now = new Date().toISOString();
+  const profile: User = {
+    id: authUser.id,
+    email: email || 'unknown@local',
+    full_name: email.split('@')[0] || 'User',
+    avatar_url: null,
+    title: null,
+    company: null,
+    linkedin_url: null,
+    bio: null,
+    phone: null,
+    push_token: null,
+    session_reminder_skip_same_room: true,
+    is_active: true,
+    created_at: now,
+    updated_at: now,
+  };
+  fallbackProfiles.add(profile);
+  return profile;
+}
+
+async function saveCachedProfile(user: User): Promise<void> {
+  try {
+    // Device token and phone stay off unencrypted storage.
+    const { push_token: _pushToken, phone: _phone, ...rest } = user;
+    await AsyncStorage.setItem(profileCacheKey(user.id), JSON.stringify(rest));
+  } catch {
+    // Best-effort cache
+  }
+}
+
+async function loadCachedProfile(userId: string): Promise<User | null> {
+  try {
+    const raw = await AsyncStorage.getItem(profileCacheKey(userId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Omit<User, 'push_token' | 'phone'>;
+    return parsed?.id === userId ? { ...parsed, phone: null, push_token: null } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** supabase-js default storage key: sb-<project-ref>-auth-token */
+function authSessionStorageKey(): string | null {
+  try {
+    return `sb-${new URL(supabaseUrl).hostname.split('.')[0]}-auth-token`;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Session still saved on the device. supabase-js keeps it when a token refresh fails on the
+ * network (outage) but returns no session, which would otherwise drop the user at sign-in.
+ */
+async function readStoredSession(): Promise<Session | null> {
+  const key = authSessionStorageKey();
+  if (!key) return null;
+  try {
+    const raw = await authStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<Session>;
+    if (!parsed?.refresh_token || !parsed.user?.id) return null;
+    return parsed as Session;
+  } catch {
+    return null;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return Promise.race([
+    promise.catch(() => fallback),
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+let offlineRecoveryTimer: ReturnType<typeof setInterval> | null = null;
+let offlineRecoveryInFlight = false;
+
+function stopOfflineRecovery(): void {
+  if (offlineRecoveryTimer) clearInterval(offlineRecoveryTimer);
+  offlineRecoveryTimer = null;
+  offlineRecoveryInFlight = false;
+}
+
+/** Retry the token refresh until the server is back, then load the live profile. */
+function startOfflineRecovery(): void {
+  if (offlineRecoveryTimer) return;
+  offlineRecoveryTimer = setInterval(() => {
+    if (offlineRecoveryInFlight) return;
+    offlineRecoveryInFlight = true;
+    void (async () => {
+      try {
+        const { data, error } = await supabase.auth.refreshSession();
+        if (error) {
+          // Non-network failure (e.g. revoked refresh token): supabase-js signs out; SIGNED_OUT updates the UI.
+          if (!isAuthRetryableFetchError(error)) stopOfflineRecovery();
+          return;
+        }
+        if (!data.session) return;
+        stopOfflineRecovery();
+        useAuthStore.setState({ session: data.session, isAuthenticated: true });
+        useConnectivityStore.getState().reportSuccess();
+        await useAuthStore.getState().refreshUser();
+      } catch {
+        // Keep retrying on the next tick
+      } finally {
+        offlineRecoveryInFlight = false;
+      }
+    })();
+  }, OFFLINE_RECOVERY_INTERVAL_MS);
+}
+
+/** Server unreachable at launch: open the app with the saved session and on-device profile. */
+async function enterOfflineSession(stored: Session): Promise<void> {
+  const profile = (await loadCachedProfile(stored.user.id)) ?? makeFallbackProfile(stored.user);
+  useAuthStore.setState({ session: stored, user: profile, isAuthenticated: true, isLoading: false });
+  setSentryUser({ id: stored.user.id, email: stored.user.email });
+  useConnectivityStore.getState().reportFailure();
+  startOfflineRecovery();
 }
 
 /**
@@ -64,24 +198,10 @@ async function fetchOrCreatePublicUser(authUser: AuthUser): Promise<User> {
     .maybeSingle();
   if (afterRace) return { ...(afterRace as Omit<User, 'push_token' | 'phone'>), phone: null, push_token: null };
 
-  const now = new Date().toISOString();
   if (__DEV__ && error) console.warn('[auth] users row missing and insert failed; using session fallback:', error.message);
-  return {
-    id: authUser.id,
-    email: email || 'unknown@local',
-    full_name,
-    avatar_url: null,
-    title: null,
-    company: null,
-    linkedin_url: null,
-    bio: null,
-    phone: null,
-    push_token: null,
-    session_reminder_skip_same_room: true,
-    is_active: true,
-    created_at: now,
-    updated_at: now,
-  };
+  const fallback = makeFallbackProfile(authUser);
+  fallback.full_name = full_name;
+  return fallback;
 }
 
 let authListenerBound = false;
@@ -96,6 +216,7 @@ function bindSupabaseAuthListener(
 
   supabase.auth.onAuthStateChange((event, session) => {
     if (event === 'SIGNED_OUT') {
+      stopOfflineRecovery();
       useEventStore.getState().clearForLogout();
       void useRolePreviewStore.getState().resetPreview();
       setSentryUser(null);
@@ -179,117 +300,69 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Auth timeout')), ms));
 
     try {
-      // Check for existing session (timeout so app shows login if Supabase is unreachable)
-      const { data: { session } } = await Promise.race([
-        supabase.auth.getSession(),
-        timeout(8000),
-      ]);
+      let session: Session | null = null;
+      try {
+        ({ data: { session } } = await Promise.race([supabase.auth.getSession(), timeout(6000)]));
+      } catch (error) {
+        if (__DEV__) console.warn('[auth] getSession did not finish; checking saved session', error);
+      }
 
-      if (session?.user) {
-        const deactivated = await rejectIfAccountDeactivated(session.user.id);
-        if (deactivated) {
-          setSentryUser(null);
-          set({
-            session: null,
-            user: null,
-            isAuthenticated: false,
-            isLoading: false,
-          });
+      if (!session?.user) {
+        // An expired token can't refresh during an outage: supabase-js returns no session but keeps it saved.
+        const stored = await readStoredSession();
+        if (stored) {
+          await enterOfflineSession(stored);
           return;
         }
-        const profile = await Promise.race([
-          fetchOrCreatePublicUser(session.user),
-          timeout(6000),
-        ]).catch(async () => {
-          try {
-            return await fetchOrCreatePublicUser(session.user);
-          } catch {
-            const email = (session.user.email ?? '').trim().toLowerCase();
-            const now = new Date().toISOString();
-            return {
-              id: session.user.id,
-              email: email || 'unknown@local',
-              full_name: email.split('@')[0] || 'User',
-              avatar_url: null,
-              title: null,
-              company: null,
-              linkedin_url: null,
-              bio: null,
-              phone: null,
-              push_token: null,
-              session_reminder_skip_same_room: true,
-              is_active: true,
-              created_at: now,
-              updated_at: now,
-            } satisfies User;
-          }
-        });
-
-        if (!isAccountActive(profile.is_active)) {
-          await supabase.auth.signOut();
-          setSentryUser(null);
-          set({
-            session: null,
-            user: null,
-            isAuthenticated: false,
-            isLoading: false,
-          });
-        } else {
-          set({
-            session,
-            user: profile,
-            isAuthenticated: true,
-            isLoading: false,
-          });
-          setSentryUser({ id: session.user.id, email: session.user.email });
-          if (Constants.appOwnership !== 'expo') registerPushToken(session.user.id).catch(() => {});
-        }
-      } else {
         set({ isLoading: false });
+        return;
+      }
+
+      const deactivated = await withTimeout(
+        rejectIfAccountDeactivated(session.user.id),
+        STARTUP_CHECK_TIMEOUT_MS,
+        null,
+      );
+      if (deactivated) {
+        setSentryUser(null);
+        set({
+          session: null,
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+        });
+        return;
+      }
+
+      let profile = await withTimeout<User | null>(fetchOrCreatePublicUser(session.user), 6000, null);
+      if (!profile || fallbackProfiles.has(profile)) {
+        profile = (await loadCachedProfile(session.user.id)) ?? profile ?? makeFallbackProfile(session.user);
+      }
+
+      if (!isAccountActive(profile.is_active)) {
+        await supabase.auth.signOut();
+        setSentryUser(null);
+        set({
+          session: null,
+          user: null,
+          isAuthenticated: false,
+          isLoading: false,
+        });
+      } else {
+        set({
+          session,
+          user: profile,
+          isAuthenticated: true,
+          isLoading: false,
+        });
+        setSentryUser({ id: session.user.id, email: session.user.email });
+        if (Constants.appOwnership !== 'expo') registerPushToken(session.user.id).catch(() => {});
       }
     } catch (error) {
       console.error('Auth initialization error:', error);
-      // Race timeout or network glitch: session may still exist in AsyncStorage — recover instead of showing logged out
-      try {
-        const { data: { session: recovered } } = await supabase.auth.getSession();
-        if (recovered?.user) {
-          const deactivated = await rejectIfAccountDeactivated(recovered.user.id);
-          if (deactivated) {
-            setSentryUser(null);
-            set({
-              session: null,
-              user: null,
-              isAuthenticated: false,
-              isLoading: false,
-            });
-            return;
-          }
-          const profile = await fetchOrCreatePublicUser(recovered.user);
-          if (!isAccountActive(profile.is_active)) {
-            await supabase.auth.signOut();
-            setSentryUser(null);
-            set({
-              session: null,
-              user: null,
-              isAuthenticated: false,
-              isLoading: false,
-            });
-          } else {
-            set({
-              session: recovered,
-              user: profile,
-              isAuthenticated: true,
-              isLoading: false,
-            });
-            setSentryUser({ id: recovered.user.id, email: recovered.user.email });
-            if (Constants.appOwnership !== 'expo') registerPushToken(recovered.user.id).catch(() => {});
-          }
-        }
-      } catch {
-        /* fall through */
-      }
       if (!get().isAuthenticated) {
-        set({ isLoading: false });
+        const stored = await readStoredSession();
+        if (stored) await enterOfflineSession(stored);
       }
     } finally {
       if (get().isLoading) {
@@ -624,6 +697,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   logout: async () => {
+    const userId = get().user?.id ?? get().session?.user?.id;
+    stopOfflineRecovery();
     // Clear event store so next user never sees previous user's event
     useEventStore.getState().clearForLogout();
     void useRolePreviewStore.getState().resetPreview();
@@ -635,7 +710,14 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       isAuthenticated: false,
     });
     setSentryUser(null);
-    Promise.resolve().then(() => supabase.auth.signOut().catch(() => {}));
+    if (userId) AsyncStorage.removeItem(profileCacheKey(userId)).catch(() => {});
+    // A server sign-out can fail during an outage and leave the session saved, which would
+    // reopen the app signed in; the local sign-out always clears it from the device.
+    Promise.resolve().then(() =>
+      withTimeout(supabase.auth.signOut(), STARTUP_CHECK_TIMEOUT_MS, null).finally(() =>
+        supabase.auth.signOut({ scope: 'local' }).catch(() => {}),
+      ),
+    );
   },
 
   updateProfile: async (updates) => {
@@ -668,3 +750,10 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     if (data) set({ user: data as User });
   },
 }));
+
+// Keep an on-device copy of the signed-in user's profile for outages.
+useAuthStore.subscribe((state, prev) => {
+  const user = state.user;
+  if (!user || user === prev.user || fallbackProfiles.has(user)) return;
+  void saveCachedProfile(user);
+});
