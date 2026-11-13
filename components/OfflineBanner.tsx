@@ -18,7 +18,7 @@ import { useConnectivityStore } from '../stores/connectivityStore';
 /** Matches PostFAB: floating tab bar capsule + pad, then FAB gap. */
 const TAB_BAR_HEIGHT = 66;
 const ABOVE_TAB_BAR_GAP = 12;
-const PILL_HEIGHT = 40;
+const PILL_HEIGHT = 48;
 /** PostFAB is 56 wide at right: 20; keep the pill clear of it. */
 const FAB_CLEARANCE = 20 + 56 + 12;
 /** Screens with a message composer right above the tab bar, where the pill would cover the input. */
@@ -91,7 +91,8 @@ export default function OfflineBanner() {
   if (!isOffline && !showingCachedData) return null;
   if (pathname && COMPOSER_ROUTE.test(pathname)) return null;
 
-  const label = isOffline ? 'Check Wi-Fi or cellular data' : 'Showing saved info';
+  const title = isOffline ? 'Connection issue' : 'Saved info';
+  const body = isOffline ? 'Check Wi-Fi or cellular data' : 'Showing info saved on this phone';
   const fabRowBottom = Math.max(insets.bottom + TAB_BAR_HEIGHT + ABOVE_TAB_BAR_GAP, 96);
 
   return (
@@ -99,13 +100,18 @@ export default function OfflineBanner() {
       style={[styles.container, { bottom: fabRowBottom + (56 - PILL_HEIGHT) / 2 }]}
       pointerEvents="box-none"
       accessibilityRole="alert"
-      accessibilityLabel={isOffline ? 'No connection. Check Wi-Fi or cellular data.' : 'Showing info saved on this phone.'}
+      accessibilityLabel={`${title}. ${body}.`}
     >
       <View style={styles.inner}>
         <WifiOff size={16} color="#92400e" strokeWidth={2.5} />
-        <Text style={styles.label} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
-          {label}
-        </Text>
+        <View style={styles.textCol}>
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
+          </Text>
+          <Text style={styles.body} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
+            {body}
+          </Text>
+        </View>
         <TouchableOpacity
           onPress={() => void probe()}
           style={styles.retryBtn}
@@ -141,19 +147,27 @@ const styles = StyleSheet.create({
     backgroundColor: '#fef3c7',
     borderWidth: 1,
     borderColor: '#f59e0b',
-    borderRadius: PILL_HEIGHT / 2,
+    borderRadius: 16,
     paddingLeft: 12,
-    paddingRight: 4,
+    paddingRight: 6,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.12,
     shadowRadius: 6,
   },
-  label: {
+  textCol: {
     flexShrink: 1,
-    fontSize: 12,
+  },
+  title: {
+    fontSize: 13,
+    lineHeight: 16,
     fontWeight: '700',
     color: '#92400e',
+  },
+  body: {
+    fontSize: 11,
+    lineHeight: 14,
+    color: '#78350f',
   },
   retryBtn: {
     paddingHorizontal: 12,
