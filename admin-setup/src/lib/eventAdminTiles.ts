@@ -16,7 +16,8 @@ export type EventAdminConsoleTileId =
   | 'badges'
   | 'scan_log'
   | 'session_attendance'
-  | 'safety';
+  | 'safety'
+  | 'readiness';
 
 export const DEFAULT_EVENT_ADMIN_CONSOLE_TILES: EventAdminConsoleTileId[] = [
   'members',
@@ -44,6 +45,7 @@ export const ALL_EVENT_ADMIN_CONSOLE_TILE_IDS: EventAdminConsoleTileId[] = [
   'scan_log',
   'session_attendance',
   'safety',
+  'readiness',
 ];
 
 const VALID_TILE_IDS = new Set<string>(ALL_EVENT_ADMIN_CONSOLE_TILE_IDS);
@@ -172,7 +174,16 @@ export const EVENT_ADMIN_CONSOLE_TILES: EventAdminConsoleTileDef[] = [
     desc: 'User reports and blocks between members of this event (from the app profile screen)',
     to: (eventId) => `/events/${eventId}/safety`,
   },
+  {
+    id: 'readiness',
+    title: 'Readiness check',
+    desc: 'Settings, attendees, agenda, 1:1 meetings, and notifications checked before and during the event',
+    to: (eventId) => `/events/${eventId}/readiness`,
+  },
 ];
+
+/** Shown as the banner on the event home page instead of a card in the tile grid. */
+export const EVENT_HUB_BANNER_TILE_IDS = new Set<EventAdminConsoleTileId>(['readiness']);
 
 /** URL segment after /events/:eventId/ → tile id (edit and event root are not gated). */
 export const EVENT_ADMIN_CONSOLE_PATH_SEGMENT_TO_TILE: Record<string, EventAdminConsoleTileId> = {
@@ -193,6 +204,7 @@ export const EVENT_ADMIN_CONSOLE_PATH_SEGMENT_TO_TILE: Record<string, EventAdmin
   'scan-log': 'scan_log',
   'session-attendance': 'session_attendance',
   safety: 'safety',
+  readiness: 'readiness',
 };
 
 export function normalizeAdminConsoleTiles(raw: unknown): EventAdminConsoleTileId[] {

@@ -258,6 +258,13 @@ export const EVENT_EXPERIENCE_CONTROLS: ExperienceControlDef[] = [
     tags: ['Web admin'],
     hubTileIds: ['safety'],
   },
+  {
+    id: 'readiness',
+    title: 'Readiness check',
+    desc: 'Event admins see the readiness banner on the event home page and can run the full check',
+    tags: ['Web admin'],
+    hubTileIds: ['readiness'],
+  },
 ];
 
 export interface ExperienceControlGroup {
@@ -304,8 +311,8 @@ export const EXPERIENCE_CONTROL_GROUPS: ExperienceControlGroup[] = [
   {
     id: 'reports',
     title: 'Reports & safety',
-    desc: 'Dashboards, session ratings, and user reports',
-    controlIds: ['dashboard', 'session_feedback', 'safety'],
+    desc: 'Dashboards, session ratings, user reports, and the readiness check',
+    controlIds: ['dashboard', 'session_feedback', 'safety', 'readiness'],
   },
 ];
 

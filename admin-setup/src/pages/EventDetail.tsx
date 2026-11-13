@@ -8,6 +8,7 @@ import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
 import { ADMIN_EVENTS_REFRESH } from '../components/EventContextBar';
 import {
   EVENT_ADMIN_CONSOLE_TILES,
+  EVENT_HUB_BANNER_TILE_IDS,
   normalizeAdminConsoleTiles,
   isEventAdminConsoleTileVisible,
 } from '../lib/eventAdminTiles';
@@ -54,8 +55,14 @@ export default function EventDetail() {
   const [notifPauseHours, setNotifPauseHours] = useState<NotifPauseDuration>('2');
   const [readiness, setReadiness] = useState<EventReadiness | null>(null);
 
+  const showReadiness =
+    !!event && isEventAdminConsoleTileVisible(event.admin_console_tiles, 'readiness', viewAllTiles);
+
   useEffect(() => {
-    if (!eventId) return;
+    if (!eventId || !showReadiness) {
+      setReadiness(null);
+      return;
+    }
     let cancelled = false;
     fetchEventReadiness(eventId)
       .then((r) => {
@@ -67,7 +74,7 @@ export default function EventDetail() {
     return () => {
       cancelled = true;
     };
-  }, [eventId, event?.notifications_paused, event?.notifications_paused_until]);
+  }, [eventId, showReadiness, event?.notifications_paused, event?.notifications_paused_until]);
 
   useEffect(() => {
     if (!eventId) return;
@@ -119,8 +126,8 @@ export default function EventDetail() {
   const visibleTiles = useMemo(() => {
     if (!eventId) return [];
     const tiles = normalizeAdminConsoleTiles(event?.admin_console_tiles);
-    return EVENT_ADMIN_CONSOLE_TILES.filter((t) =>
-      isEventAdminConsoleTileVisible(tiles, t.id, viewAllTiles)
+    return EVENT_ADMIN_CONSOLE_TILES.filter(
+      (t) => !EVENT_HUB_BANNER_TILE_IDS.has(t.id) && isEventAdminConsoleTileVisible(tiles, t.id, viewAllTiles)
     );
   }, [event?.admin_console_tiles, eventId, viewAllTiles]);
 
@@ -211,27 +218,29 @@ export default function EventDetail() {
         ) : null}
       </p>
       {event.description && <p className={styles.desc}>{event.description}</p>}
-      <div className={styles.readinessSlot}>
-        {readiness ? (
-          <OverallBanner
-            overall={readiness.overall}
-            title={`Readiness check: ${readinessTitle(readiness)}`}
-            text={readinessSummary(readiness)}
-            action={
+      {showReadiness ? (
+        <div className={styles.readinessSlot}>
+          {readiness ? (
+            <OverallBanner
+              overall={readiness.overall}
+              title={`Readiness check: ${readinessTitle(readiness)}`}
+              text={readinessSummary(readiness)}
+              action={
+                <Link to={`/events/${eventId}/readiness`} className={styles.editLink}>
+                  Open readiness check
+                </Link>
+              }
+            />
+          ) : (
+            <div className={styles.readinessPending}>
+              <span>Readiness check: settings, attendees, agenda, 1:1 meetings, and notifications.</span>
               <Link to={`/events/${eventId}/readiness`} className={styles.editLink}>
                 Open readiness check
               </Link>
-            }
-          />
-        ) : (
-          <div className={styles.readinessPending}>
-            <span>Readiness check: settings, attendees, agenda, 1:1 meetings, and notifications.</span>
-            <Link to={`/events/${eventId}/readiness`} className={styles.editLink}>
-              Open readiness check
-            </Link>
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </div>
+      ) : null}
       <section className={styles.notifControl}>
         <h2 className={styles.notifTitle}>Event notifications</h2>
         <p className={styles.notifHint}>
