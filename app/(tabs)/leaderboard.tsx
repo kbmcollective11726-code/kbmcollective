@@ -72,6 +72,7 @@ export default function LeaderboardScreen() {
   const { currentEvent } = useEventStore();
   const themeColor = useEventThemeColor();
   const themeFaded = themeColorWithAlpha(themeColor, '18');
+  const initialsBg = themeColorWithAlpha(themeColor, '26');
   const [rows, setRows] = useState<LeaderboardRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -299,8 +300,8 @@ export default function LeaderboardScreen() {
           {entry.avatar_url ? (
             <Avatar uri={entry.avatar_url} name={entry.full_name} size={size - 6} />
           ) : (
-            <View style={[styles.podiumInitials, { width: size - 6, height: size - 6, borderRadius: (size - 6) / 2 }]}>
-              <Text style={[styles.podiumInitialsText, { fontSize: (size - 6) * 0.35 }]}>{getInitials(entry.full_name)}</Text>
+            <View style={[styles.podiumInitials, { width: size - 6, height: size - 6, borderRadius: (size - 6) / 2, backgroundColor: initialsBg }]}>
+              <Text style={[styles.podiumInitialsText, { fontSize: (size - 6) * 0.35, color: themeColor }]}>{getInitials(entry.full_name)}</Text>
             </View>
           )}
         </View>
@@ -323,13 +324,15 @@ export default function LeaderboardScreen() {
         accessibilityLabel={`${item.full_name}, rank ${displayRank}`}
       >
         <Text style={styles.restRank}>{displayRank}</Text>
-        {item.avatar_url ? (
-          <Avatar uri={item.avatar_url} name={item.full_name} size={44} />
-        ) : (
-          <View style={styles.restInitials}>
-            <Text style={styles.restInitialsText}>{getInitials(item.full_name)}</Text>
-          </View>
-        )}
+        <View style={styles.restAvatarCell}>
+          {item.avatar_url ? (
+            <Avatar uri={item.avatar_url} name={item.full_name} size={44} />
+          ) : (
+            <View style={[styles.restInitials, { backgroundColor: initialsBg }]}>
+              <Text style={[styles.restInitialsText, { color: themeColor }]}>{getInitials(item.full_name)}</Text>
+            </View>
+          )}
+        </View>
         <View style={styles.restNameCell}>
           <Text style={[styles.restName, isMe && styles.restNameMe]} numberOfLines={1}>{item.full_name}</Text>
           {isMe && <Text style={[styles.youLabel, { color: themeColor }]}>You</Text>}
@@ -528,11 +531,10 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   podiumInitials: {
-    backgroundColor: colors.gold,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  podiumInitialsText: { fontWeight: '700', color: colors.text },
+  podiumInitialsText: { fontWeight: '700' },
   podiumName: { fontSize: 13, fontWeight: '600', color: colors.text, marginTop: 8, maxWidth: 100 },
   podiumNameFirst: { fontSize: 14, maxWidth: 100 },
   podiumPts: { fontSize: 14, fontWeight: '700', color: colors.text, marginTop: 2 },
@@ -595,16 +597,15 @@ const styles = StyleSheet.create({
   restRowAlt: { backgroundColor: colors.surfaceHover },
   restRowMe: { backgroundColor: colors.primaryFaded, borderColor: colors.primary },
   restRank: { width: 28, fontSize: 16, fontWeight: '600', color: colors.textSecondary },
+  restAvatarCell: { marginLeft: 8 },
   restInitials: {
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: colors.gold,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: 8,
   },
-  restInitialsText: { fontSize: 16, fontWeight: '700', color: colors.text },
+  restInitialsText: { fontSize: 16, fontWeight: '700' },
   restNameCell: { flex: 1, marginLeft: 12, minWidth: 0 },
   restName: { fontSize: 16, color: colors.text },
   restNameMe: { fontWeight: '600' },

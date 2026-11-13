@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet } from 'react-native';
 import { colors } from '../constants/colors';
+import { themeColorWithAlpha, useEventThemeColor } from '../lib/eventTheme';
 import PortraitAvatarPhoto from './PortraitAvatarPhoto';
 
 interface AvatarProps {
@@ -9,6 +10,7 @@ interface AvatarProps {
 }
 
 export default function Avatar({ uri, name, size = 40 }: AvatarProps) {
+  const themeColor = useEventThemeColor();
   const initials = name
     ?.split(' ')
     .map((n) => n[0])
@@ -21,13 +23,13 @@ export default function Avatar({ uri, name, size = 40 }: AvatarProps) {
       style={[
         styles.ring,
         { width: size, height: size, borderRadius: size / 2 },
-        uri ? styles.ringWithPhoto : null,
+        uri ? styles.ringWithPhoto : { backgroundColor: themeColorWithAlpha(themeColor, '26') },
       ]}
     >
       {uri ? (
         <PortraitAvatarPhoto uri={uri} />
       ) : (
-        <Text style={[styles.initials, { fontSize: size * 0.4 }]}>{initials}</Text>
+        <Text style={[styles.initials, { fontSize: size * 0.4, color: themeColor }]}>{initials}</Text>
       )}
     </View>
   );
@@ -35,7 +37,6 @@ export default function Avatar({ uri, name, size = 40 }: AvatarProps) {
 
 const styles = StyleSheet.create({
   ring: {
-    backgroundColor: colors.primaryFaded,
     justifyContent: 'center',
     alignItems: 'center',
     overflow: 'hidden',
@@ -45,6 +46,5 @@ const styles = StyleSheet.create({
   },
   initials: {
     fontWeight: '600',
-    color: colors.primary,
   },
 });
