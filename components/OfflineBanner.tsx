@@ -9,17 +9,29 @@ import {
   type AppStateStatus,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { usePathname } from 'expo-router';
 import { WifiOff } from 'lucide-react-native';
 import { colors } from '../constants/colors';
 import { supabaseUrl, supabaseAnonKey, isSupabaseConfigured } from '../lib/supabase';
 import { useConnectivityStore } from '../stores/connectivityStore';
 
+/** Matches PostFAB: floating tab bar capsule + pad, then FAB gap. */
+const TAB_BAR_HEIGHT = 66;
+const ABOVE_TAB_BAR_GAP = 12;
+const PILL_HEIGHT = 40;
+/** PostFAB is 56 wide at right: 20; keep the pill clear of it. */
+const FAB_CLEARANCE = 20 + 56 + 12;
+/** Screens with a message composer right above the tab bar, where the pill would cover the input. */
+const COMPOSER_ROUTE = /\/chat\/|\/feed\/comment\/|\/groups\/(?!new$)[^/]+$/;
+
 /**
- * Sticky top banner when Supabase/API looks unreachable.
+ * Slim strip above the tab bar when Supabase/API looks unreachable, kept clear of the
+ * header (menu, bell, profile) and the camera button.
  * Successful pings clear it; live screens also call reportSuccess on good fetches.
  */
 export default function OfflineBanner() {
   const insets = useSafeAreaInsets();
+  const pathname = usePathname();
   const isOffline = useConnectivityStore((s) => s.isOffline);
   const showingCachedData = useConnectivityStore((s) => s.showingCachedData);
   const reportSuccess = useConnectivityStore((s) => s.reportSuccess);
@@ -77,31 +89,27 @@ export default function OfflineBanner() {
   }, [isOffline, showingCachedData, probe]);
 
   if (!isOffline && !showingCachedData) return null;
+  if (pathname && COMPOSER_ROUTE.test(pathname)) return null;
 
-  const title = isOffline ? 'Connection issue' : 'Saved info';
-  const body = isOffline
-    ? 'Check Wi-Fi or cellular data.'
-    : 'Showing the last info saved on this phone.';
+  const label = isOffline ? 'No connection' : 'Showing saved info';
+  const fabRowBottom = Math.max(insets.bottom + TAB_BAR_HEIGHT + ABOVE_TAB_BAR_GAP, 96);
 
   return (
     <View
-      style={[styles.container, { top: Math.max(8, insets.top + 4) }]}
+      style={[styles.container, { bottom: fabRowBottom + (56 - PILL_HEIGHT) / 2 }]}
       pointerEvents="box-none"
       accessibilityRole="alert"
+      accessibilityLabel={isOffline ? 'No connection. Check Wi-Fi or cellular data.' : 'Showing info saved on this phone.'}
     >
       <View style={styles.inner}>
-        <View style={styles.iconWrap}>
-          <WifiOff size={18} color="#92400e" strokeWidth={2.5} />
-        </View>
-        <View style={styles.textCol}>
-          <Text style={styles.title}>{title}</Text>
-          <Text style={styles.body} numberOfLines={2}>
-            {body}
-          </Text>
-        </View>
+        <WifiOff size={16} color="#92400e" strokeWidth={2.5} />
+        <Text style={styles.label} numberOfLines={1}>
+          {label}
+        </Text>
         <TouchableOpacity
           onPress={() => void probe()}
           style={styles.retryBtn}
+          hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel="Retry connection"
         >
@@ -115,8 +123,9 @@ export default function OfflineBanner() {
 const styles = StyleSheet.create({
   container: {
     position: 'absolute',
-    left: 12,
-    right: 12,
+    left: 16,
+    right: FAB_CLEARANCE,
+    alignItems: 'flex-start',
     zIndex: 100001,
     ...Platform.select({
       android: { elevation: 26 },
@@ -124,47 +133,32 @@ const styles = StyleSheet.create({
     }),
   },
   inner: {
+    height: PILL_HEIGHT,
+    maxWidth: '100%',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
     backgroundColor: '#fef3c7',
     borderWidth: 1,
     borderColor: '#f59e0b',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    borderRadius: PILL_HEIGHT / 2,
+    paddingLeft: 12,
+    paddingRight: 4,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.12,
     shadowRadius: 6,
   },
-  iconWrap: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#fde68a',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  textCol: {
-    flex: 1,
-    minWidth: 0,
-  },
-  title: {
-    fontSize: 14,
+  label: {
+    flexShrink: 1,
+    fontSize: 13,
     fontWeight: '700',
     color: '#92400e',
   },
-  body: {
-    marginTop: 2,
-    fontSize: 12,
-    lineHeight: 16,
-    color: '#78350f',
-  },
   retryBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 16,
     backgroundColor: '#f59e0b',
   },
   retryText: {
