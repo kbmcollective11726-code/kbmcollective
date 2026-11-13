@@ -49,6 +49,13 @@ export interface HealthJob {
   last_error: string | null;
 }
 
+export interface HealthEventIssue {
+  status: 'fail' | 'warn';
+  label: string;
+  detail: string;
+  items: string[] | null;
+}
+
 export interface HealthEventSummary {
   id: string;
   name: string;
@@ -57,13 +64,23 @@ export interface HealthEventSummary {
   overall: 'ok' | 'warn' | 'fail';
   counts: ReadinessCounts;
   phase_label: string;
+  issues?: HealthEventIssue[];
+}
+
+export interface PeakMoment {
+  event: string;
+  when: string;
+  pushes: number;
+  meetings?: number;
+  sessions?: number;
 }
 
 export interface PlatformHealthSnapshot {
   generated_at: string;
   jobs: HealthJob[];
   server_calls: { total_24h: number; failed_24h: number };
-  database: { size: string; connections: number; max_connections: number };
+  database: { size: string; connections: number; active_connections?: number; max_connections: number };
+  load?: { peak_meetings: PeakMoment | null; peak_sessions: PeakMoment | null };
   activity: { notifications_24h: number; posts_24h: number; sign_ins_24h: number };
   events: HealthEventSummary[];
 }

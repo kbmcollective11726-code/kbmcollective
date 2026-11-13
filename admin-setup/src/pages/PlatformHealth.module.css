@@ -120,6 +120,41 @@
   font-weight: 600;
 }
 
+.table tr.rowWithIssues td {
+  border-bottom: 0;
+}
+
+.table td.issuesCell {
+  padding-top: 0;
+}
+
+.eventIssues {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.eventIssues li {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.knowList {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
 .counts {
   margin-left: 6px;
   font-size: 12px;

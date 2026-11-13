@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, Navigate } from 'react-router-dom';
 import ReadinessChecks, { OverallBanner, StatusPill } from '../components/ReadinessChecks';
 import { isCurrentUserPlatformAdmin } from '../lib/fetchAdminEvents';
@@ -9,6 +9,7 @@ import {
   type CheckStatus,
   type HealthJob,
   type OutsideChecks,
+  type PeakMoment,
   type PlatformHealthSnapshot,
   type ReadinessCheck,
 } from '../lib/readiness';
@@ -56,9 +57,63 @@ function jobCheck(job: HealthJob): ReadinessCheck {
   return { id: `job-${job.name}`, group: 'Background jobs', label, status, detail };
 }
 
+/** Supabase compute sizes by their max_connections setting. */
+const SERVER_SIZES: Record<number, string> = {
+  60: 'Micro (1 GB memory)',
+  90: 'Small (2 GB memory)',
+  120: 'Medium (4 GB memory)',
+  160: 'Large (8 GB memory)',
+  240: 'XL (16 GB memory)',
+  380: '2XL (32 GB memory)',
+  480: '4XL (64 GB memory)',
+};
+
+/** Alerts sent in the same minute; above this a temporary upgrade before the event is worth considering. */
+const HEAVY_PUSHES = 5000;
+
+function serverSizeLabel(maxConnections: number): string {
+  const size = SERVER_SIZES[maxConnections];
+  return size ? `${size}, up to ${maxConnections} connections` : `Up to ${maxConnections} connections`;
+}
+
+function busiestMoment(s: PlatformHealthSnapshot): PeakMoment | null {
+  const candidates = [s.load?.peak_meetings, s.load?.peak_sessions].filter((p): p is PeakMoment => !!p);
+  if (candidates.length === 0) return null;
+  return candidates.reduce((a, b) => (Number(b.pushes) > Number(a.pushes) ? b : a));
+}
+
+function peakSentence(p: PeakMoment): string {
+  const what =
+    p.meetings != null
+      ? `${p.meetings} meeting${p.meetings === 1 ? '' : 's'} start together`
+      : `${p.sessions} session${p.sessions === 1 ? '' : 's'} start together`;
+  return `${p.when} (venue time), ${p.event}: ${what}, about ${Number(p.pushes)} alerts at once.`;
+}
+
+function loadVerdict(pushes: number): string {
+  if (pushes < 1000) return 'Very light for this server.';
+  if (pushes < HEAVY_PUSHES) return 'Comfortable for this server.';
+  return 'Heavy. Consider a temporary server upgrade before the event.';
+}
+
 function serverChecks(s: PlatformHealthSnapshot): ReadinessCheck[] {
   const connPct = s.database.max_connections > 0 ? (s.database.connections / s.database.max_connections) * 100 : 0;
+  const peak = busiestMoment(s);
   return [
+    {
+      id: 'server-size',
+      group: 'Server',
+      label: 'Server size',
+      status: 'info',
+      detail: `${serverSizeLabel(s.database.max_connections)}. Change it only between events, never during one.`,
+    },
+    {
+      id: 'peak-load',
+      group: 'Server',
+      label: 'Busiest moment in the next 7 days',
+      status: peak && Number(peak.pushes) >= HEAVY_PUSHES ? 'warn' : 'ok',
+      detail: peak ? `${peakSentence(peak)} ${loadVerdict(Number(peak.pushes))}` : 'No meetings or sessions in the next 7 days.',
+    },
     {
       id: 'server-calls',
       group: 'Server',
@@ -74,7 +129,9 @@ function serverChecks(s: PlatformHealthSnapshot): ReadinessCheck[] {
       group: 'Server',
       label: 'Database load',
       status: connPct >= 80 ? 'warn' : 'ok',
-      detail: `${s.database.connections} of ${s.database.max_connections} connections in use (${Math.round(connPct)}%). Database size ${s.database.size}.`,
+      detail: `${s.database.connections} of ${s.database.max_connections} connections open (${Math.round(connPct)}%)${
+        s.database.active_connections != null ? `, ${s.database.active_connections} doing work right now` : ''
+      }. Database size ${s.database.size}.`,
     },
     {
       id: 'activity',
@@ -136,6 +193,40 @@ export default function PlatformHealth() {
 
   const eventsNeedingAttention = snapshot?.events.filter((e) => e.overall !== 'ok').length ?? 0;
 
+  const whatToKnow = useMemo<string[]>(() => {
+    const notes: string[] = [];
+    const problems = checks.filter((c) => c.status === 'fail' && c.group !== 'Server');
+    if (problems.length > 0) {
+      notes.push(`Fix first: ${problems.map((c) => c.label).join(', ')}.`);
+    }
+    if (snapshot) {
+      if (snapshot.events.length === 0) {
+        notes.push('No live or upcoming events in the next 45 days.');
+      }
+      for (const e of snapshot.events) {
+        const parts: string[] = [];
+        if (e.counts.fail > 0) parts.push(`${e.counts.fail} to fix`);
+        if (e.counts.warn > 0) parts.push(`${e.counts.warn} to check`);
+        notes.push(`${e.name} (${e.phase_label}): ${parts.length > 0 ? parts.join(', ') : 'ready'}.`);
+      }
+      const peak = busiestMoment(snapshot);
+      notes.push(
+        peak
+          ? `Busiest moment this week: ${peakSentence(peak)} ${loadVerdict(Number(peak.pushes))}`
+          : 'No meetings or sessions in the next 7 days, so reminder load is zero.',
+      );
+      notes.push(
+        `Server: ${serverSizeLabel(snapshot.database.max_connections)}; ${snapshot.database.connections} connections open${
+          snapshot.database.active_connections != null ? `, ${snapshot.database.active_connections} working` : ''
+        }.`,
+      );
+    }
+    if (outside?.checks.some((c) => c.id === 'sentry' && c.status === 'not_set_up')) {
+      notes.push('App error tracking (Sentry) is not connected to this page yet.');
+    }
+    return notes;
+  }, [checks, snapshot, outside]);
+
   const overall = useMemo(() => {
     const statuses = checks.map((c) => c.status);
     if (snapshotError || outsideError) statuses.push('fail');
@@ -188,6 +279,17 @@ export default function PlatformHealth() {
       {snapshotError ? <p className={styles.error}>Server checks: {snapshotError}</p> : null}
       {outsideError ? <p className={styles.error}>Website and service checks: {outsideError}</p> : null}
 
+      {whatToKnow.length > 0 ? (
+        <section className={styles.section}>
+          <h2 className={styles.sectionTitle}>What to know</h2>
+          <ul className={styles.knowList}>
+            {whatToKnow.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       {snapshot ? (
         <section className={styles.section}>
           <h2 className={styles.sectionTitle}>
@@ -212,23 +314,48 @@ export default function PlatformHealth() {
               </thead>
               <tbody>
                 {snapshot.events.map((e) => (
-                  <tr key={e.id}>
-                    <td className={styles.eventName}>{e.name}</td>
-                    <td>
-                      {e.start_date} – {e.end_date}
-                      <span className={styles.muted}> · {e.phase_label}</span>
-                    </td>
-                    <td>
-                      <StatusPill status={e.overall} />
-                      <span className={styles.counts}>
-                        {e.counts.fail > 0 ? ` ${e.counts.fail} to fix` : ''}
-                        {e.counts.warn > 0 ? ` ${e.counts.warn} to check` : ''}
-                      </span>
-                    </td>
-                    <td>
-                      <Link to={`/events/${e.id}/readiness`}>Open readiness check</Link>
-                    </td>
-                  </tr>
+                  <Fragment key={e.id}>
+                    <tr className={e.issues && e.issues.length > 0 ? styles.rowWithIssues : undefined}>
+                      <td className={styles.eventName}>{e.name}</td>
+                      <td>
+                        {e.start_date} – {e.end_date}
+                        <span className={styles.muted}> · {e.phase_label}</span>
+                      </td>
+                      <td>
+                        <StatusPill status={e.overall} />
+                        <span className={styles.counts}>
+                          {e.counts.fail > 0 ? ` ${e.counts.fail} to fix` : ''}
+                          {e.counts.warn > 0 ? ` ${e.counts.warn} to check` : ''}
+                        </span>
+                      </td>
+                      <td>
+                        <Link to={`/events/${e.id}/readiness`}>Open readiness check</Link>
+                      </td>
+                    </tr>
+                    {e.issues && e.issues.length > 0 ? (
+                      <tr>
+                        <td colSpan={4} className={styles.issuesCell}>
+                          <ul className={styles.eventIssues}>
+                            {e.issues.map((issue) => (
+                              <li key={issue.label}>
+                                <StatusPill status={issue.status} />
+                                <span>
+                                  <strong>{issue.label}:</strong> {issue.detail}
+                                  {issue.items && issue.items.length > 0 ? (
+                                    <span className={styles.muted}>
+                                      {' '}
+                                      {issue.items.slice(0, 3).join('; ')}
+                                      {issue.items.length > 3 ? '…' : ''}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </td>
+                      </tr>
+                    ) : null}
+                  </Fragment>
                 ))}
               </tbody>
             </table>
