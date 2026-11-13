@@ -134,7 +134,9 @@ function peakSentence(p: PeakMoment): string {
     p.meetings != null
       ? `${p.meetings} meeting${p.meetings === 1 ? '' : 's'} start together`
       : `${p.sessions} session${p.sessions === 1 ? '' : 's'} start together`;
-  return `${p.when} (venue time), ${p.event}: ${what}, about ${Number(p.pushes)} alerts at once.`;
+  const zone = p.timezone ? `${p.timezone.replace(/_/g, ' ')} time` : 'venue time';
+  const across = p.event.includes(' + ') ? ' across these events' : '';
+  return `${p.when} (${zone}), ${p.event}: ${what}${across}, about ${Number(p.pushes)} alerts at once.`;
 }
 
 function loadVerdict(pushes: number): string {

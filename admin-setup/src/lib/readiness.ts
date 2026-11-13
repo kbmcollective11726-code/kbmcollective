@@ -70,6 +70,7 @@ export interface HealthEventSummary {
 export interface PeakMoment {
   event: string;
   when: string;
+  timezone?: string;
   pushes: number;
   meetings?: number;
   sessions?: number;
