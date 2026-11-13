@@ -116,9 +116,15 @@ type BookingRow = {
 
 type PhoneAlarmCoverage = { at: number; until: number };
 
+/** Phone alarm lead time (lib/phoneReminders.ts MEETING_LEAD_MS). */
+const PHONE_MEETING_LEAD_MS = 5 * 60 * 1000;
+/** The phone skips alarms that would fire within moments of scheduling; push those to be safe. */
+const PHONE_SCHEDULING_MARGIN_MS = 10 * 60 * 1000;
+
 /**
  * The phone already has an alarm for this meeting when its alarms were set after the meeting last
- * changed and reach past its start. Otherwise (moved, new, or beyond the phone's window) push as usual.
+ * changed, reach past its start, and the alarm fires well after they were set. Otherwise (moved,
+ * new, too soon, or beyond the phone's window) push as usual.
  */
 function phoneAlarmCovers(
   coverage: PhoneAlarmCoverage | undefined,
@@ -127,7 +133,11 @@ function phoneAlarmCovers(
 ): boolean {
   if (!coverage) return false;
   const lastChange = Math.max(0, ...changedAt.map((c) => (c ? Date.parse(c) : 0)).filter(Number.isFinite));
-  return coverage.at > lastChange && startMs <= coverage.until;
+  return (
+    coverage.at > lastChange &&
+    startMs <= coverage.until &&
+    startMs - PHONE_MEETING_LEAD_MS > coverage.at + PHONE_SCHEDULING_MARGIN_MS
+  );
 }
 
 function buildRepIdsByBooth(

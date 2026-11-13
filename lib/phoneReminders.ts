@@ -31,6 +31,12 @@ const MEETING_LEAD_MS = 5 * 60 * 1000;
 const SESSION_LEAD_MS = 4 * 60 * 1000;
 /** iOS keeps at most 64 pending local notifications per app. */
 const MAX_ALARMS = 60;
+/**
+ * Only alarm items starting in the next 6 hours (refreshed on every app open/resume). Bounds how long
+ * an already-set alarm can outlive an admin pause, cancellation, or move on a phone that isn't reopened;
+ * the server pushes anything beyond this window.
+ */
+const ALARM_HORIZON_MS = 6 * 60 * 60 * 1000;
 /** Same fallback as the crons when an event has no reminder_timezone. */
 const DEFAULT_ZONE = 'America/New_York';
 /** Report coverage a little early so clock skew errs toward a duplicate push, never a missed one. */
@@ -339,7 +345,7 @@ export async function schedulePhoneReminders(event: Event | null, user: User | n
           ...meetingAlarms(inputs.meetings, event.id, zone),
           ...sessionAlarms(inputs.sessions, inputs.saved, user, zone, event.id),
         ]
-          .filter((a) => a.fireMs > now + 30_000)
+          .filter((a) => a.fireMs > now + 30_000 && a.startMs <= now + ALARM_HORIZON_MS)
           .sort((a, b) => a.fireMs - b.fireMs)
           .slice(0, MAX_ALARMS);
 

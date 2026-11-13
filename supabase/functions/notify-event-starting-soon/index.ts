@@ -102,9 +102,15 @@ type SessionRow = {
   reminder_changed_at?: string | null;
 };
 
+/** Phone alarm lead time (lib/phoneReminders.ts SESSION_LEAD_MS). */
+const PHONE_SESSION_LEAD_MS = 4 * 60 * 1000;
+/** The phone skips alarms that would fire within moments of scheduling; push those to be safe. */
+const PHONE_SCHEDULING_MARGIN_MS = 10 * 60 * 1000;
+
 /**
  * The phone already has an alarm for this session when its alarms were set after the session (and,
- * if saved, the bookmark) last changed and reach past its start. Otherwise push as usual.
+ * if saved, the bookmark) last changed, reach past its start, and the alarm fires well after they
+ * were set. Otherwise push as usual.
  */
 function phoneAlarmCovers(
   localAt: string | null | undefined,
@@ -116,7 +122,7 @@ function phoneAlarmCovers(
   const until = localUntil ? Date.parse(localUntil) : NaN;
   if (!Number.isFinite(at) || !Number.isFinite(until) || startMs == null) return false;
   const lastChange = Math.max(0, ...changedAt.map((c) => (c ? Date.parse(c) : 0)).filter(Number.isFinite));
-  return at > lastChange && startMs <= until;
+  return at > lastChange && startMs <= until && startMs - PHONE_SESSION_LEAD_MS > at + PHONE_SCHEDULING_MARGIN_MS;
 }
 
 /** Single normalized venue string for same-room detection (prefers room, then location). */
