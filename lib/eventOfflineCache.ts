@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { Event, ScheduleSession, VendorBooth } from './types';
+import type { Event, MeetingBooking, MeetingSlot, ScheduleSession, VendorBooth } from './types';
+import type { BoothRepresentative } from './vendorBoothReps';
 
 const eventKey = (eventId: string) => `collectivelive_event_cache_${eventId}`;
 const sessionsKey = (eventId: string) => `collectivelive_sessions_cache_${eventId}`;
@@ -362,6 +363,19 @@ export async function saveCachedFeed(
   }
 }
 
+/** Remove every on-device copy (logout, so a shared phone keeps nothing from the last user). */
+export async function clearOfflineCaches(): Promise<void> {
+  try {
+    const keys = await AsyncStorage.getAllKeys();
+    const ours = keys.filter(
+      (k) => k.startsWith('collectivelive_') && (k.includes('_cache_') || k.startsWith('collectivelive_sponsors_')),
+    );
+    if (ours.length > 0) await AsyncStorage.multiRemove(ours);
+  } catch {
+    // Best-effort
+  }
+}
+
 // ---- Small per-user snapshots (stars, booth pages, notifications, announcements, profiles) ----
 
 /** Keys are always scoped to the signed-in user so a shared phone never shows another user's copy. */
@@ -405,6 +419,37 @@ export async function loadCachedSnapshot<T>(
 
 export function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((v) => typeof v === 'string');
+}
+
+/** 1:1 booth page meeting time with the viewer's booking (and, for reps/admins, everyone's). */
+export type CachedBoothSlot = MeetingSlot & {
+  myBooking?: MeetingBooking | null;
+  bookings?: (MeetingBooking & { attendee_name?: string })[];
+};
+
+/** On-device copy of a 1:1 booth page (per user; booking notes are never stored). */
+export type BoothPageSnapshot = {
+  booth: VendorBooth;
+  slots: CachedBoothSlot[];
+  boothReps: BoothRepresentative[];
+  canViewAllMeetings: boolean;
+  isAdmin: boolean;
+  feedbackBookingIds: string[];
+  feedbackSlotIds: string[];
+  feedbackTimeKeys: string[];
+};
+
+export function isBoothPageSnapshot(value: unknown): value is BoothPageSnapshot {
+  const s = value as BoothPageSnapshot | null;
+  return (
+    !!s &&
+    typeof s.booth?.id === 'string' &&
+    Array.isArray(s.slots) &&
+    Array.isArray(s.boothReps) &&
+    Array.isArray(s.feedbackBookingIds) &&
+    Array.isArray(s.feedbackSlotIds) &&
+    Array.isArray(s.feedbackTimeKeys)
+  );
 }
 
 /** Minimal shape check for vendor_booths rows read back from the cache. */

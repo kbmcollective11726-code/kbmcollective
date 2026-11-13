@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -9,6 +8,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image as CachedImage } from 'expo-image';
 import { Stack, useLocalSearchParams, useRouter } from 'expo-router';
 import { ChevronRight, ExternalLink, MapPin, Store } from 'lucide-react-native';
 import { useEventStore } from '../../../stores/eventStore';
@@ -169,7 +169,7 @@ export default function SolutionProviderDetailScreen() {
         <ScrollView contentContainerStyle={s.content}>
           <View style={s.hero}>
             {booth.logo_url ? (
-              <Image source={{ uri: booth.logo_url }} style={s.logo} resizeMode="contain" />
+              <CachedImage source={{ uri: booth.logo_url }} style={s.logo} contentFit="contain" cachePolicy="memory-disk" />
             ) : (
               <View style={s.logoPlaceholder}>
                 <Store size={34} color={colors.textMuted} />

@@ -6,6 +6,7 @@ import { Home, Calendar, User, ImageIcon, Trophy, Users, Store } from 'lucide-re
 import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
+import { warmOfflineCaches } from '../../lib/offlineWarmup';
 import JoinEventGate from '../../components/JoinEventGate';
 import { colors } from '../../constants/colors';
 import { flatNativeStackHeaderStyle } from '../../constants/headerStyle';
@@ -140,6 +141,22 @@ export default function TabsLayout() {
         .catch(() => {});
     });
   }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
+
+  // Save key screens on the phone in the background (throttled) so they work during an outage.
+  useEffect(() => {
+    if (!currentEvent?.id || !user?.id) return;
+    const run = () => {
+      const event = useEventStore.getState().currentEvent;
+      const uid = useAuthStore.getState().user?.id;
+      if (event && uid) void warmOfflineCaches(event, uid);
+    };
+    const startTimer = setTimeout(run, 4000);
+    const unregister = registerRefetchOnSessionRefreshed(run);
+    return () => {
+      clearTimeout(startTimer);
+      unregister();
+    };
+  }, [currentEvent?.id, user?.id]);
 
   // If session ends while on tabs, go to login. Use isAuthenticated — not `user` (profile row):
   // session can be valid while profile is still null or loading; treating `user === null` as

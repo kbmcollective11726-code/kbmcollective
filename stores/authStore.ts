@@ -4,6 +4,7 @@ import { isAuthRetryableFetchError, type Session, type User as AuthUser } from '
 import Constants from 'expo-constants';
 import { supabase, supabaseUrl } from '../lib/supabase';
 import { authStorage } from '../lib/authStorage';
+import { clearOfflineCaches } from '../lib/eventOfflineCache';
 import { requestAppPasswordReset } from '../lib/appPasswordReset';
 import { registerPushToken } from '../lib/pushNotifications';
 import { logAuthAttempt } from '../lib/logAuthAttempt';
@@ -711,6 +712,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     });
     setSentryUser(null);
     if (userId) AsyncStorage.removeItem(profileCacheKey(userId)).catch(() => {});
+    // Shared phones: drop every saved screen copy from the last user.
+    void clearOfflineCaches();
     // A server sign-out can fail during an outage and leave the session saved, which would
     // reopen the app signed in; the local sign-out always clears it from the device.
     Promise.resolve().then(() =>

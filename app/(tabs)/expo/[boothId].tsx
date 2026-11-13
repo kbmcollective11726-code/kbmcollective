@@ -8,7 +8,6 @@ import {
   RefreshControl,
   ActivityIndicator,
   Linking,
-  Image,
   Alert,
   Modal,
   Pressable,
@@ -17,6 +16,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image as CachedImage } from 'expo-image';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useFocusEffect } from "@react-navigation/native";
 import { Store, MapPin, ExternalLink, ChevronLeft, Calendar, UserPlus, ChevronDown, Clock, Star, CheckCircle, History } from 'lucide-react-native';
@@ -58,43 +58,18 @@ import VendorAttendeeBriefModal from '../../../components/VendorAttendeeBriefMod
 import { colors } from '../../../constants/colors';
 import type { VendorBooth, MeetingSlot, MeetingBooking, MeetingBookingStatus } from '../../../lib/types';
 import {
+  isBoothPageSnapshot,
   loadCachedB2BMeetings,
   loadCachedExpoPage,
   loadCachedSnapshot,
   saveCachedSnapshot,
   snapshotKeys,
+  type BoothPageSnapshot,
+  type CachedBoothSlot,
 } from '../../../lib/eventOfflineCache';
 import { useConnectivityStore } from '../../../stores/connectivityStore';
 
-type SlotWithBooking = MeetingSlot & {
-  myBooking?: MeetingBooking | null;
-  bookings?: (MeetingBooking & { attendee_name?: string })[];
-};
-
-/** On-device copy of this page for outages (per user; booking notes are not stored). */
-type BoothPageSnapshot = {
-  booth: VendorBooth;
-  slots: SlotWithBooking[];
-  boothReps: BoothRepresentative[];
-  canViewAllMeetings: boolean;
-  isAdmin: boolean;
-  feedbackBookingIds: string[];
-  feedbackSlotIds: string[];
-  feedbackTimeKeys: string[];
-};
-
-function isBoothPageSnapshot(value: unknown): value is BoothPageSnapshot {
-  const s = value as BoothPageSnapshot | null;
-  return (
-    !!s &&
-    typeof s.booth?.id === 'string' &&
-    Array.isArray(s.slots) &&
-    Array.isArray(s.boothReps) &&
-    Array.isArray(s.feedbackBookingIds) &&
-    Array.isArray(s.feedbackSlotIds) &&
-    Array.isArray(s.feedbackTimeKeys)
-  );
-}
+type SlotWithBooking = CachedBoothSlot;
 
 /**
  * Booth page never opened while online: rebuild it from the saved 1:1 Meetings list
@@ -1045,7 +1020,7 @@ export default function BoothDetailScreen() {
       >
         <View style={s.heroSection}>
           {booth.logo_url ? (
-            <Image source={{ uri: booth.logo_url }} style={s.boothHeroLogo} resizeMode="contain" />
+            <CachedImage source={{ uri: booth.logo_url }} style={s.boothHeroLogo} contentFit="contain" cachePolicy="memory-disk" />
           ) : (
             <View style={s.boothHeroLogoPlaceholder}>
               <Store size={48} color={colors.textMuted} />

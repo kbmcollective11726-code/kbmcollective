@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   FlatList,
-  Image,
   Platform,
   RefreshControl,
   StyleSheet,
@@ -11,6 +10,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Image as CachedImage } from 'expo-image';
 import { Stack, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import { ExternalLink, MapPin, Store } from 'lucide-react-native';
 import { useFocusEffect } from "@react-navigation/native";
@@ -136,7 +136,7 @@ export default function SolutionProvidersScreen() {
             >
               <View style={s.cardRow}>
                 {item.logo_url ? (
-                  <Image source={{ uri: item.logo_url }} style={s.logo} resizeMode="contain" />
+                  <CachedImage source={{ uri: item.logo_url }} style={s.logo} contentFit="contain" cachePolicy="memory-disk" />
                 ) : (
                   <View style={s.logoPlaceholder}>
                     <Store size={26} color={colors.textMuted} />

@@ -8,9 +8,9 @@ import {
   RefreshControl,
   ActivityIndicator,
   Linking,
-  Image,
   Platform,
 } from 'react-native';
+import { Image as CachedImage } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useFocusEffect } from "@react-navigation/native";
@@ -824,11 +824,11 @@ export default function ExpoScreen() {
               <View style={s.cardInner}>
                 <View style={s.cardRow}>
                   {item.logo_url ? (
-                    <Image
+                    <CachedImage
                       source={{ uri: item.logo_url }}
                       style={s.logo}
-                      resizeMode="contain"
-                      accessibilityIgnoresInvertColors
+                      contentFit="contain"
+                      cachePolicy="memory-disk"
                     />
                   ) : (
                     <View style={s.logoPlaceholder}>

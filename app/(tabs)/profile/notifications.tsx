@@ -28,58 +28,16 @@ import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme
 import { chatHref, groupChatHref } from '../../../lib/navReturn';
 import type { User } from '../../../lib/types';
 import { loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../lib/eventOfflineCache';
+import {
+  fetchEventNotificationRows,
+  isNotificationRows,
+  type NotificationRow,
+} from '../../../lib/notificationRows';
 import { useConnectivityStore } from '../../../stores/connectivityStore';
 import { format } from 'date-fns';
 
-type NotificationRow = {
-  id: string;
-  type: string;
-  title: string;
-  body: string | null;
-  is_read: boolean;
-  created_at: string;
-  event_id: string | null;
-  /** Parsed JSON from DB; keys are normalized to strings */
-  data?: Record<string, string>;
-};
-
-function isNotificationRows(value: unknown): value is NotificationRow[] {
-  return (
-    Array.isArray(value) &&
-    value.every(
-      (row) =>
-        row &&
-        typeof (row as NotificationRow).id === 'string' &&
-        typeof (row as NotificationRow).type === 'string' &&
-        typeof (row as NotificationRow).title === 'string' &&
-        typeof (row as NotificationRow).created_at === 'string',
-    )
-  );
-}
-
 const NOTIFICATIONS_PATH = '/profile/notifications';
 const FROM_NOTIFICATIONS = `?from=${encodeURIComponent(NOTIFICATIONS_PATH)}`;
-
-/** Supabase may return jsonb as object or (rarely) a JSON string */
-function parseNotificationData(raw: unknown): Record<string, string> {
-  const out: Record<string, string> = {};
-  if (raw == null) return out;
-  let obj: Record<string, unknown> | null = null;
-  if (typeof raw === 'string') {
-    try {
-      obj = JSON.parse(raw) as Record<string, unknown>;
-    } catch {
-      return out;
-    }
-  } else if (typeof raw === 'object' && !Array.isArray(raw)) {
-    obj = raw as Record<string, string>;
-  }
-  if (!obj) return out;
-  for (const [k, v] of Object.entries(obj)) {
-    if (v != null && v !== '') out[k] = String(v);
-  }
-  return out;
-}
 
 function dataPick(data: Record<string, string>, ...keys: string[]): string | undefined {
   for (const k of keys) {
@@ -227,24 +185,7 @@ export default function NotificationsScreen() {
     setFetchErrorDetail(null);
     addDebugLog('Notifications', 'Load started');
     try {
-      const all = await withRetryAndRefresh(async () => {
-        const notifRes = await supabase
-          .from('notifications')
-          .select('id, type, title, body, is_read, created_at, event_id, data')
-          .eq('user_id', user.id)
-          .eq('event_id', currentEvent.id)
-          .order('created_at', { ascending: false })
-          .limit(50);
-        if (__DEV__) console.log('[Notifications] Supabase notifications query — data:', notifRes.data, 'error:', notifRes.error);
-        if (notifRes.error) throw notifRes.error;
-        return (notifRes.data ?? [])
-          .map((row: NotificationRow & { data?: unknown }) => ({
-            ...row,
-            data: parseNotificationData(row.data),
-          }))
-          // Chat content lives in Chat hub — don't list DM/group message rows here.
-          .filter((row) => row.type !== 'message');
-      });
+      const all = await withRetryAndRefresh(() => fetchEventNotificationRows(user.id, currentEvent.id));
       if (__DEV__) console.log('[Notifications] Supabase query returned data (count):', all?.length ?? 0);
       setItems(all);
       setFetchError(null);
