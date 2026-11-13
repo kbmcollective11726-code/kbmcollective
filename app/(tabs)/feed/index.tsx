@@ -51,6 +51,20 @@ const FEED_PAGE_SIZE = 25;
 /** Skip network refetch on tab focus if we fetched this recently and already have posts. */
 const FEED_FOCUS_TTL_MS = 20_000;
 
+/**
+ * A refresh only re-fetches the first page. Keep posts the user already scrolled past
+ * (older than that page) so background refreshes don't cut the list and jump them up.
+ */
+function keepOlderLoadedPosts(prev: Post[], firstPage: Post[]): Post[] {
+  if (prev.length <= firstPage.length) return firstPage;
+  const unpinned = firstPage.filter((p) => !p.is_pinned);
+  const oldest = unpinned[unpinned.length - 1]?.created_at;
+  if (!oldest) return firstPage;
+  const pageIds = new Set(firstPage.map((p) => p.id));
+  const older = prev.filter((p) => !pageIds.has(p.id) && !p.is_pinned && p.created_at < oldest);
+  return [...firstPage, ...older];
+}
+
 export default function FeedScreen() {
   const { user } = useAuthStore();
   const { currentEvent } = useEventStore();
@@ -198,7 +212,7 @@ export default function FeedScreen() {
         hasMoreRef.current = more;
         if (!append) {
           const merged = mergeRecentFeedPosts(eventId, withLiked);
-          setPosts(merged);
+          setPosts((prev) => keepOlderLoadedPosts(prev, merged));
           void saveCachedFeed(eventId, user.id, merged);
           lastFetchedAtRef.current = Date.now();
         } else {
@@ -611,6 +625,7 @@ export default function FeedScreen() {
         initialNumToRender={8}
         maxToRenderPerBatch={6}
         windowSize={7}
+        maintainVisibleContentPosition={{ minIndexForVisible: 0, autoscrollToTopThreshold: 40 }}
         removeClippedSubviews={Platform.OS === 'android'}
         onEndReached={() => {
           if (hasMore && !loadingMore && !loading) {
