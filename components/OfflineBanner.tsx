@@ -91,7 +91,7 @@ export default function OfflineBanner() {
   if (!isOffline && !showingCachedData) return null;
   if (pathname && COMPOSER_ROUTE.test(pathname)) return null;
 
-  const label = isOffline ? 'No connection' : 'Showing saved info';
+  const label = isOffline ? 'Check Wi-Fi or cellular data' : 'Showing saved info';
   const fabRowBottom = Math.max(insets.bottom + TAB_BAR_HEIGHT + ABOVE_TAB_BAR_GAP, 96);
 
   return (
@@ -103,7 +103,7 @@ export default function OfflineBanner() {
     >
       <View style={styles.inner}>
         <WifiOff size={16} color="#92400e" strokeWidth={2.5} />
-        <Text style={styles.label} numberOfLines={1}>
+        <Text style={styles.label} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.85}>
           {label}
         </Text>
         <TouchableOpacity
@@ -151,7 +151,7 @@ const styles = StyleSheet.create({
   },
   label: {
     flexShrink: 1,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
     color: '#92400e',
   },
