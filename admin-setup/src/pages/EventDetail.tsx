@@ -12,12 +12,29 @@ import {
   isEventAdminConsoleTileVisible,
 } from '../lib/eventAdminTiles';
 import type { Event } from '../lib/types';
+import { fetchEventReadiness, type EventReadiness } from '../lib/readiness';
+import { OverallBanner } from '../components/ReadinessChecks';
 import {
   isEventNotificationsPausedActive,
   notifPauseDurationFromEvent,
   type NotifPauseDuration,
 } from '../lib/eventNotificationsPaused';
 import styles from './EventDetail.module.css';
+
+function readinessTitle(r: EventReadiness): string {
+  if (r.overall === 'fail') return 'problems found';
+  if (r.overall === 'warn') return 'needs attention';
+  return 'ready';
+}
+
+function readinessSummary(r: EventReadiness): string {
+  const { warn, fail } = r.counts;
+  if (fail === 0 && warn === 0) return `${r.event.phase_label}. Everything we check looks good.`;
+  const parts: string[] = [];
+  if (fail > 0) parts.push(`${fail} to fix`);
+  if (warn > 0) parts.push(`${warn} to check`);
+  return `${r.event.phase_label}. ${parts.join(', ')}.`;
+}
 
 export default function EventDetail() {
   const { eventId } = useParams<{ eventId: string }>();
@@ -35,6 +52,22 @@ export default function EventDetail() {
   const [savingNotifMute, setSavingNotifMute] = useState(false);
   const [notifMuteError, setNotifMuteError] = useState('');
   const [notifPauseHours, setNotifPauseHours] = useState<NotifPauseDuration>('2');
+  const [readiness, setReadiness] = useState<EventReadiness | null>(null);
+
+  useEffect(() => {
+    if (!eventId) return;
+    let cancelled = false;
+    fetchEventReadiness(eventId)
+      .then((r) => {
+        if (!cancelled) setReadiness(r);
+      })
+      .catch(() => {
+        if (!cancelled) setReadiness(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [eventId, event?.notifications_paused, event?.notifications_paused_until]);
 
   useEffect(() => {
     if (!eventId) return;
@@ -178,6 +211,27 @@ export default function EventDetail() {
         ) : null}
       </p>
       {event.description && <p className={styles.desc}>{event.description}</p>}
+      <div className={styles.readinessSlot}>
+        {readiness ? (
+          <OverallBanner
+            overall={readiness.overall}
+            title={`Readiness check: ${readinessTitle(readiness)}`}
+            text={readinessSummary(readiness)}
+            action={
+              <Link to={`/events/${eventId}/readiness`} className={styles.editLink}>
+                Open readiness check
+              </Link>
+            }
+          />
+        ) : (
+          <div className={styles.readinessPending}>
+            <span>Readiness check: settings, attendees, agenda, 1:1 meetings, and notifications.</span>
+            <Link to={`/events/${eventId}/readiness`} className={styles.editLink}>
+              Open readiness check
+            </Link>
+          </div>
+        )}
+      </div>
       <section className={styles.notifControl}>
         <h2 className={styles.notifTitle}>Event notifications</h2>
         <p className={styles.notifHint}>

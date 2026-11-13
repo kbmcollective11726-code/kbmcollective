@@ -147,6 +147,14 @@ export default function Layout() {
             </span>
           </NavLink>
           {platformAdmin ? (
+            <NavLink to="/platform/health" className={navClass}>
+              <span className={styles.navLinkInner}>
+                <SidebarNavIcon name="health" />
+                App health
+              </span>
+            </NavLink>
+          ) : null}
+          {platformAdmin ? (
             <NavLink to="/platform/users" className={navClass}>
               <span className={styles.navLinkInner}>
                 <SidebarNavIcon name="users" />

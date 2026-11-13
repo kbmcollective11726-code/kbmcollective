@@ -127,6 +127,7 @@ export default function Announcements() {
         .from('event_members')
         .select('user_id, role, users!inner(full_name)')
         .eq('event_id', eventId)
+        .eq('is_hidden', false)
         .neq('role', 'super_admin');
       if (data) {
         setMemberOptions(

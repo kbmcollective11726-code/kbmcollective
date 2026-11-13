@@ -463,6 +463,7 @@ async function fetchEventMembersWithOptionalLastLogin(eventId: string) {
       'user_id, role, roles, is_active, users!inner(full_name, email, last_login_at, is_active, is_platform_admin, title, company, linkedin_url, bio)'
     )
     .eq('event_id', eventId)
+    .eq('is_hidden', false)
     .order('role');
 
   if (!withMembershipActive.error) return withMembershipActive;
@@ -473,6 +474,7 @@ async function fetchEventMembersWithOptionalLastLogin(eventId: string) {
       'user_id, role, roles, users!inner(full_name, email, last_login_at, is_active, is_platform_admin, title, company, linkedin_url, bio)'
     )
     .eq('event_id', eventId)
+    .eq('is_hidden', false)
     .order('role');
 
   if (!withActive.error) return withActive;
@@ -483,6 +485,7 @@ async function fetchEventMembersWithOptionalLastLogin(eventId: string) {
       'user_id, role, roles, users!inner(full_name, email, last_login_at, title, company, linkedin_url, bio)'
     )
     .eq('event_id', eventId)
+    .eq('is_hidden', false)
     .order('role');
 
   if (!withLastLogin.error) return withLastLogin;
@@ -494,6 +497,7 @@ async function fetchEventMembersWithOptionalLastLogin(eventId: string) {
       'user_id, role, roles, users!inner(full_name, email, title, company, linkedin_url, bio)'
     )
     .eq('event_id', eventId)
+    .eq('is_hidden', false)
     .order('role');
 }
 

@@ -228,7 +228,8 @@ export default function GroupChatScreen() {
       const { data: eventMemberRows } = await supabase
         .from('event_members')
         .select('user_id, users!inner(full_name, avatar_url)')
-        .eq('event_id', currentEvent.id);
+        .eq('event_id', currentEvent.id)
+        .eq('is_hidden', false);
       const addable = (eventMemberRows ?? [])
         .map((r: Row) => {
           const u = Array.isArray(r.users) ? r.users[0] : r.users;

@@ -117,6 +117,7 @@ export default function AdminVendorBoothEditScreen() {
         .from('event_members')
         .select('user_id, users!inner(full_name)')
         .eq('event_id', currentEvent.id)
+        .eq('is_hidden', false)
         .neq('role', 'super_admin');
       if (error) return;
       type Row = { user_id: string; users: { full_name: string } | { full_name: string }[] };

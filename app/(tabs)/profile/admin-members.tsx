@@ -79,6 +79,7 @@ export default function AdminMembersScreen() {
         .from('event_members')
         .select('user_id, role, roles, points, users!inner(full_name, avatar_url, email)')
         .eq('event_id', currentEvent.id)
+        .eq('is_hidden', false)
         .order('points', { ascending: false });
       if (error) throw error;
       const list: Row[] = (data ?? []).map((r: any) => {

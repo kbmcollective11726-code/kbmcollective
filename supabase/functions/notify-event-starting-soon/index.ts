@@ -302,7 +302,8 @@ type EvRow = {
     const { data: members } = await supabase
       .from("event_members")
       .select("user_id")
-      .eq("event_id", session.event_id);
+      .eq("event_id", session.event_id)
+      .eq("is_hidden", false);
 
     const userIds = (members ?? []).map((m: { user_id: string }) => m.user_id);
     const zone = zoneByEvent.get(session.event_id) ?? defaultZone;

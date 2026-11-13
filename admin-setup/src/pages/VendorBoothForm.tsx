@@ -56,7 +56,8 @@ export default function VendorBoothForm() {
     const { data, error } = await supabase
       .from('event_members')
       .select('user_id, users(full_name)')
-      .eq('event_id', eventId);
+      .eq('event_id', eventId)
+      .eq('is_hidden', false);
     if (error) return;
     type Row = { user_id: string; users: { full_name: string | null } | { full_name: string | null }[] | null };
     const list = (data ?? []).map((r: Row) => {

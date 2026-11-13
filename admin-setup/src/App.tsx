@@ -32,6 +32,8 @@ import PlatformUserAudit from './pages/PlatformUserAudit';
 import PlatformOwaspAsvs from './pages/PlatformOwaspAsvs';
 import TestGuide from './pages/TestGuide';
 import PlatformSupabaseCompute from './pages/PlatformSupabaseCompute';
+import PlatformHealth from './pages/PlatformHealth';
+import EventReadiness from './pages/EventReadiness';
 import EventPhotos from './pages/EventPhotos';
 import EventSponsors from './pages/EventSponsors';
 import EventMatchmaking from './pages/EventMatchmaking';
@@ -367,6 +369,7 @@ export default function App() {
           <Route path="events/:eventId" element={<EventDetail />} />
           <Route path="events/:eventId/dashboard" element={<Dashboard />} />
           <Route path="events/:eventId/edit" element={<EventEdit />} />
+          <Route path="events/:eventId/readiness" element={<EventReadiness />} />
           <Route path="events/:eventId/event-admin-tiles" element={<EventAdminTiles />} />
           <Route path="events/:eventId/schedule" element={<Schedule />} />
           <Route path="events/:eventId/agenda-print" element={<AgendaPrint />} />
@@ -395,6 +398,7 @@ export default function App() {
           <Route path="platform/owasp" element={<PlatformOwaspAsvs />} />
           <Route path="platform/test-guide" element={<TestGuide />} />
           <Route path="platform/compute" element={<PlatformSupabaseCompute />} />
+          <Route path="platform/health" element={<PlatformHealth />} />
         </Route>
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="/login/email-code" element={<Navigate to="/" replace />} />

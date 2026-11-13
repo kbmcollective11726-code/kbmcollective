@@ -1,8 +1,20 @@
 import styles from './Layout.module.css';
 
-type IconName = 'events' | 'users' | 'audit' | 'guide' | 'owasp' | 'compute' | 'help';
+type IconName = 'events' | 'users' | 'audit' | 'guide' | 'owasp' | 'compute' | 'help' | 'health';
 
 const paths: Record<IconName, JSX.Element> = {
+  health: (
+    <svg viewBox="0 0 24 24" aria-hidden className={styles.navIconSvg}>
+      <path
+        d="M3 12h4l2-5 4 10 2-5h6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  ),
   events: (
     <svg viewBox="0 0 24 24" aria-hidden className={styles.navIconSvg}>
       <rect x="3" y="4" width="18" height="18" rx="2" ry="2" fill="none" stroke="currentColor" strokeWidth="2" />

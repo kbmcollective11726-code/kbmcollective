@@ -93,6 +93,7 @@ export default function CommunityScreen() {
           .from('event_members')
           .select('user_id, role, roles, users!inner(full_name, avatar_url, title, company)')
           .eq('event_id', currentEvent.id)
+          .eq('is_hidden', false)
           .neq('role', 'super_admin')
           .order('joined_at', { ascending: false }),
         supabase

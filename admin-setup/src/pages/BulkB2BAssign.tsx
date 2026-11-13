@@ -101,6 +101,8 @@ export default function BulkB2BAssign() {
   const [editDraft, setEditDraft] = useState<EditDraft | null>(null);
   const [savingEditSlotId, setSavingEditSlotId] = useState<string | null>(null);
   const [showAllEventMeetings, setShowAllEventMeetings] = useState(false);
+  const [personQuery, setPersonQuery] = useState('');
+  const [repNamesByBooth, setRepNamesByBooth] = useState<Map<string, string[]>>(() => new Map());
 
   /** Resolve attendee display without embedding `users` on bookings (RLS often hides other users' profiles). */
   const loadExistingMeetings = useCallback(
@@ -295,6 +297,7 @@ export default function BulkB2BAssign() {
       .from('event_members')
       .select('user_id, role, users!inner(id, full_name, email)')
       .eq('event_id', eventId)
+      .eq('is_hidden', false)
       .order('role');
     const memRows = (memData ?? []) as {
       user_id: string;
@@ -311,6 +314,28 @@ export default function BulkB2BAssign() {
       return na.localeCompare(nb);
     });
     setMembers(list);
+
+    const nameById = new Map(list.map((m) => [m.user_id, m.user?.full_name?.trim() || '']));
+    const repMap = new Map<string, string[]>();
+    const addRep = (boothId: string, userId: string | null | undefined) => {
+      const name = userId ? nameById.get(userId) : '';
+      if (!name) return;
+      const names = repMap.get(boothId) ?? [];
+      if (!names.includes(name)) names.push(name);
+      repMap.set(boothId, names);
+    };
+    for (const b of boothList) addRep(b.id, b.contact_user_id);
+    if (boothList.length > 0) {
+      const { data: repRows } = await supabase
+        .from('vendor_booth_reps')
+        .select('booth_id, user_id')
+        .in(
+          'booth_id',
+          boothList.map((b) => b.id)
+        );
+      for (const r of (repRows ?? []) as { booth_id: string; user_id: string }[]) addRep(r.booth_id, r.user_id);
+    }
+    setRepNamesByBooth(repMap);
     return list;
   }, [eventId]);
 
@@ -668,8 +693,15 @@ export default function BulkB2BAssign() {
 
   const selectedBooth = booths.find((b) => b.id === selectedBoothId);
 
-  const activeExistingRows = existingRows.filter((row) => !row.booking || row.booking.status !== 'cancelled');
-  const cancelledExistingRows = existingRows.filter((row) => row.booking?.status === 'cancelled');
+  const query = personQuery.trim().toLowerCase();
+  const matchesQuery = (row: ExistingMeetingRow) =>
+    !query ||
+    [row.booking?.full_name, row.booking?.email, row.vendorName, ...(repNamesByBooth.get(row.boothId) ?? [])].some(
+      (v) => !!v && v.toLowerCase().includes(query)
+    );
+  const visibleExistingRows = existingRows.filter(matchesQuery);
+  const activeExistingRows = visibleExistingRows.filter((row) => !row.booking || row.booking.status !== 'cancelled');
+  const cancelledExistingRows = visibleExistingRows.filter((row) => row.booking?.status === 'cancelled');
 
   return (
     <div className={styles.page}>
@@ -705,6 +737,38 @@ export default function BulkB2BAssign() {
             </option>
           ))}
         </select>
+      </div>
+
+      <div className={styles.fieldBlock}>
+        <label htmlFor="meeting-person-search">Find a person</label>
+        <div className={styles.searchRow}>
+          <input
+            id="meeting-person-search"
+            type="search"
+            value={personQuery}
+            placeholder="Attendee name or email, booth, or booth rep"
+            onChange={(e) => {
+              const v = e.target.value;
+              setPersonQuery(v);
+              if (v.trim()) setShowAllEventMeetings(true);
+            }}
+            disabled={booths.length === 0}
+          />
+          {personQuery ? (
+            <button type="button" className={`${styles.btn} ${styles.btnGhost}`} onClick={() => setPersonQuery('')}>
+              Clear
+            </button>
+          ) : null}
+        </div>
+        {query ? (
+          <p className={styles.searchSummary} role="status">
+            {loadingExisting
+              ? 'Searching all booths…'
+              : `${activeExistingRows.length} meeting${activeExistingRows.length === 1 ? '' : 's'}${
+                  cancelledExistingRows.length > 0 ? ` and ${cancelledExistingRows.length} cancelled` : ''
+                } match “${personQuery.trim()}” across all booths.`}
+          </p>
+        ) : null}
       </div>
 
       <div className={styles.viewModeBar}>
@@ -913,6 +977,8 @@ export default function BulkB2BAssign() {
                 ? 'No time slots for any booth yet. Use the form above (pick a booth first) to create meetings.'
                 : 'No time slots yet for this booth. Use the form above to create meetings.'}
             </p>
+          ) : !existingFetchError && visibleExistingRows.length === 0 ? (
+            <p className={styles.hint}>No meetings match “{personQuery.trim()}”. Check the spelling or try part of the name.</p>
           ) : !existingFetchError ? (
             <>
               <div className={styles.tableWrap}>

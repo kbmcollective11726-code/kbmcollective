@@ -206,7 +206,8 @@ export default function EventBadges() {
       const { data: memRaw, error: memErr } = await supabase
         .from('event_members')
         .select('user_id, role, users!inner(full_name, email, title, company)')
-        .eq('event_id', eventId);
+        .eq('event_id', eventId)
+        .eq('is_hidden', false);
       if (memErr) throw memErr;
 
       const { data: tokRows, error: tokErr } = await supabase

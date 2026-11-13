@@ -242,7 +242,8 @@ export default function AdminScheduleEditScreen() {
       const { data } = await supabase
         .from('event_members')
         .select('user_id, role, users!inner(full_name, title, company)')
-        .eq('event_id', currentEvent.id);
+        .eq('event_id', currentEvent.id)
+        .eq('is_hidden', false);
       if (data) {
         const rows = data as unknown as { user_id: string; role: string; users: { full_name: string; title?: string | null; company?: string | null } }[];
         setMemberOptions(

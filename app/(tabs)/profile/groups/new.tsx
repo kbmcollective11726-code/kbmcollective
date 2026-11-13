@@ -77,6 +77,7 @@ export default function NewGroupScreen() {
         .from('event_members')
         .select('user_id, users!inner(full_name, avatar_url)')
         .eq('event_id', currentEvent.id)
+        .eq('is_hidden', false)
         .neq('role', 'super_admin');
       if (error) throw error;
       type MemberRow = { user_id: string; users: { full_name: string; avatar_url: string | null } | Array<{ full_name: string; avatar_url: string | null }> };

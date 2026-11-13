@@ -145,6 +145,30 @@
   font-size: 14px;
 }
 
+.searchRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.searchRow input {
+  padding: 10px 12px;
+  min-width: 320px;
+  max-width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+  color: var(--color-text);
+  font-size: 14px;
+}
+
+.searchSummary {
+  margin: 8px 0 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
 .templateCard {
   background: var(--color-surface-elevated, var(--color-card));
   border: 1px solid var(--color-border);

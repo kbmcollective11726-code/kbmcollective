@@ -95,6 +95,7 @@ export default function LeaderboardScreen() {
           .from('event_members')
           .select('user_id, points, users!inner(full_name, avatar_url)')
           .eq('event_id', currentEvent.id)
+          .eq('is_hidden', false)
           .order('points', { ascending: false });
 
         if (error) throw error;

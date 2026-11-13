@@ -63,6 +63,7 @@ export default function AdminAnnouncementNewScreen() {
         .from('event_members')
         .select('user_id, role, users!inner(full_name)')
         .eq('event_id', currentEvent.id)
+        .eq('is_hidden', false)
         .neq('role', 'super_admin');
       if (data) {
         setMemberOptions(
