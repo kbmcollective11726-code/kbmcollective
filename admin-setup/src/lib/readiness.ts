@@ -80,7 +80,11 @@ export interface PlatformHealthSnapshot {
   jobs: HealthJob[];
   server_calls: { total_24h: number; failed_24h: number };
   database: { size: string; connections: number; active_connections?: number; max_connections: number };
-  load?: { peak_meetings: PeakMoment | null; peak_sessions: PeakMoment | null };
+  load?: {
+    peak_meetings: PeakMoment | null;
+    peak_sessions: PeakMoment | null;
+    peak_attendees?: { date: string; members: number; events: string[] } | null;
+  };
   activity: { notifications_24h: number; posts_24h: number; sign_ins_24h: number };
   events: HealthEventSummary[];
 }

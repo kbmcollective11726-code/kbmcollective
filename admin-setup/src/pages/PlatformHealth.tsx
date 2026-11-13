@@ -68,6 +68,53 @@ const SERVER_SIZES: Record<number, string> = {
   480: '4XL (64 GB memory)',
 };
 
+const SIZE_ORDER = [60, 90, 120, 160, 240, 380, 480];
+
+/**
+ * Guideline from Nashville (159 attendees, ~88 alerts at the peak) using a small share of Medium:
+ * size for the most attendees live on one day and the most alerts sent in one minute.
+ */
+function recommendedMaxConnections(attendees: number, pushes: number): number {
+  if (attendees <= 300 && pushes < 1000) return 90;
+  if (attendees <= 1500 && pushes < HEAVY_PUSHES) return 120;
+  if (attendees <= 4000 && pushes < 15000) return 160;
+  return 240;
+}
+
+function sizeRecommendation(s: PlatformHealthSnapshot): { status: CheckStatus; text: string } {
+  const current = s.database.max_connections;
+  const attendees = Number(s.load?.peak_attendees?.members ?? 0);
+  const peak = busiestMoment(s);
+  const pushes = Number(peak?.pushes ?? 0);
+  const currentName = (SERVER_SIZES[current] ?? `${current} connections`).replace(/ \(.*\)$/, '');
+  if (attendees === 0 && pushes === 0) {
+    return {
+      status: 'ok',
+      text: `No events in the next 7 days. ${currentName} is fine; only change size between events.`,
+    };
+  }
+  const rec = recommendedMaxConnections(attendees, pushes);
+  const recName = SERVER_SIZES[rec] ?? `${rec} connections`;
+  const basis = `${attendees} attendee${attendees === 1 ? '' : 's'} live on ${s.load?.peak_attendees?.date ?? 'the busiest day'}${
+    pushes > 0 ? ` and about ${pushes} alerts at the busiest minute` : ''
+  }`;
+  const currentRank = SIZE_ORDER.indexOf(current);
+  const recRank = SIZE_ORDER.indexOf(rec);
+  if (currentRank >= 0 && recRank > currentRank) {
+    return {
+      status: 'warn',
+      text: `Recommended: ${recName}, based on ${basis}. Upgrade before the event starts, not during it.`,
+    };
+  }
+  if (currentRank > recRank) {
+    return {
+      status: 'ok',
+      text: `${currentName} has room to spare for ${basis}. ${recName.replace(/ \(.*\)$/, '')} would also be enough; only downsize between events.`,
+    };
+  }
+  return { status: 'ok', text: `${currentName} is the right size for ${basis}. No change needed.` };
+}
+
 /** Alerts sent in the same minute; above this a temporary upgrade before the event is worth considering. */
 const HEAVY_PUSHES = 5000;
 
@@ -99,6 +146,7 @@ function loadVerdict(pushes: number): string {
 function serverChecks(s: PlatformHealthSnapshot): ReadinessCheck[] {
   const connPct = s.database.max_connections > 0 ? (s.database.connections / s.database.max_connections) * 100 : 0;
   const peak = busiestMoment(s);
+  const rec = sizeRecommendation(s);
   return [
     {
       id: 'server-size',
@@ -106,6 +154,13 @@ function serverChecks(s: PlatformHealthSnapshot): ReadinessCheck[] {
       label: 'Server size',
       status: 'info',
       detail: `${serverSizeLabel(s.database.max_connections)}. Change it only between events, never during one.`,
+    },
+    {
+      id: 'server-size-recommendation',
+      group: 'Server',
+      label: 'Recommended server size for the next 7 days',
+      status: rec.status,
+      detail: rec.text,
     },
     {
       id: 'peak-load',
@@ -220,6 +275,7 @@ export default function PlatformHealth() {
           snapshot.database.active_connections != null ? `, ${snapshot.database.active_connections} working` : ''
         }.`,
       );
+      notes.push(`Server size: ${sizeRecommendation(snapshot).text}`);
     }
     if (outside?.checks.some((c) => c.id === 'sentry' && c.status === 'not_set_up')) {
       notes.push('App error tracking (Sentry) is not connected to this page yet.');
