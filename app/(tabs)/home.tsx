@@ -31,6 +31,7 @@ import {
   loadCachedSnapshot,
   saveCachedSnapshot,
   snapshotKeys,
+  loadCachedB2BMeetings,
 } from '../../lib/eventOfflineCache';
 import { isAnnouncementRows } from '../../lib/announcementVisibility';
 import { useConnectivityStore } from '../../stores/connectivityStore';
@@ -147,6 +148,23 @@ export default function HomeScreen() {
   }, [currentEvent?.id, currentEvent?.end_date, currentEvent?.is_active, user?.is_platform_admin]);
 
   // Fetch user's B2B slots for this event; live + next lines are derived in useMemo (updates every minute).
+  /** Offline: show the user's own 1:1s from the meetings saved for the Agenda. */
+  const loadSavedB2BHomeRows = useCallback(async () => {
+    if (!currentEvent?.id || !user?.id || !isAppMenuItemVisible(currentEvent, 'menu_show_1on1')) return;
+    const saved = await loadCachedB2BMeetings(currentEvent.id, user.id);
+    if (!saved) return;
+    setB2bHomeRows(
+      saved
+        .filter((m) => !m.isVendorMeeting && !m.isAdminOverview)
+        .map((m) => ({
+          booth_id: m.booth_id,
+          start_time: m.start_time,
+          end_time: m.end_time,
+          vendor_name: m.vendor_name,
+        })),
+    );
+  }, [currentEvent?.id, currentEvent?.menu_show_1on1, user?.id]);
+
   const fetchB2BHomeRows = useCallback(async () => {
     if (!currentEvent?.id || !user?.id) {
       setB2bHomeRows([]);
@@ -158,11 +176,12 @@ export default function HomeScreen() {
     }
     try {
       const db = Platform.OS === 'android' ? supabaseStorage : supabase;
-      const { data: myBookings } = await db
+      const { data: myBookings, error: bookingsError } = await db
         .from('meeting_bookings')
         .select('slot_id, meeting_slots(booth_id, start_time, end_time)')
         .eq('attendee_id', user.id)
         .neq('status', 'cancelled');
+      if (bookingsError) throw bookingsError;
       type Row = { slot_id: string; meeting_slots: { booth_id: string; start_time: string; end_time: string } | null };
       const rows = (myBookings ?? []) as unknown as Row[];
       const slots: { booth_id: string; start_time: string; end_time: string }[] = [];
@@ -193,9 +212,9 @@ export default function HomeScreen() {
           }))
       );
     } catch {
-      setB2bHomeRows([]);
+      await loadSavedB2BHomeRows();
     }
-  }, [currentEvent?.id, currentEvent?.menu_show_1on1, user?.id]);
+  }, [currentEvent?.id, currentEvent?.menu_show_1on1, user?.id, loadSavedB2BHomeRows]);
 
   // Load dismissed announcements & section hidden from AsyncStorage (per user, per event)
   useEffect(() => {
@@ -331,8 +350,9 @@ export default function HomeScreen() {
         );
         if (cachedAnnouncements) setAnnouncements(cachedAnnouncements);
       }
+      await loadSavedB2BHomeRows();
     }
-  }, [fetchPointRules, fetchB2BHomeRows, reloadSponsors]);
+  }, [fetchPointRules, fetchB2BHomeRows, reloadSponsors, loadSavedB2BHomeRows]);
 
   const prevEventIdRef = useRef<string | null>(null);
 

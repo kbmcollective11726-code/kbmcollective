@@ -57,7 +57,13 @@ import {
 import VendorAttendeeBriefModal from '../../../components/VendorAttendeeBriefModal';
 import { colors } from '../../../constants/colors';
 import type { VendorBooth, MeetingSlot, MeetingBooking, MeetingBookingStatus } from '../../../lib/types';
-import { loadCachedSnapshot, saveCachedSnapshot, snapshotKeys } from '../../../lib/eventOfflineCache';
+import {
+  loadCachedB2BMeetings,
+  loadCachedExpoPage,
+  loadCachedSnapshot,
+  saveCachedSnapshot,
+  snapshotKeys,
+} from '../../../lib/eventOfflineCache';
 import { useConnectivityStore } from '../../../stores/connectivityStore';
 
 type SlotWithBooking = MeetingSlot & {
@@ -88,6 +94,110 @@ function isBoothPageSnapshot(value: unknown): value is BoothPageSnapshot {
     Array.isArray(s.feedbackSlotIds) &&
     Array.isArray(s.feedbackTimeKeys)
   );
+}
+
+/**
+ * Booth page never opened while online: rebuild it from the saved 1:1 Meetings list
+ * (booth details, reps, meeting time) and the saved Agenda meetings (all times at this booth).
+ */
+async function buildBoothPageFromSavedMeetings(
+  boothId: string,
+  eventId: string,
+  userId: string,
+): Promise<BoothPageSnapshot | null> {
+  const [expoPage, agendaMeetings] = await Promise.all([
+    loadCachedExpoPage(eventId, userId),
+    loadCachedB2BMeetings(eventId, userId),
+  ]);
+  const listed = expoPage?.booths.find((b) => b.id === boothId) ?? null;
+  const atBooth = (agendaMeetings ?? []).filter((m) => m.booth_id === boothId && !m.isAdminOverview);
+  if (!listed && atBooth.length === 0) return null;
+
+  const attendeeRow = atBooth.find((m) => !m.isVendorMeeting);
+  const booth: VendorBooth = listed
+    ? {
+        id: listed.id,
+        event_id: listed.event_id,
+        vendor_name: listed.vendor_name,
+        description: listed.description,
+        logo_url: listed.logo_url,
+        booth_location: listed.booth_location,
+        contact_user_id: listed.contact_user_id,
+        website: listed.website,
+        is_active: listed.is_active,
+        created_at: listed.created_at,
+      }
+    : {
+        id: boothId,
+        event_id: eventId,
+        vendor_name: attendeeRow?.vendor_name ?? '1:1 meeting',
+        description: null,
+        logo_url: null,
+        booth_location: null,
+        contact_user_id: null,
+        website: null,
+        is_active: true,
+        created_at: '',
+      };
+
+  const toSlot = (slotId: string, start: string, end: string): SlotWithBooking => ({
+    id: slotId,
+    booth_id: boothId,
+    start_time: start,
+    end_time: end,
+    is_available: false,
+    created_at: '',
+    myBooking: null,
+    bookings: [],
+  });
+  const savedBooking = (slotId: string, attendeeId: string): MeetingBooking => ({
+    id: `saved-${slotId}`,
+    slot_id: slotId,
+    attendee_id: attendeeId,
+    status: 'confirmed',
+    notes: null,
+    created_at: '',
+  });
+
+  let slots: SlotWithBooking[];
+  if (atBooth.length > 0) {
+    slots = atBooth.map((m) => {
+      const slot = toSlot(m.id, m.start_time, m.end_time);
+      if (m.isVendorMeeting) {
+        // Rep view: the agenda label is "Meeting with <attendee>".
+        const attendeeName = m.vendor_name.replace(/^Meeting with\s+/i, '');
+        slot.bookings = [{ ...savedBooking(m.id, ''), attendee_name: attendeeName }];
+      } else {
+        slot.myBooking = savedBooking(m.id, userId);
+      }
+      return slot;
+    });
+  } else if (listed?.meetingStart && listed.meetingEnd) {
+    const slotId = listed.meetingSlotId ?? `saved-${boothId}`;
+    slots = [{ ...toSlot(slotId, listed.meetingStart, listed.meetingEnd), myBooking: savedBooking(slotId, userId) }];
+  } else {
+    slots = [];
+  }
+
+  const boothReps: BoothRepresentative[] = (listed?.representatives ?? []).map((r) => ({
+    user_id: r.user_id,
+    full_name: r.full_name ?? 'Representative',
+    title: r.title ?? null,
+    company: r.company ?? null,
+    avatar_url: r.avatar_url ?? null,
+    isPrimary: r.user_id === listed?.contact_user_id,
+  }));
+
+  return {
+    booth,
+    slots,
+    boothReps,
+    canViewAllMeetings: atBooth.some((m) => m.isVendorMeeting),
+    isAdmin: false,
+    feedbackBookingIds: [],
+    feedbackSlotIds: expoPage?.ratedMeetingSlotIds ?? [],
+    feedbackTimeKeys: [],
+  };
 }
 
 function withoutBookingNotes(slots: SlotWithBooking[]): SlotWithBooking[] {
@@ -396,8 +506,10 @@ export default function BoothDetailScreen() {
     } catch (e) {
       console.error('Booth detail fetch error:', e);
       useConnectivityStore.getState().reportFailure(e);
+      const savedEventId = useEventStore.getState().currentEvent?.id;
       const cached = user?.id
-        ? await loadCachedSnapshot(snapshotKeys.booth(boothId, user.id), isBoothPageSnapshot)
+        ? (await loadCachedSnapshot(snapshotKeys.booth(boothId, user.id), isBoothPageSnapshot)) ??
+          (savedEventId ? await buildBoothPageFromSavedMeetings(boothId, savedEventId, user.id) : null)
         : null;
       if (cached) {
         setBooth(cached.booth);
