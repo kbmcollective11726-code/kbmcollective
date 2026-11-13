@@ -80,6 +80,7 @@ import {
   snapshotKeys,
   isStringArray,
 } from '../../lib/eventOfflineCache';
+import { schedulePhoneReminders } from '../../lib/phoneReminders';
 import { useConnectivityStore } from '../../stores/connectivityStore';
 import { colors, sessionTypeColors } from '../../constants/colors';
 import { DEFAULT_EVENT_THEME_COLOR, themeColorWithAlpha, useEventThemeColor } from '../../lib/eventTheme';
@@ -841,6 +842,8 @@ export default function ScheduleScreen() {
         await supabase.from('user_schedule').insert({ user_id: user.id, session_id: sessionId });
         setBookmarkedIds((prev) => new Set(prev).add(sessionId));
       }
+      // Saved sessions drive phone reminders (saved-only and same-room rules).
+      void schedulePhoneReminders(currentEvent ?? null, user, true);
     } catch (err) {
       console.error('Bookmark toggle error:', err);
     }

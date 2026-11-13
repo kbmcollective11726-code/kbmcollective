@@ -28,7 +28,7 @@ import { effectiveIsEventAdmin as computeEffectiveEventAdmin, effectiveIsVendorR
 import { supabase, supabaseStorage } from '../../../lib/supabase';
 import { colors } from '../../../constants/colors';
 import { themeColorWithAlpha, useEventThemeColor } from '../../../lib/eventTheme';
-import { scheduleMeetingReminders, cancelAllMeetingReminders } from '../../../lib/meetingReminders';
+import { schedulePhoneReminders } from '../../../lib/phoneReminders';
 import Avatar from '../../../components/Avatar';
 import MeetingRepresentatives from '../../../components/MeetingRepresentatives';
 import type { VendorBooth } from '../../../lib/types';
@@ -508,20 +508,10 @@ export default function ExpoScreen() {
     }, [currentEvent?.id, fetchBooths])
   );
 
+  // Meeting list changed (booked/moved/cancelled): refresh phone alarms with live data.
   useEffect(() => {
-    const withMeeting = booths.filter((b) => b.meetingStart && b.meetingEnd);
-    if (withMeeting.length === 0) {
-      cancelAllMeetingReminders();
-      return;
-    }
-    scheduleMeetingReminders(
-      withMeeting.map((b) => ({
-        boothId: b.id,
-        startTime: b.meetingStart!,
-        endTime: b.meetingEnd!,
-        vendorName: b.vendor_name ?? 'Vendor',
-      }))
-    );
+    if (booths.length === 0) return;
+    void schedulePhoneReminders(useEventStore.getState().currentEvent, useAuthStore.getState().user);
   }, [booths]);
 
   const isBoothMeetingPast = (b: BoothWithMeeting) =>

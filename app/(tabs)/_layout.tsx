@@ -7,6 +7,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useEventStore } from '../../stores/eventStore';
 import { registerRefetchOnSessionRefreshed } from '../../lib/onSessionRefreshed';
 import { warmOfflineCaches } from '../../lib/offlineWarmup';
+import { schedulePhoneReminders } from '../../lib/phoneReminders';
 import JoinEventGate from '../../components/JoinEventGate';
 import { colors } from '../../constants/colors';
 import { flatNativeStackHeaderStyle } from '../../constants/headerStyle';
@@ -142,13 +143,16 @@ export default function TabsLayout() {
     });
   }, [user?.id, user?.is_platform_admin, fetchMyMemberships]);
 
-  // Save key screens on the phone in the background (throttled) so they work during an outage.
+  // Save key screens on the phone in the background (throttled) so they work during an outage,
+  // and refresh phone-scheduled reminders so they still fire offline.
   useEffect(() => {
     if (!currentEvent?.id || !user?.id) return;
     const run = () => {
       const event = useEventStore.getState().currentEvent;
-      const uid = useAuthStore.getState().user?.id;
-      if (event && uid) void warmOfflineCaches(event, uid);
+      const currentUser = useAuthStore.getState().user;
+      if (!event || !currentUser) return;
+      void warmOfflineCaches(event, currentUser.id);
+      void schedulePhoneReminders(event, currentUser);
     };
     const startTimer = setTimeout(run, 4000);
     const unregister = registerRefetchOnSessionRefreshed(run);

@@ -87,6 +87,7 @@ type SlotRow = {
   id: string;
   booth_id: string;
   start_time: string;
+  reminder_changed_at?: string | null;
   vendor_booths: {
     event_id: string;
     events: {
@@ -105,7 +106,29 @@ type BoothRow = {
   vendor_name: string;
   contact_user_id: string | null;
 };
-type BookingRow = { id: string; slot_id: string; attendee_id: string; status: string };
+type BookingRow = {
+  id: string;
+  slot_id: string;
+  attendee_id: string;
+  status: string;
+  reminder_changed_at?: string | null;
+};
+
+type PhoneAlarmCoverage = { at: number; until: number };
+
+/**
+ * The phone already has an alarm for this meeting when its alarms were set after the meeting last
+ * changed and reach past its start. Otherwise (moved, new, or beyond the phone's window) push as usual.
+ */
+function phoneAlarmCovers(
+  coverage: PhoneAlarmCoverage | undefined,
+  startMs: number,
+  changedAt: (string | null | undefined)[],
+): boolean {
+  if (!coverage) return false;
+  const lastChange = Math.max(0, ...changedAt.map((c) => (c ? Date.parse(c) : 0)).filter(Number.isFinite));
+  return coverage.at > lastChange && startMs <= coverage.until;
+}
 
 function buildRepIdsByBooth(
   booths: BoothRow[],
@@ -184,7 +207,7 @@ Deno.serve(async (req: Request) => {
   const { data: slotsRaw, error: slotsError } = await supabase
     .from("meeting_slots")
     .select(
-      "id, booth_id, start_time, vendor_booths!inner(event_id, events!inner(reminder_timezone, notifications_paused, notifications_paused_until, start_date, end_date, is_active))",
+      "id, booth_id, start_time, reminder_changed_at, vendor_booths!inner(event_id, events!inner(reminder_timezone, notifications_paused, notifications_paused_until, start_date, end_date, is_active))",
     )
     .gte("start_time", `${fromStr}T00:00:00.000Z`)
     .lte("start_time", `${toStr}T23:59:59.999Z`);
@@ -234,7 +257,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: bookings, error: bookError } = await supabase
     .from("meeting_bookings")
-    .select("id, slot_id, attendee_id, status")
+    .select("id, slot_id, attendee_id, status, reminder_changed_at")
     .in("slot_id", slotIds)
     .neq("status", "cancelled");
 
@@ -336,7 +359,7 @@ Deno.serve(async (req: Request) => {
 
   const { data: users, error: usersError } = await supabase
     .from("users")
-    .select("id, push_token, full_name")
+    .select("id, push_token, full_name, local_reminders_at, local_reminders_until")
     .in("id", allNotifyUserIds);
 
   if (usersError) {
@@ -346,11 +369,22 @@ Deno.serve(async (req: Request) => {
 
   const tokenByUser = new Map<string, string>();
   const nameByUser = new Map<string, string>();
-  for (const u of (users ?? []) as { id: string; push_token: string | null; full_name: string | null }[]) {
+  const coverageByUser = new Map<string, PhoneAlarmCoverage>();
+  for (const u of (users ?? []) as {
+    id: string;
+    push_token: string | null;
+    full_name: string | null;
+    local_reminders_at: string | null;
+    local_reminders_until: string | null;
+  }[]) {
     if (u.push_token) tokenByUser.set(u.id, u.push_token);
     const name = u.full_name?.trim();
     if (name) nameByUser.set(u.id, name);
+    const at = u.local_reminders_at ? Date.parse(u.local_reminders_at) : NaN;
+    const until = u.local_reminders_until ? Date.parse(u.local_reminders_until) : NaN;
+    if (Number.isFinite(at) && Number.isFinite(until)) coverageByUser.set(u.id, { at, until });
   }
+  let phoneCovered = 0;
 
   let totalSent = 0;
   const now = new Date().toISOString();
@@ -418,8 +452,17 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
+    const slotZone = (slot.vendor_booths?.events?.reminder_timezone ?? "").trim() || defaultZone;
+    const slotStartMs = slotStartInZoneMs(slot.start_time, slotZone) ?? Number.POSITIVE_INFINITY;
+    const changedAt = [slot.reminder_changed_at, booking.reminder_changed_at];
+    const coveredByPhone = (userId: string) => {
+      const covered = phoneAlarmCovers(coverageByUser.get(userId), slotStartMs, changedAt);
+      if (covered) phoneCovered++;
+      return covered;
+    };
+
     const pushMessages: Record<string, unknown>[] = [];
-    const attendeeToken = tokenByUser.get(booking.attendee_id);
+    const attendeeToken = coveredByPhone(booking.attendee_id) ? undefined : tokenByUser.get(booking.attendee_id);
     if (attendeeToken) {
       pushMessages.push({
         to: attendeeToken,
@@ -430,7 +473,7 @@ Deno.serve(async (req: Request) => {
       });
     }
     for (const repId of repIds) {
-      const token = tokenByUser.get(repId);
+      const token = coveredByPhone(repId) ? undefined : tokenByUser.get(repId);
       if (!token) continue;
       pushMessages.push({
         to: token,
@@ -444,7 +487,7 @@ Deno.serve(async (req: Request) => {
     totalSent += await sendExpoBatch(pushMessages);
   }
 
-  return json({ sent: totalSent, bookings: toProcess.length }, 200, ch);
+  return json({ sent: totalSent, bookings: toProcess.length, phone_covered: phoneCovered }, 200, ch);
 });
 
 function json(body: object, status: number, headers: Record<string, string>) {

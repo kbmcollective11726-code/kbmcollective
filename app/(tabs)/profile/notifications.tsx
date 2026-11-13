@@ -34,6 +34,7 @@ import {
   type NotificationRow,
 } from '../../../lib/notificationRows';
 import { useConnectivityStore } from '../../../stores/connectivityStore';
+import { schedulePhoneReminders } from '../../../lib/phoneReminders';
 import { format } from 'date-fns';
 
 const NOTIFICATIONS_PATH = '/profile/notifications';
@@ -153,6 +154,7 @@ export default function NotificationsScreen() {
         Toast.show({ type: 'error', text1: 'Could not save', text2: error, visibilityTime: 4000 });
       } else {
         await refreshUser();
+        void schedulePhoneReminders(useEventStore.getState().currentEvent, useAuthStore.getState().user, true);
       }
     } finally {
       setReminderPrefBusy(false);

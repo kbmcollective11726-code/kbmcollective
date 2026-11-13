@@ -99,7 +99,25 @@ type SessionRow = {
   day_number: number;
   location: string | null;
   room: string | null;
+  reminder_changed_at?: string | null;
 };
+
+/**
+ * The phone already has an alarm for this session when its alarms were set after the session (and,
+ * if saved, the bookmark) last changed and reach past its start. Otherwise push as usual.
+ */
+function phoneAlarmCovers(
+  localAt: string | null | undefined,
+  localUntil: string | null | undefined,
+  startMs: number | null,
+  changedAt: (string | null | undefined)[],
+): boolean {
+  const at = localAt ? Date.parse(localAt) : NaN;
+  const until = localUntil ? Date.parse(localUntil) : NaN;
+  if (!Number.isFinite(at) || !Number.isFinite(until) || startMs == null) return false;
+  const lastChange = Math.max(0, ...changedAt.map((c) => (c ? Date.parse(c) : 0)).filter(Number.isFinite));
+  return at > lastChange && startMs <= until;
+}
 
 /** Single normalized venue string for same-room detection (prefers room, then location). */
 function effectiveRoomVenue(location: string | null, room: string | null): string | null {
@@ -198,7 +216,7 @@ type EvRow = {
 
   const { data: sessionRows, error: sessionsError } = await supabase
     .from("schedule_sessions")
-    .select("id, event_id, title, start_time, day_number, location, room")
+    .select("id, event_id, title, start_time, day_number, location, room, reminder_changed_at")
     .eq("is_active", true)
     .in("event_id", eventIds);
 
@@ -272,6 +290,8 @@ type EvRow = {
   let totalSent = 0;
   /** Members excluded only by same-room rule (for observability). */
   let totalSameRoomSkipped = 0;
+  /** Recipients whose phone alarm already covers the session (push skipped). */
+  let totalPhoneCovered = 0;
   for (const session of toProcess) {
     const { data: members } = await supabase
       .from("event_members")
@@ -317,17 +337,23 @@ type EvRow = {
 
     const daySessionIds = daySessions.map((s) => s.id);
     const bookmarksByUser = new Map<string, Set<string>>();
+    /** When each user saved this session (bookmarks made elsewhere are newer than their phone alarms). */
+    const savedAtByUser = new Map<string, string>();
     if (userIds.length > 0 && daySessionIds.length > 0) {
       const { data: schedRows } = await supabase
         .from("user_schedule")
-        .select("user_id, session_id")
+        .select("user_id, session_id, created_at")
         .in("user_id", userIds)
         .in("session_id", daySessionIds);
       for (const row of schedRows ?? []) {
-        const uid = (row as { user_id: string }).user_id;
-        const sid = (row as { session_id: string }).session_id;
+        const { user_id: uid, session_id: sid, created_at } = row as {
+          user_id: string;
+          session_id: string;
+          created_at: string | null;
+        };
         if (!bookmarksByUser.has(uid)) bookmarksByUser.set(uid, new Set());
         bookmarksByUser.get(uid)!.add(sid);
+        if (sid === session.id && created_at) savedAtByUser.set(uid, created_at);
       }
     }
 
@@ -438,12 +464,31 @@ type EvRow = {
       continue;
     }
 
+    type RecipientRow = {
+      id: string;
+      push_token: string | null;
+      local_reminders_at: string | null;
+      local_reminders_until: string | null;
+    };
     const { data: users } = recipientUserIds.length > 0
-      ? await supabase.from("users").select("id, push_token").in("id", recipientUserIds)
-      : { data: [] as { id: string; push_token: string | null }[] };
+      ? await supabase
+        .from("users")
+        .select("id, push_token, local_reminders_at, local_reminders_until")
+        .in("id", recipientUserIds)
+      : { data: [] as RecipientRow[] };
 
-    const tokens = Array.from(new Set((users ?? [])
-      .map((u: { push_token: string | null }) => u.push_token)
+    // The in-app row above is always created; only the push is skipped when the phone has the alarm.
+    const pushRecipients = ((users ?? []) as RecipientRow[]).filter(
+      (u) =>
+        !phoneAlarmCovers(u.local_reminders_at, u.local_reminders_until, startMsS, [
+          session.reminder_changed_at,
+          savedAtByUser.get(u.id),
+        ]),
+    );
+    totalPhoneCovered += (users ?? []).length - pushRecipients.length;
+
+    const tokens = Array.from(new Set(pushRecipients
+      .map((u) => u.push_token)
       .filter((t: string | null): t is string => Boolean(t))));
 
     if (tokens.length > 0) {
@@ -494,6 +539,7 @@ type EvRow = {
     sent: totalSent,
     sessions: toProcess.length,
     same_room_skipped: totalSameRoomSkipped,
+    phone_covered: totalPhoneCovered,
   }, 200, ch);
 });
 

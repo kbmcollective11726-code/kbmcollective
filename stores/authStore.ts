@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import { supabase, supabaseUrl } from '../lib/supabase';
 import { authStorage } from '../lib/authStorage';
 import { clearOfflineCaches } from '../lib/eventOfflineCache';
+import { clearPhoneReminders } from '../lib/phoneReminders';
 import { requestAppPasswordReset } from '../lib/appPasswordReset';
 import { registerPushToken } from '../lib/pushNotifications';
 import { logAuthAttempt } from '../lib/logAuthAttempt';
@@ -716,11 +717,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     void clearOfflineCaches();
     // A server sign-out can fail during an outage and leave the session saved, which would
     // reopen the app signed in; the local sign-out always clears it from the device.
-    Promise.resolve().then(() =>
-      withTimeout(supabase.auth.signOut(), STARTUP_CHECK_TIMEOUT_MS, null).finally(() =>
-        supabase.auth.signOut({ scope: 'local' }).catch(() => {}),
-      ),
-    );
+    Promise.resolve().then(async () => {
+      // Remove this user's phone alarms and tell the server to push again (needs the session, so first).
+      await withTimeout(clearPhoneReminders(userId), STARTUP_CHECK_TIMEOUT_MS, undefined);
+      await withTimeout(supabase.auth.signOut(), STARTUP_CHECK_TIMEOUT_MS, null);
+      await supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+    });
   },
 
   updateProfile: async (updates) => {
